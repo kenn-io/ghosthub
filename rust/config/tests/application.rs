@@ -38,6 +38,9 @@ fn missing_application_config_uses_documented_defaults() {
     assert_eq!(loaded.wsl().distro(), None);
     assert_eq!(loaded.wsl().tmux_binary(), "/usr/bin/tmux");
     assert_eq!(loaded.wsl().socket_directory(), None);
+    #[cfg(target_os = "linux")]
+    assert_eq!(loaded.terminal().font_family(), "JetBrains Mono");
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(loaded.terminal().font_family(), "Cascadia Mono");
     assert_eq!(loaded.terminal().font_size(), 14);
     assert_eq!(loaded.terminal().theme(), TerminalTheme::ClearDark);
@@ -143,7 +146,7 @@ fn ssh_hosts_round_trip_through_the_application_config() {
     let host = SshHostSettings::new(
         "Studio",
         "studio.example",
-        Some("wesm".to_owned()),
+        Some("user-a".to_owned()),
         Some(2222),
         "/opt/homebrew/bin/tmux",
         Some("/run/user/501/tmux".to_owned()),
@@ -159,7 +162,7 @@ fn ssh_hosts_round_trip_through_the_application_config() {
     let loaded = &loaded.ssh_hosts()[0];
     assert_eq!(loaded.name(), "Studio");
     assert_eq!(loaded.hostname(), "studio.example");
-    assert_eq!(loaded.user(), Some("wesm"));
+    assert_eq!(loaded.user(), Some("user-a"));
     assert_eq!(loaded.port(), Some(2222));
     assert_eq!(loaded.tmux_binary(), "/opt/homebrew/bin/tmux");
     assert_eq!(loaded.socket_directory(), Some("/run/user/501/tmux"));
@@ -232,7 +235,7 @@ fn duplicate_ssh_endpoints_are_rejected_before_persistence() {
     let first = SshHostSettings::new(
         "Studio",
         "studio.example",
-        Some("wesm".to_owned()),
+        Some("user-a".to_owned()),
         None,
         "/usr/bin/tmux",
         None,
@@ -241,7 +244,7 @@ fn duplicate_ssh_endpoints_are_rejected_before_persistence() {
     let second = SshHostSettings::new(
         "Duplicate",
         "studio.example",
-        Some("wesm".to_owned()),
+        Some("user-a".to_owned()),
         None,
         "/usr/local/bin/tmux",
         None,
@@ -265,7 +268,7 @@ fn failed_ssh_host_persistence_preserves_the_loaded_configuration() {
     let host = SshHostSettings::new(
         "Studio",
         "studio.example",
-        Some("wesm".to_owned()),
+        Some("user-a".to_owned()),
         None,
         "/usr/bin/tmux",
         None,

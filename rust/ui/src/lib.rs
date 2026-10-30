@@ -30,6 +30,11 @@ const APP_NAVIGATION_WIDTH: f32 = 224.0;
 const APP_TITLEBAR_HEIGHT: f32 = 32.0;
 const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
 const APP_CHROME_FOREGROUND: u32 = 0xd8_de_e9;
+const UI_MONOSPACE_FONT: &str = if cfg!(target_os = "linux") {
+    "JetBrains Mono"
+} else {
+    "monospace"
+};
 const NAVIGATION_HEADER_HEIGHT: f32 = 32.0;
 const HOST_ROW_HEIGHT: f32 = 28.0;
 const SESSION_GROUP_ROW_HEIGHT: f32 = 24.0;
@@ -5676,7 +5681,7 @@ impl RootView {
             .unwrap_or(14.0)
             .clamp(8.0, 32.0);
         let font_family = if draft.font_family.trim().is_empty() {
-            "monospace".to_owned()
+            UI_MONOSPACE_FONT.to_owned()
         } else {
             draft.font_family.clone()
         };
@@ -6588,7 +6593,7 @@ impl RootView {
                     )
                     .child(
                         div()
-                            .font_family("monospace")
+                            .font_family(UI_MONOSPACE_FONT)
                             .text_xs()
                             .child(host_key.fingerprint().to_owned()),
                     ),
@@ -8954,6 +8959,7 @@ impl Render for RootView {
             .size_full()
             .bg(rgb(chrome_background))
             .text_color(rgb(chrome_foreground))
+            .when(cfg!(target_os = "linux"), |root| root.font_family("Inter"))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 this.toggle_sidebar(window, cx);
             }))
@@ -9624,6 +9630,8 @@ pub const fn terminal_wheel_action(completed_steps: i32) -> Option<MouseAction> 
 /// Panics if GPUI cannot create the application window.
 pub fn run(status: PortStatus, workspace: Workspace) {
     Application::new().run(move |cx: &mut App| {
+        #[cfg(target_os = "linux")]
+        load_linux_fonts(cx.text_system());
         let bounds = Bounds::centered(None, size(px(1100.0), px(720.0)), cx);
 
         cx.bind_keys([KeyBinding::new("ctrl-shift-b", ToggleSidebar, None)]);
@@ -9648,9 +9656,51 @@ pub fn run(status: PortStatus, workspace: Workspace) {
     });
 }
 
+#[cfg(target_os = "linux")]
+fn load_linux_fonts(text: &gpui::TextSystem) {
+    use std::borrow::Cow;
+
+    // Register before any measurement so both layout and painting use the bundled faces.
+    text.add_fonts(vec![
+        Cow::Borrowed(include_bytes!("../fonts/Inter-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../fonts/Inter-SemiBold.ttf")),
+        Cow::Borrowed(include_bytes!("../fonts/Inter-Bold.ttf")),
+        Cow::Borrowed(include_bytes!("../fonts/JetBrainsMono-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../fonts/JetBrainsMono-Bold.ttf")),
+        Cow::Borrowed(include_bytes!("../fonts/JetBrainsMono-Italic.ttf")),
+        Cow::Borrowed(include_bytes!("../fonts/JetBrainsMono-BoldItalic.ttf")),
+    ])
+    .expect("bundled Linux fonts must load");
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashSet, VecDeque};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a native Linux display; run make rust-test-fonts-live"]
+    fn native_linux_default_terminal_font_is_monospace() {
+        let app = gpui::Application::new();
+        let text = app.text_system();
+        super::load_linux_fonts(&text);
+        let appearance = workspace::Appearance::default();
+        let mut face = gpui::font(appearance.font_family().to_owned());
+        for weight in [gpui::FontWeight::NORMAL, gpui::FontWeight::BOLD] {
+            face.weight = weight;
+            let id = text.resolve_font(&face);
+            let size = gpui::px(f32::from(appearance.font_size()));
+            let cell = f32::from(text.advance(id, size, '0').expect("zero glyph").width);
+            assert!(cell > 0.0);
+            for ch in ['i', 'W', 'm', ' ', '|', 'é', 'λ', 'Ж'] {
+                let width = f32::from(text.advance(id, size, ch).expect("terminal glyph").width);
+                assert!(
+                    (width - cell).abs() < 0.01,
+                    "{ch:?} has width {width}, expected {cell}"
+                );
+            }
+        }
+    }
 
     use super::{
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, AppearanceField, HerdrRowAccess, HerdrRowAction,
