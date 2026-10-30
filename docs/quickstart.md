@@ -1,8 +1,12 @@
 # Internal Quick Start
 
-These instructions are for Kenn engineers and approved contributors. Ghosthub
-currently targets macOS and requires a full Xcode install because it builds
-Swift code and bootstraps libghostty locally.
+Build and run the macOS app from source. These instructions are for Kenn
+engineers, approved contributors, and their coding agents. To use the released
+app, follow the [installation guide](https://ghosthub.ai/docs/getting-started/).
+
+The build embeds libghostty 1.4.0 with Zig 0.17.0. The exact source revision and
+compiler requirement live in `Vendor/ghostty.version.json`; `mise.toml` selects
+the same Zig compiler for local builds.
 
 ## Prerequisites
 
@@ -29,8 +33,8 @@ explains the privileged move and asks for confirmation first.
 - Metal Toolchain installed for the selected Xcode.
 - `uv` for Python tooling.
 - Go for building Ghosthub's pinned kwt helper.
-- A Zig version at least as new as `required_zig_version` in
-  `Vendor/ghostty.version.json` for libghostty bootstrap.
+- The Zig version pinned in `mise.toml` for libghostty bootstrap. A newer
+  minor release is not a substitute for the pinned compiler.
 - `git`, `xcodebuild`, and `xcrun`.
 
 Install [mise](https://mise.jdx.dev), then run these commands in the repository
@@ -92,11 +96,9 @@ For changes touching terminal startup, shell environment, terminal config,
 embedded libghostty bootstrap, key handling, or remote terminal logic, run the
 full terminal regression set listed in `AGENTS.md`.
 
-## Install Hooks
+## Commit checks
 
-```bash
-mise exec -- make install-hooks
-```
-
-The hooks run formatting, basic file checks, and the Swift compiler warning
-gate for Swift changes.
+Use the managed global Prek hooks; do not install a second per-repository
+hook. They run formatting, basic file checks, and, on macOS, the Swift compiler
+warning gate for Swift changes. See [Development](development.md) for the
+same checks you can run before committing.

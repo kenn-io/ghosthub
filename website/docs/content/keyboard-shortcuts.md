@@ -5,9 +5,10 @@ icon: lucide/keyboard
 
 # Keyboard shortcuts
 
-Ghosthub keeps application navigation separate from the shortcuts owned by
-tmux, Herdr, and programs running inside the terminal. Open **Settings →
-Keyboard** to record, clear, or restore a Ghosthub shortcut.
+Move between sessions, search terminal history, and open windows with the
+shortcuts below. Open **Settings → Keyboard** to record, clear, or restore a
+Ghosthub shortcut. Tmux, Herdr, Zellij, and programs inside the terminal keep
+their own shortcuts.
 
 ## Default navigation
 

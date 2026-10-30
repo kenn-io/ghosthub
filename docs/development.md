@@ -1,7 +1,8 @@
 # Development
 
-This document collects the commands and workflows used to develop Ghosthub
-locally. For initial setup, see [Quick Start](quickstart.md).
+Build the app, test a change, and package it locally with the commands below.
+For initial setup, see [Quick Start](quickstart.md). Coding agents follow the
+same commands and the repository's `AGENTS.md`.
 
 ## Swift App
 
@@ -67,8 +68,7 @@ mise install swiftformat
 mise exec swiftformat -- git commit
 ```
 
-Use the existing global Prek hook when one is configured. Otherwise,
-`make install-hooks` installs the repository hooks.
+Use the managed global Prek hook. Do not install a second per-repository hook.
 
 Run Swift tests:
 

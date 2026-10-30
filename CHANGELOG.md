@@ -5,11 +5,32 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-30
+
+Flag worktrees to return to later, rename running tmux sessions, and find
+sessions started by your tools and agents.
+
+### Added
+
+- Mark a worktree with **Flag Worktree** in its sidebar menu. Flags stay visible
+  across windows and app launches, including when a host is offline. They are
+  manual reminders saved on this Mac.
+- Rename standalone tmux sessions from their sidebar menu or the Command
+  Palette. Open terminals follow the new name and keep their running programs.
+  Worktree and directory sessions keep the names assigned by kwt.
+
+### Changed
+
+- Ghosthub now embeds libghostty 1.4.0 and builds it with Zig 0.17.0. Your
+  Ghosthub terminal configuration stays in `~/.config/ghosthub/ghostty.conf`.
+  You do not need to install Ghostty.app or Zig to use the release.
+
 ### Fixed
 
 - Herdr and Zellij sessions you start outside Ghosthub, for example from a
-  shell or script, now appear in the sidebar within about 30 seconds. Before,
-  they appeared only after Ghosthub restarted or reconnected the host.
+  shell or script, now appear in the sidebar within about 30 seconds while
+  Ghosthub is active and the host is connected. Before, they appeared only
+  after Ghosthub restarted or reconnected the host.
 
 ## [0.11.3] - 2026-10-23
 
@@ -505,7 +526,8 @@ local or remote hosts.
   automatically after lost connections, and navigate projects and worktrees
   managed by kwt.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/kenn-io/ghosthub/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/kenn-io/ghosthub/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kenn-io/ghosthub/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kenn-io/ghosthub/compare/v0.11.0...v0.11.1
