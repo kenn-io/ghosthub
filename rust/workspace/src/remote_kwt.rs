@@ -34,12 +34,12 @@ struct Task {
     mutation: Option<Mutation>,
 }
 
-pub(crate) struct WorktreeInventory<'a> {
+pub(crate) struct WorkspaceInventory<'a> {
     scene: &'a Arc<Scene>,
     task: Task,
 }
 
-impl WorktreeInventory<'_> {
+impl WorkspaceInventory<'_> {
     pub(crate) fn publish(&self, inventory: host::KwtInventory) -> Result<(), WorkspaceError> {
         if publish(self.scene, &self.task, |state, host| {
             scene::apply_kwt_inventory(host, &inventory);
@@ -49,22 +49,22 @@ impl WorktreeInventory<'_> {
             Ok(())
         } else {
             Err(WorkspaceError::new(
-                "SSH connection changed while opening the worktree",
+                "SSH connection changed while opening the workspace",
             ))
         }
     }
 }
 
-impl Drop for WorktreeInventory<'_> {
+impl Drop for WorkspaceInventory<'_> {
     fn drop(&mut self) {
         finish(self.scene, &self.task);
     }
 }
 
-pub(crate) fn reserve_worktree<'a>(
+pub(crate) fn reserve_workspace<'a>(
     scene: &'a Arc<Scene>,
     fence: &crate::RemotePublicationFence<'_>,
-) -> Result<WorktreeInventory<'a>, WorkspaceError> {
+) -> Result<WorkspaceInventory<'a>, WorkspaceError> {
     let publication = scene
         .runtime
         .remote_publication
@@ -116,7 +116,7 @@ pub(crate) fn reserve_worktree<'a>(
     update_host(scene, fence.host_id, |host| {
         host.kwt_state = KwtState::Mutating;
     });
-    Ok(WorktreeInventory { scene, task })
+    Ok(WorkspaceInventory { scene, task })
 }
 
 pub(crate) fn cancel(entry: &RemoteEntry) {
@@ -481,7 +481,7 @@ mod tests {
         let read = reserve(scene, &publication, "ssh:studio", None).unwrap();
         drop(publication);
         let cancellation = CancellationToken::new();
-        let operation = reserve_worktree(
+        let operation = reserve_workspace(
             scene,
             &crate::RemotePublicationFence {
                 host_id: "ssh:studio",

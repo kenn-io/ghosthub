@@ -120,16 +120,9 @@ jobs:
           chmod +x "$RUNNER_TEMP/ghosthub-herdr/herdr"
           echo "HERDR_BINARY_PATH=$RUNNER_TEMP/ghosthub-herdr/herdr" >> "$GITHUB_ENV"
 
-      - name: Stage Zellij for Linux acceptance
+      - name: Build the pinned Zellij test helper
         if: runner.os == 'Linux'
-        run: |
-          mkdir -p "$RUNNER_TEMP/ghosthub-zellij"
-          curl --fail --location --retry 3 \
-            https://github.com/zellij-org/zellij/releases/download/v0.45.1/zellij-x86_64-unknown-linux-musl.tar.gz \
-            --output "$RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz"
-          echo "40bcc2e03f5d5ae8e054e39f676081fe12ab70871506996ba595834c3718eefc  $RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/ghosthub-zellij/zellij.tar.gz" -C "$RUNNER_TEMP/ghosthub-zellij"
-          echo "ZELLIJ_BINARY_PATH=$RUNNER_TEMP/ghosthub-zellij/zellij" >> "$GITHUB_ENV"
+        run: make -C .. bootstrap-zellij-test
 
       - name: Test and lint on Linux
         if: runner.os == 'Linux'

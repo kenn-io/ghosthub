@@ -913,6 +913,104 @@ fn a_successful_registration_survives_failed_reconciliation() {
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+#[allow(clippy::too_many_lines)] // Exercise one registered directory through the public navigation and kill actions.
+fn opens_idle_directories_and_reuses_the_attached_client() {
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::kwt::opens_idle_directories_and_reuses_the_attached_client")
+    else {
+        return;
+    };
+    let directory = fixture.root.join("assets 'one'");
+    std::fs::create_dir(&directory).unwrap();
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    remote_kwt(&["workspace", "add", directory.to_str().unwrap()]);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let selection = || {
+        let snapshot = fixture.workspace.snapshot();
+        let host = snapshot
+            .hosts()
+            .iter()
+            .find(|host| host.id() == fixture.host_id)
+            .unwrap();
+        let row = &host.directory_workspaces()[0];
+        SessionSelection::kwt_workspace(
+            &fixture.host_id,
+            &fixture.endpoint,
+            row.session_name(),
+            row.tmux_attach_mode(),
+            row.tmux_socket_name().map(str::to_owned),
+            row.path(),
+            None,
+        )
+    };
+    let initial = selection();
+    fixture.workspace.switch_session(&initial).unwrap();
+    fixture.tmux_shell(initial.session(), "idle-directory-opened");
+    fixture
+        .workspace
+        .send_key(KeyInput::text(
+            "printf 'directory-%s\\n' \"$PWD\"",
+            Modifiers::default(),
+        ))
+        .unwrap();
+    fixture
+        .workspace
+        .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
+        .unwrap();
+    fixture.wait(|_| {
+        fixture
+            .terminal_text()
+            .contains(&format!("directory-{}", directory.display()))
+    });
+    assert_eq!(selection().tmux_socket_name(), Some("kwt"));
+    let client = workspace_tmux(&fixture, true, &["list-clients", "-F", "#{client_pid}"]);
+    assert!(!client.is_empty());
+    fixture.attach("review", "other-session");
+    fixture.workspace.switch_session(&selection()).unwrap();
+    fixture.tmux_shell(initial.session(), "retained-directory-returned");
+    assert_eq!(
+        workspace_tmux(&fixture, true, &["list-clients", "-F", "#{client_pid}"]),
+        client
+    );
+    fixture.workspace.detach();
+    workspace_tmux(&fixture, true, &["has-session", "-t", initial.session()]);
+    fixture.workspace.switch_session(&selection()).unwrap();
+    fixture.tmux_shell(initial.session(), "directory-reattached");
+    fixture
+        .workspace
+        .request_session_kill(&selection())
+        .unwrap();
+    fixture.wait(|_| fixture.workspace.session_kill_confirmation().is_some());
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait(|snapshot| {
+        snapshot.hosts().iter().any(|host| {
+            host.id() == fixture.host_id
+                && host.directory_workspaces().iter().any(|row| {
+                    row.path() == directory.to_str().unwrap() && !row.session_available()
+                })
+        })
+    });
+    let idle = selection();
+    fixture.workspace.switch_session(&idle).unwrap();
+    fixture.tmux_shell(initial.session(), "killed-directory-reopened");
+    fixture.workspace.detach();
+    // Keep the app's captured row while removing the authoritative registration.
+    workspace_tmux(&fixture, true, &["kill-session", "-t", initial.session()]);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let stale = selection();
+    remote_kwt(&["workspace", "remove", "assets 'one'"]);
+    fixture.workspace.switch_session(&stale).unwrap();
+    fixture.wait_for_error("directory workspace identity changed");
+    assert!(directory.is_dir());
+    assert!(fixture.workspace.snapshot().active_selection().is_none());
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 fn opens_idle_worktrees_and_reuses_the_attached_client() {
     let Some(fixture) =
         Fixture::isolated("native_ssh::kwt::opens_idle_worktrees_and_reuses_the_attached_client")

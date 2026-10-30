@@ -158,17 +158,11 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         term: &str,
         cancellation: &CancellationToken,
     ) -> Result<session::RepairOrOpenPlan, RemoteTmuxError> {
-        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
-        let readiness = crate::local::kwt_client_readiness_path()
-            .map_err(|error| RemoteTmuxError::from_host(&error))?;
-        let staging = format!("{readiness}.tmp");
-        let mut command = tmux_command(
-            &self.config,
-            &helper,
-            RemoteCommandLocale::Login,
-            [
-                "open",
-                open.path(),
+        self.kwt_open_plan(
+            snapshot,
+            open.path(),
+            open.session_name(),
+            &[
                 "--expected-repository",
                 open.repository(),
                 "--expected-registration",
@@ -178,6 +172,51 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 "--expected-session",
                 open.session_name(),
             ],
+            term,
+            cancellation,
+        )
+    }
+
+    /// Open one exact registered directory on the reviewed SSH connection.
+    ///
+    /// # Errors
+    /// Returns an error when the lease or pinned helper is unavailable.
+    pub fn kwt_directory_workspace_open_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        open: &crate::KwtDirectoryWorkspaceOpen,
+        term: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<session::RepairOrOpenPlan, RemoteTmuxError> {
+        self.kwt_open_plan(
+            snapshot,
+            open.path(),
+            open.session_name(),
+            &["--expected-session", open.session_name()],
+            term,
+            cancellation,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Keep the captured endpoint and expected identity explicit.
+    fn kwt_open_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        path: &str,
+        session_name: &str,
+        expected: &[&str],
+        term: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<session::RepairOrOpenPlan, RemoteTmuxError> {
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let readiness = crate::local::kwt_client_readiness_path()
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        let staging = format!("{readiness}.tmp");
+        let mut command = tmux_command(
+            &self.config,
+            &helper,
+            RemoteCommandLocale::Login,
+            ["open", path].into_iter().chain(expected.iter().copied()),
         );
         if let Some(value) = command.iter_mut().find(|value| value.starts_with("TERM=")) {
             *value = format!("TERM={term}");
@@ -207,7 +246,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 true,
                 &account_login_shell_command(&body),
             )),
-            open.session_name(),
+            session_name,
             readiness,
         ))
     }

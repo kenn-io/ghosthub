@@ -215,10 +215,11 @@ confirmed stop/delete, stale confirmation rejection, and silent disappearance
 of the optional backend. CI downloads and verifies Herdr 0.9.5 for this test;
 Ghosthub does not install or update Herdr for users.
 
-For local Zellij acceptance, provide an existing Linux executable:
+For local Zellij acceptance, build the pinned test helper and run:
 
 ```sh
-make rust-test-zellij-live ZELLIJ_BINARY_PATH=/absolute/path/to/zellij
+make bootstrap-zellij-test
+make rust-test-zellij-live
 ```
 
 This test uses private process and network namespaces, a private `/tmp`, and
@@ -227,8 +228,17 @@ It checks real shell input and resize, detach and application-close survival,
 cancelled kills, confirmed kills across two scenes, exclusion of exited
 sessions, exact selection among multiple sessions, names with spaces and
 quotes, rejected attachment names, and continued tmux use when Zellij
-disappears. CI downloads and verifies [Zellij 0.45.1](https://github.com/zellij-org/zellij/releases/tag/v0.45.1)
-for this test. Ghosthub does not install or update Zellij for users.
+disappears. CI uses the same helper for local and SSH acceptance. It builds
+the upstream revision in `ZELLIJ_TEST_REVISION` in the Makefile, with locked
+dependencies, into `.build/zellij-test`. This revision includes
+[Zellij's startup-probe fix](https://github.com/zellij-org/zellij/pull/5630):
+the 0.45.1 release can panic when inventory connects before its first client
+initializes. The helper reports a development version; it is only a test
+dependency. Ghosthub does not install or update Zellij for users.
+
+To update it, change `ZELLIJ_TEST_REVISION`, rebuild, and run both
+`make rust-test-zellij-live` and `make rust-test-ssh-live`. An explicit
+`ZELLIJ_BINARY_PATH=/absolute/path/to/zellij` tests another installation.
 
 The Rust port passes the selected session name directly to `zellij attach`.
 Zellij 0.45.1 uses `--` to introduce an initial command, so it cannot escape
@@ -449,7 +459,8 @@ including worktrees with no running session. KWT receives the captured repositor
 registration, worktree generation, and exact session name. The ordinary SSH client
 records its PID; Ghosthub checks that client's tmux identity before publication.
 Close, detach, and newer navigation cancel queued opens. Previously opened clients
-are reused. Running registered directories still use attach-only presentation.
+are reused. Idle registered directories open through the same path, using their
+exact registered directory and session name. Running directories attach directly.
 
 Both paths support the host's default tmux server and KWT's standard `kwt` server. Worktrees and registered directories
 support attach, retained-client switching, detach, and confirmed Kill. Discovery
@@ -463,8 +474,15 @@ option is enabled, then restores the captured session policy on attachment.
 Reopening a killed default-server worktree publishes its new KWT-server socket
 before presenting the client, so subsequent selections reuse that client.
 
+Register a directory on the remote host with `kwt workspace add /absolute/path`,
+refresh the host, and select its row under **Directory Workspaces**. KWT checks the captured
+session name before creating or attaching. A removed registration requires a
+refresh; Ghosthub does not open an arbitrary path from a stale row.
+
+![A registered remote directory opened from its idle row](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-directory.png)
+
 Protected imports, other named sockets, remote worktree creation/removal,
-opening idle registered directories, and automatic transport recovery remain separate work. Their
+and automatic transport recovery remain separate work. Their
 unsupported controls are unavailable in the remote project tree.
 
 ![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
