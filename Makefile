@@ -53,6 +53,8 @@ KWT_SOURCE_DIR ?= $(abspath .build/kwt-source)
 KWT_BINARY_PATH ?= $(abspath .build/kwt/kwt)
 KWT_VARIANTS_DIR ?= $(abspath .build/kwt/variants)
 HERDR_BINARY_PATH ?= $(shell command -v herdr 2>/dev/null)
+ZELLIJ_TEST_REVISION := 81f56e1aed4e17b822af5cb382a8f524e35f3eae
+ZELLIJ_BINARY_PATH ?= $(abspath .build/zellij-test/bin/zellij)
 THIRD_PARTY_LICENSES_DIR ?= LICENSES
 RUST_DIR ?= rust
 
@@ -681,10 +683,17 @@ rust-test-herdr-live:
 	cd rust && GHOSTHUB_HERDR_TEST="$(shell realpath -m -- "$(HERDR_BINARY_PATH)")" \
 		$(CARGO) test --locked -p ghosthub-workspace --test native_herdr -- --ignored
 
+.PHONY: bootstrap-zellij-test
+bootstrap-zellij-test:
+	@cd "$(RUST_DIR)" && $(CARGO) install --locked --debug \
+		--git https://github.com/zellij-org/zellij --rev $(ZELLIJ_TEST_REVISION) \
+		--no-default-features --features vendored_curl \
+		--root "$(abspath .build/zellij-test)" zellij
+
 .PHONY: rust-test-zellij-live
 rust-test-zellij-live:
 	@test -n "$(ZELLIJ_BINARY_PATH)" -a -f "$(ZELLIJ_BINARY_PATH)" -a -x "$(ZELLIJ_BINARY_PATH)" || \
-		{ echo "Set ZELLIJ_BINARY_PATH to a Linux Zellij executable" >&2; exit 1; }
+		{ echo "Run make bootstrap-zellij-test or set ZELLIJ_BINARY_PATH to a Linux Zellij executable" >&2; exit 1; }
 	cd rust && GHOSTHUB_ZELLIJ_TEST="$(shell realpath -m -- "$(ZELLIJ_BINARY_PATH)")" \
 		$(CARGO) test --locked -p ghosthub-workspace --test native_zellij -- --ignored
 
