@@ -1,0 +1,65 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "schedule:weekly"],
+  "timezone": "America/New_York",
+  "dependencyDashboard": true,
+  "osvVulnerabilityAlerts": true,
+  "minimumReleaseAge": "7 days",
+  "minimumReleaseAgeBehaviour": "timestamp-required",
+  "prCreation": "not-pending",
+  "internalChecksFilter": "strict",
+  "constraints": {
+    "ghActionsLock": "v0.3.0"
+  },
+  "vulnerabilityAlerts": {
+    "minimumReleaseAge": null,
+    "prCreation": "immediate",
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "groupName": "Go dependencies",
+      "groupSlug": "go-dependencies",
+      "postUpdateOptions": ["gomodUpdateImportPaths", "gomodTidy"]
+    },
+    {
+      "matchManagers": ["cargo"],
+      "groupName": "Rust dependencies",
+      "groupSlug": "rust-dependencies"
+    },
+    {
+      "matchManagers": ["npm"],
+      "groupName": "JavaScript dependencies",
+      "groupSlug": "javascript-dependencies"
+    },
+    {
+      "matchManagers": ["pep621"],
+      "groupName": "Python dependencies",
+      "groupSlug": "python-dependencies"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "groupSlug": "github-actions"
+    },
+    {
+      "matchManagers": ["docker-compose", "dockerfile"],
+      "groupName": "Docker images",
+      "groupSlug": "docker-images"
+    },
+    {
+      "matchManagers": ["mise"],
+      "groupName": "Developer tools",
+      "groupSlug": "dev-tools"
+    },
+    {
+      "description": ["kenn-io releases open right away: no release-age wait and no weekly window."],
+      "matchPackageNames": ["kenn-io/**", "github.com/kenn-io/**", "go.kenn.io/**", "@kenn-io/**"],
+      "groupName": "kenn-io dependencies",
+      "groupSlug": "kenn-io-dependencies",
+      "minimumReleaseAge": null,
+      "schedule": ["at any time"]
+    }
+  ]
+}

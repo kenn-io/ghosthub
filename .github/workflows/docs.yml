@@ -31,11 +31,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: Build the engineering docs
         working-directory: docs
         run: uv run --frozen ./zensical-docs.sh build
       - name: Check that pages paint with their stylesheets and fonts
-        uses: kenn-io/actions/first-paint@ee1ddcce6a620e49ba96f613bb8d113e0193b4f6 # first-paint, kenn-io/actions#6
+        uses: kenn-io/actions/first-paint@b523fb403607f01de5eec5f4556c7668544c70fe # main
         with:
           dist: docs/site

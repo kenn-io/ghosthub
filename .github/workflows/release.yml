@@ -40,7 +40,7 @@ jobs:
       kwt-revision: ${{ steps.kwt-pin.outputs.revision }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -58,7 +58,7 @@ jobs:
           echo "KWT_REF=$revision" >> "$GITHUB_ENV"
 
       - name: Check out pinned kwt
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.KWT_REPOSITORY }}
           ref: ${{ steps.kwt-pin.outputs.revision }}
@@ -96,14 +96,14 @@ jobs:
           xcodebuild -version
           xcrun swift --version
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: KWT_GO_VERSION
           cache-dependency-path: .release-inputs/kwt-source/go.sum
           cache: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
 
@@ -285,7 +285,7 @@ jobs:
 
       - name: Upload notarized candidate
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Ghosthub-${{ steps.release.outputs.version }}-candidate
           path: |
@@ -299,7 +299,7 @@ jobs:
 
       - name: Upload notarized release
         if: github.event_name == 'push' && github.ref_type == 'tag'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Ghosthub-${{ steps.release.outputs.version }}-notarized
           path: |
@@ -331,13 +331,13 @@ jobs:
     permissions:
       contents: write # This tag-only job publishes the notarized artifact.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Download notarized artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Ghosthub-${{ needs.macos-release.outputs.version }}-notarized
           path: .dist/release
