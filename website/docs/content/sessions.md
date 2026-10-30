@@ -5,6 +5,9 @@ icon: lucide/square-terminal
 
 # Sessions
 
+Open a running session, create one for a new task, or return to work started by
+your tools and agents. Closing a Ghosthub terminal leaves its session running.
+
 Expand a host in the sidebar to find its sessions:
 
 - **Tmux Sessions** lists tmux sessions that are not grouped under a project.
@@ -18,29 +21,27 @@ bindings, and running programs.
 
 ![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](/docs/assets/guide-sessions.png)
 
-The unreleased Rust/Linux source build also supports local tmux, Herdr, and
-Zellij sessions, plus creating, opening, and ending tmux sessions on connected
-SSH hosts. Open a remote tmux row’s **…** menu and choose **Kill**, then
-confirm the session and host. A same-name replacement requires a new
-confirmation. Remote Herdr rows offer **Stop** for running sessions and
-**Restart** or **Delete** for stopped sessions. Stop and Delete ask for
-confirmation; closing a terminal only detaches. Herdr's default session cannot
-be deleted. Remote Zellij rows also offer confirmed **Kill**. Success closes
-matching clients across windows; cancellation preserves the session. A failed
-kill restores a still-active session only where navigation is unchanged.
-Zellij cannot distinguish an otherwise identical same-name replacement, and
-exited sessions stay hidden. See the [native Linux development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
-for build instructions and native session controls. The Rust port supports
-Zellij 0.45.1. Names beginning with `-` (except `-` itself), `help`, and `options`
-cannot be created or attached; existing sessions remain visible and killable.
+## Sessions started by tools and agents
 
-![Confirm a remote tmux kill in the native Rust application](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
+Use the same session from Ghosthub and your command-line tools. On a configured
+host, an agent can create an ordinary tmux, Herdr, or Zellij session and you can
+select it in Ghosthub's sidebar. No Ghosthub-specific launch command is needed.
+Herdr and Zellij sessions started elsewhere appear within about 30 seconds
+while Ghosthub is active and the host is connected.
 
-![Confirm Stop for a running Herdr session on the SSH host](https://github.com/user-attachments/assets/2a5220ee-c9d6-4b6b-a227-975578bf0f89)
+For example, create a detached tmux session on your Mac or SSH host:
 
-![Confirm Delete for the stopped remote Herdr session](https://github.com/user-attachments/assets/a4185835-f0e8-4a75-a7f0-6318a4eaecdf)
+```sh
+tmux new-session -d -s agent-review
+```
 
-![Confirm a remote Zellij kill in the native Rust application](/docs/assets/guide-rust-remote-zellij-kill.png)
+Select **agent-review** under that host's **Tmux Sessions**. The agent and your
+terminal share the same running session. Closing Ghosthub leaves it running.
+
+For project work, agents can run `kwt list --json` from a repository to inspect
+its worktrees and their exact session names. Kwt-managed sessions use
+the server described below. Ghosthub's manual worktree flags are reminders on
+this Mac; they do not report agent progress.
 
 ## Find tmux sessions on kwt's server
 
@@ -335,3 +336,29 @@ agents, plugins, configuration, updates, and internal process behavior.
 For Zellij, Ghosthub manages only active-session create, attach, and confirmed
 kill. Zellij continues to own tabs, panes, layouts, themes, plugins,
 configuration, updates, resurrection data, and process behavior.
+
+## Rust source builds
+
+The unreleased Rust/Linux source build also supports local tmux, Herdr, and
+Zellij sessions, plus creating, opening, and ending tmux sessions on connected
+SSH hosts. Open a remote tmux row’s **…** menu and choose **Kill**, then
+confirm the session and host. A same-name replacement requires a new
+confirmation. Remote Herdr rows offer **Stop** for running sessions and
+**Restart** or **Delete** for stopped sessions. Stop and Delete ask for
+confirmation; closing a terminal only detaches. Herdr's default session cannot
+be deleted. Remote Zellij rows also offer confirmed **Kill**. Success closes
+matching clients across windows; cancellation preserves the session. A failed
+kill restores a still-active session only where navigation is unchanged.
+Zellij cannot distinguish an otherwise identical same-name replacement, and
+exited sessions stay hidden. See the [native Linux development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
+for build instructions and native session controls. The Rust port supports
+Zellij 0.45.1. Names beginning with `-` (except `-` itself), `help`, and `options`
+cannot be created or attached; existing sessions remain visible and killable.
+
+![Confirm a remote tmux kill in the native Rust application](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
+
+![Confirm Stop for a running Herdr session on the SSH host](https://github.com/user-attachments/assets/2a5220ee-c9d6-4b6b-a227-975578bf0f89)
+
+![Confirm Delete for the stopped remote Herdr session](https://github.com/user-attachments/assets/a4185835-f0e8-4a75-a7f0-6318a4eaecdf)
+
+![Confirm a remote Zellij kill in the native Rust application](/docs/assets/guide-rust-remote-zellij-kill.png)

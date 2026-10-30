@@ -5,8 +5,9 @@ icon: lucide/settings-2
 
 # Terminal configuration
 
-Ghosthub embeds libghostty for terminal rendering. It does not embed or run
-Ghostty.app, and Ghostty.app is not a runtime dependency.
+Choose the fonts, colors, and shell behavior you want in Ghosthub's own
+configuration file. Ghosthub embeds libghostty 1.4.0, built with Zig 0.17.0.
+You do not need to install Ghostty.app or Zig to use the app.
 
 ## Configuration file
 

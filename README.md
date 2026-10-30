@@ -61,10 +61,11 @@ Ghosthub is alpha software. Report bugs and request features through
 - Open local and remote sessions together in native Mac windows and tabs.
 - Keep remote sessions connected through ordinary SSH interruptions.
 - Preview tmux sessions and see which ones are producing output.
-- Create Git worktrees and inspect their changed files in the sidebar.
+- Create Git worktrees, inspect changed files, and flag work to return to later.
+- Rename standalone tmux sessions while their programs keep running.
 - Search sessions, projects, and actions with **Command-Shift-P**.
 - Set fonts and colors in Ghosthub's own `ghostty.conf`. Ghosthub uses
-  libghostty for rendering and does not load Ghostty.app's settings.
+  libghostty 1.4.0 for rendering and does not load Ghostty.app's settings.
 
 See the [visual overview](https://ghosthub.ai/overview/) for a tour. The
 [public guides](https://ghosthub.ai/docs/) explain setup, controls, and limits.
@@ -101,6 +102,20 @@ This README and the website docs follow `main`. The
 the latest stable release. Read about
 [stable and nightly builds](https://ghosthub.ai/docs/getting-started/#release-and-nightly-builds)
 before trying them.
+
+## Work with your agents
+
+Start a session from Ghosthub, a shell, or an agent, then open it from the
+sidebar. The same tmux, Herdr, and Zellij sessions remain available through
+their own command-line tools. Closing Ghosthub leaves the work running.
+
+Agents can use [kwt](https://kwt.sh) for project and worktree operations and
+its JSON output for inventory. See [sessions started by tools and agents](https://ghosthub.ai/docs/sessions/#sessions-started-by-tools-and-agents)
+for discovery and tmux server details.
+
+Give your agent [the documentation index](https://ghosthub.ai/llms.txt).
+Every public guide has a Markdown copy with the same instructions as the
+web page, such as [sessions.md](https://ghosthub.ai/docs/sessions.md).
 
 ## Where do I go next?
 
