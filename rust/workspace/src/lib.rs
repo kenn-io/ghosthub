@@ -5581,6 +5581,9 @@ impl Workspace {
     /// fenced by the removed ownership record and cannot settle a replacement.
     #[must_use]
     pub fn cancel_kwt_worktree_listing(&self, operation_id: u64) -> bool {
+        if remote_kwt::cancel_listing(&self.scene, operation_id) {
+            return true;
+        }
         let listing = {
             let mut active = self
                 .scene
@@ -5680,6 +5683,17 @@ impl Workspace {
         registration_fingerprint: &str,
         operation: KwtWorktreeOperation,
     ) -> Result<u64, WorkspaceError> {
+        if !is_local_host_id(host_id) {
+            return remote_kwt::start_worktree(
+                &self.scene,
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+                operation,
+            );
+        }
         // KWT reservations are constructive entries: held through the
         // reservation and task scheduling so a close cannot interleave — a
         // retained handle of a closed scene fails here instead of starting
