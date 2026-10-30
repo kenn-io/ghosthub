@@ -27,6 +27,8 @@ sessions started by your tools and agents.
 
 ### Fixed
 
+- Reduce redraw overhead for open tmux terminals, especially SSH sessions.
+  Ghosthub now reuses their terminal surfaces without rebuilding launch commands.
 - Herdr and Zellij sessions you start outside Ghosthub, for example from a
   shell or script, now appear in the sidebar within about 30 seconds while
   Ghosthub is active and the host is connected. Before, they appeared only
