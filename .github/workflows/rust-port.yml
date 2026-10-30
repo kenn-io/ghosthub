@@ -83,6 +83,7 @@ jobs:
             bubblewrap \
             clang \
             cmake \
+            fonts-dejavu-core \
             libfontconfig-dev \
             libvulkan1 \
             libwayland-dev \
@@ -90,9 +91,12 @@ jobs:
             libxkbcommon-x11-dev \
             lld \
             llvm \
+            mesa-vulkan-drivers \
             openssh-server \
             pkg-config \
-            tmux
+            tmux \
+            xauth \
+            xvfb
 
       - name: Enable Bubblewrap namespaces on Ubuntu
         if: runner.os == 'Linux'
@@ -130,6 +134,7 @@ jobs:
         run: |
           cargo test-contracts --locked
           make -C .. rust-check
+          xvfb-run -a make -C .. rust-test-fonts-live
           make -C .. rust-test-kwt-live KWT_BINARY_PATH=.build/kwt/kwt
           make -C .. rust-test-herdr-live
           make -C .. rust-test-zellij-live

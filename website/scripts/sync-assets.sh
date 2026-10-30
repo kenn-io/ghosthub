@@ -24,6 +24,7 @@ assets=(
   guide-rust-project-kill.png
   guide-rust-kwt-socket.png
   guide-rust-remote-directory.png
+  guide-rust-appearance.png
   guide-find.png
   guide-session-previews.png
   guide-session-activity.png

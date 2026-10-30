@@ -5,8 +5,22 @@ icon: lucide/settings-2
 
 # Terminal configuration
 
-Ghosthub embeds libghostty for terminal rendering. It does not embed or run
+Ghosthub's macOS app embeds libghostty for terminal rendering. It does not embed or run
 Ghostty.app, and Ghostty.app is not a runtime dependency.
+
+## Rust Linux fonts (unreleased)
+
+The native Rust Linux app bundles **Inter** for labels and controls and
+**JetBrains Mono** for its default terminal font. These fonts load with the
+application, so the default terminal keeps a fixed-width grid across Linux
+machines.
+
+Open **Settings → Appearance** to choose a terminal font, size, and theme.
+Existing font preferences are preserved; select **JetBrains Mono** to switch
+to the bundled face. Windows keeps its native UI font and Cascadia Mono
+terminal default. The macOS instructions below describe the Swift app.
+
+![Rust Linux Appearance settings with the bundled terminal font](/docs/assets/guide-rust-appearance.png)
 
 ## Configuration file
 

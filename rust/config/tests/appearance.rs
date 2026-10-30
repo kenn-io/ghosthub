@@ -4,6 +4,9 @@ use config::{CursorStyle, TerminalAppearance, TerminalTheme};
 fn default_terminal_appearance_is_projectable_without_ui_dependencies() {
     let appearance = TerminalAppearance::default();
 
+    #[cfg(target_os = "linux")]
+    assert_eq!(appearance.font_family(), "JetBrains Mono");
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(appearance.font_family(), "Cascadia Mono");
     assert_eq!(appearance.font_size(), 14);
     assert_eq!(appearance.theme(), TerminalTheme::ClearDark);

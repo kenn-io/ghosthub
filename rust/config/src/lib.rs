@@ -897,7 +897,12 @@ impl Default for TerminalAppearance {
     fn default() -> Self {
         Self {
             theme: TerminalTheme::ClearDark,
-            font_family: "Cascadia Mono".to_owned(),
+            font_family: if cfg!(target_os = "linux") {
+                "JetBrains Mono"
+            } else {
+                "Cascadia Mono"
+            }
+            .to_owned(),
             font_size: 14,
             background: 0x21_27_34,
             foreground: 0xe6_e6_e6,

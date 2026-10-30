@@ -666,6 +666,11 @@ rust-format-check:
 rust-test:
 	@cd "$(RUST_DIR)" && $(CARGO) test --workspace --locked
 
+.PHONY: rust-test-fonts-live
+rust-test-fonts-live:
+	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-ui \
+		native_linux_default_terminal_font_is_monospace -- --ignored
+
 .PHONY: rust-test-kwt-live
 rust-test-kwt-live: ensure-kwt
 	@cd "$(RUST_DIR)" && GHOSTHUB_KWT_BUNDLE_TEST="$(shell realpath -m -- "$(KWT_BINARY_PATH)")" \

@@ -100,6 +100,9 @@ fn projects_config_and_inventory_into_ui_only_values() {
         vec![SessionItem::new("editor", 1)],
     );
 
+    #[cfg(target_os = "linux")]
+    assert_eq!(snapshot.appearance().font_family(), "JetBrains Mono");
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(snapshot.appearance().font_family(), "Cascadia Mono");
     let WorkspaceContent::Ready { endpoint, sessions } = snapshot.content() else {
         panic!("expected ready workspace");

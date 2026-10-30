@@ -118,8 +118,17 @@ application's CI remains separate.
 
 Use the toolchain pinned in `rust/rust-toolchain.toml`. On Debian or Ubuntu,
 install the GPUI build dependencies listed in the Rust CI workflow. Running
-the app also needs a Vulkan driver and a font GPUI can resolve. For a headless
-development host, Mesa's software Vulkan driver and DejaVu fonts suffice:
+the app also needs a Vulkan driver and standard system fallback fonts for
+GPUI's font picker. The Linux executable bundles Inter for
+labels and controls, and JetBrains Mono for the default terminal font. They
+load before GPUI measures text, so a minimal desktop or headless capture does
+not substitute a proportional font into the terminal grid. Explicit terminal
+font settings remain authoritative; choose JetBrains Mono in **Settings →
+Appearance** to switch an existing configuration. Windows keeps its native UI
+font and Cascadia Mono terminal default.
+
+For a headless development host, use Mesa's software Vulkan driver and DejaVu
+for GPUI's fallback stack:
 
 ```sh
 sudo apt-get install --no-install-recommends \
@@ -128,6 +137,7 @@ sudo apt-get install --no-install-recommends \
   mesa-vulkan-drivers fonts-dejavu-core xvfb xauth xdotool ffmpeg tmux bubblewrap
 make rust-build
 make rust-check
+xvfb-run -a make rust-test-fonts-live
 make rust-test-kwt-live
 ```
 
@@ -154,7 +164,13 @@ For native screenshots without a desktop, run the executable under
 `xvfb-run -a -s '-screen 0 1280x800x24'`. Use `xdotool` to wait for the
 Ghosthub window, move it, and give it focus before capturing the X11 display
 with FFmpeg. Inspect the image: finding a window alone does not prove that
-GPUI has painted it. Stop the app and virtual display after capture. Keep
+GPUI has painted it. Use the bundled defaults for representative captures;
+installing a capture-only font would hide differences in the delivered app.
+The native font check measures varied Latin, Greek, and Cyrillic glyphs in
+regular and bold at the configured default size, rejecting proportional
+fallback. Font sources and update steps live in
+[the font inventory](https://github.com/kenn-io/ghosthub/blob/main/rust/ui/fonts/README.md).
+Stop the app and virtual display after capture. Keep
 these development captures local; accepted website screenshots follow the
 separate [publishing workflow](https://github.com/kenn-io/ghosthub/blob/main/website/README.md).
 
