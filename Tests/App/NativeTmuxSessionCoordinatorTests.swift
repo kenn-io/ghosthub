@@ -41,6 +41,42 @@ private func splitMismatchMarker(in command: String) -> String? {
 @Suite("Native tmux connection identity", .serialized)
 @MainActor
 struct NativeTmuxSessionCoordinatorTests {
+    @Test("retained terminals do not rebuild launch configurations", arguments: [
+        CommandHost.local,
+        CommandHost.ssh(SSHHostInfo(user: "dev", hostname: "builder.example.test", port: nil)),
+    ])
+    func retainedSurfaceDoesNotRebuildLaunch(host: CommandHost) async throws {
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = NativeTmuxSessionCoordinator(
+            terminalCoordinator: store,
+            tmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
+            remoteTmuxPathProvider: { _, _ in successfulTmuxResolution("/usr/bin/tmux") },
+            remoteConnectionProvider: { _, _ in testKwtSSHAttachment() },
+            paneSplitter: supportedPaneSplitter { _, _, _ in (0, coordinatorSplitClientOutput) }
+        )
+        var ready = false
+        coordinator.onSurfaceReady = { _ in ready = true }
+        let handle = coordinator.attach(
+            hostID: UUID(), name: "agent", host: host,
+            sessionIdentity: coordinatorSplitIdentity,
+            expectedAttachIdentity: coordinatorSplitIdentity
+        )
+        await waitUntilMainActor { ready }
+        _ = coordinator.surface(handle: handle)
+        let key = try #require(store.requestedKeys.first)
+        #expect(store.requestedConfigurations.count == 1)
+
+        for _ in 0 ..< 3 {
+            _ = coordinator.surface(handle: handle)
+        }
+        #expect(store.requestedConfigurations.count == 1)
+
+        store.removeSurface(for: key)
+        _ = coordinator.surface(handle: handle)
+        #expect(store.requestedConfigurations.count == 2)
+        await coordinator.shutdown()
+    }
+
     @Test("image paste uses the attachment host and pastes its path", arguments: [
         CommandHost.local,
         CommandHost.ssh(SSHHostInfo(user: "dev", hostname: "builder.example.test", port: nil)),

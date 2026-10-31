@@ -1,16 +1,16 @@
 ---
-description: Comprehensive user documentation for Ghosthub.
+description: Open sessions, connect hosts, and share running work with your agents.
 icon: lucide/book-open
 ---
 
 # Ghosthub documentation
 
-Open tmux, Herdr, and Zellij sessions on your Mac and SSH hosts in one native
-Mac app. Use any of them without Git setup. Add projects and worktrees when
-you want a separate checkout and tmux session for each branch.
+Open tmux, Herdr, and Zellij sessions on your Mac and SSH hosts. Pick up work
+started by you or your agents in one native Mac app. Add Git worktrees when
+you want a separate checkout and session for each task.
 
-These docs explain how to operate Ghosthub. For a shorter, visual introduction,
-start with the [five-minute Overview](https://ghosthub.ai/overview/).
+For a visual introduction, start with the
+[five-minute Overview](https://ghosthub.ai/overview/).
 
 These guides and screenshots follow `main`. Features marked **Unreleased**
 are newer than the latest stable download. See
@@ -24,6 +24,7 @@ to choose a build.
 | Install Ghosthub and open a first session | [Getting Started](/docs/getting-started/) |
 | See what changed in each release | [Changelog](/docs/changelog/) |
 | Attach to tmux, Herdr, or Zellij, or manage a session | [Sessions](/docs/sessions/) |
+| Pick up work started by a tool or agent | [Agent sessions](/docs/sessions/#sessions-started-by-tools-and-agents) |
 | Save a command for a new remote tmux session | [Launch profiles](/docs/launch-profiles/) |
 | Connect a Mac, Linux, or experimental Windows host | [Remote Hosts](/docs/remote-hosts/) |
 | Register a Git repository or create a worktree | [Projects and Worktrees](/docs/projects-worktrees/) |
@@ -55,12 +56,14 @@ Session…** or Herdr **Stop Session…** action.
 
 ![Ghosthub with local and remote sessions and project worktrees](/docs/assets/hero.png)
 
-## Human and machine-readable pages
+## Give these guides to your agent
 
-Every page has an HTML URL and a Markdown twin. For example:
+Share [`llms.txt`](https://ghosthub.ai/llms.txt) so your agent can find the right
+guide. Every page has an HTML URL and a Markdown copy built from the same
+source. For example:
 
 - `https://ghosthub.ai/docs/sessions/`
 - `https://ghosthub.ai/docs/sessions.md`
 
-The complete machine-readable index is available at
-[`https://ghosthub.ai/llms.txt`](https://ghosthub.ai/llms.txt).
+The Markdown copies include the same commands, screenshots, and limits as
+the web pages.

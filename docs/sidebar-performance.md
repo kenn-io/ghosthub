@@ -1,10 +1,24 @@
 # Sidebar performance
 
-Measurements collected September 10–13, 2026. Timings are representative Debug
-samples on Apple Silicon with macOS 26.6.2, not CI timing thresholds or physical
-display latency. The intermittent typing lag reported in local and remote
-sessions with previews Off is no longer apparent to the reporter; its cause
-remains unconfirmed and further investigation is paused.
+Timings are representative Debug samples on Apple Silicon with macOS 26.6.2,
+not CI timing thresholds or physical
+display latency. Input delays can also come from work on the app's main thread;
+the isolated terminal benchmark does not exercise every scene update.
+
+## Open terminal redraws
+
+Redrawing an open tmux terminal reuses its retained surface without rebuilding
+the client launch command. Missing or failed surfaces still take the creation
+path. Clipboard policy, pane actions, and attachment identity updates continue
+to apply to the retained client.
+
+A sample of the running Mac app found launch-command quoting on the main
+thread during SwiftUI redraws. In a synthetic coordinator probe, 100 repeated
+lookups took 110 ms for an SSH attachment and 3.9 ms locally. Reusing the surface
+before building the command reduced both to about 0.2 ms. These measurements
+cover coordinator work, not key-to-display latency. The regression test checks
+that repeated lookups build no new launch configuration and that an evicted
+surface is recreated, for both local and SSH attachments.
 
 ## Sidebar changes
 
@@ -180,5 +194,5 @@ The source still contains repeated row lookups, sidebar-owned hover state,
 fleet scans on section-cache misses, and shared result observation between
 multiple mounted Changes panels. Their costs need separate measurements before
 further changes. Eager preview-enabled, Herdr, and Zellij groups are outside the
-lazy-layout change. Row/hover work remains tracked by `s921`, activation by
-`360m`, and typing latency by `w8v8`; none is claimed fully resolved here.
+lazy-layout change. Row/hover work, activation, and typing latency under a
+normal multi-window workload still need separate measurements.

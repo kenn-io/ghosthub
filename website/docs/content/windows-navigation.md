@@ -5,11 +5,10 @@ icon: lucide/panels-top-left
 
 # Windows and navigation
 
-Each Ghosthub workspace can show a tmux, Herdr, or Zellij presentation. It can keep
-multiple tmux presentations connected while showing one at a time; Herdr owns
-the complete internal workspace shown by its client. Native macOS tabs group
-complete Ghosthub workspaces and do not replace any multiplexer's internal
-windows, tabs, or panes.
+Switch between sessions in the sidebar, or open them side by side in native
+Mac windows and tabs. Each Ghosthub workspace shows one terminal at a time and
+can keep previously opened tmux sessions connected. Tmux, Herdr, and Zellij
+still control the windows, tabs, and panes inside their sessions.
 
 ## Use the sidebar
 

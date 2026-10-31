@@ -554,11 +554,7 @@ prepare_command_window() {
 
 if [[ "${GHOSTHUB_DEMO_TABS_ONLY:-}" != "1" ]]; then
   echo "==> guide: four-window tmux command center"
-  if [[ "${GHOSTHUB_DEMO_COMMAND_CENTER_ONLY:-}" == "1" ]]; then
-    prepare_command_window "fix-reconnect-backoff" false palette
-  else
-    prepare_command_window "fix-reconnect-backoff" false none
-  fi
+  prepare_command_window "fix-reconnect-backoff" false palette
   prepare_command_window "scratch" true row
   prepare_command_window "docbank-export" true row
   prepare_command_window "release-watch" true row

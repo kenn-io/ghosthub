@@ -1083,51 +1083,56 @@ final class NativeTmuxSessionCoordinator {
             : nil
         let isFirstLaunch = launchedAttachmentIDs[handle.id] != attachment.id
         let surfaceKey = surfaceKey(handle)
-        let previousSurfaceIdentity = terminalCoordinator
-            .paneSurfaceIfPresent(for: surfaceKey)
-            .map { ObjectIdentifier($0) }
-        let info = TmuxAttachmentInfo(
-            sessionName: handle.name,
-            host: attachment.host,
-            socketName: attachment.socketName,
-            workspacePath: attachment.openWorkspace
-                ? attachment.workingDirectory
-                : nil,
-            kwtWorktreeIdentity: attachment.kwtWorktreeIdentity,
-            kwtProtectedWorktreeIdentity:
-            attachment.kwtProtectedWorktreeIdentity,
-            kwtExpectedSessionName: attachment.kwtExpectedSessionName,
-            protectedWorkspacePath: attachment.protectedWorkspacePath,
-            expectedAttachIdentity: attachment.expectedAttachIdentity,
-            presentationStyle: presentationStyle,
-            launchMode: attachment.launchMode,
-            initialCommand: attachment.initialCommand,
-            ignoresClientSize: attachment.ignoresClientSize,
-            initialClientSize: attachment.previewGridSize.map {
-                TmuxClientSize(columns: $0.columns, rows: $0.rows)
-            }
-        )
-        let surface = terminalCoordinator.paneSurface(
-            for: surfaceKey,
-            configuration: TerminalSurfaceConfiguration(
-                workingDirectory: NSHomeDirectory(),
-                command: info.attachCommand(
-                    tmuxPath: attachment.tmuxPath,
-                    kwtPath: attachment.kwtPath,
-                    remoteKwtCommandPrelude:
-                    attachment.remoteKwtCommandPrelude,
-                    windowsKwtRelativePath:
-                    attachment.windowsKwtRelativePath,
-                    workingDirectory: attachment.workingDirectory,
-                    sshConnectionArguments:
-                    attachment.sshConnectionSnapshot.arguments,
-                    remoteExitStatusPath:
-                    attachment.remoteExitStatusURL?.path,
-                    clientTTYToken: attachment.paneSplitClientToken,
-                    localClientTTYDirectory: attachment.clientTTYDirectory
+        let existingSurface = terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey)
+        let previousSurfaceIdentity = existingSurface.map { ObjectIdentifier($0) }
+        let surface: (any NativeSessionPaneSurfacing)?
+        if let existingSurface, existingSurface.launchError == nil {
+            // SwiftUI asks again during redraws; only a new client needs a launch command.
+            surface = existingSurface
+        } else {
+            let info = TmuxAttachmentInfo(
+                sessionName: handle.name,
+                host: attachment.host,
+                socketName: attachment.socketName,
+                workspacePath: attachment.openWorkspace
+                    ? attachment.workingDirectory
+                    : nil,
+                kwtWorktreeIdentity: attachment.kwtWorktreeIdentity,
+                kwtProtectedWorktreeIdentity:
+                attachment.kwtProtectedWorktreeIdentity,
+                kwtExpectedSessionName: attachment.kwtExpectedSessionName,
+                protectedWorkspacePath: attachment.protectedWorkspacePath,
+                expectedAttachIdentity: attachment.expectedAttachIdentity,
+                presentationStyle: presentationStyle,
+                launchMode: attachment.launchMode,
+                initialCommand: attachment.initialCommand,
+                ignoresClientSize: attachment.ignoresClientSize,
+                initialClientSize: attachment.previewGridSize.map {
+                    TmuxClientSize(columns: $0.columns, rows: $0.rows)
+                }
+            )
+            surface = terminalCoordinator.paneSurface(
+                for: surfaceKey,
+                configuration: TerminalSurfaceConfiguration(
+                    workingDirectory: NSHomeDirectory(),
+                    command: info.attachCommand(
+                        tmuxPath: attachment.tmuxPath,
+                        kwtPath: attachment.kwtPath,
+                        remoteKwtCommandPrelude:
+                        attachment.remoteKwtCommandPrelude,
+                        windowsKwtRelativePath:
+                        attachment.windowsKwtRelativePath,
+                        workingDirectory: attachment.workingDirectory,
+                        sshConnectionArguments:
+                        attachment.sshConnectionSnapshot.arguments,
+                        remoteExitStatusPath:
+                        attachment.remoteExitStatusURL?.path,
+                        clientTTYToken: attachment.paneSplitClientToken,
+                        localClientTTYDirectory: attachment.clientTTYDirectory
+                    )
                 )
             )
-        )
+        }
         guard let surface else {
             failSurfaceLaunch(
                 handle,
