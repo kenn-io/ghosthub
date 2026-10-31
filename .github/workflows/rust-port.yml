@@ -196,8 +196,8 @@ jobs:
         run: cargo build --locked -p ghosthub-web --example serve
 
       # The launcher serves the same embedded page and CSP as the app. Its
-      # bootstrap URL carries a credential for this loopback-only process,
-      # which ends with the job.
+      # HTTP checker uses its bearer credential instead of browser cookies.
+      # This loopback-only process ends with the job.
       - name: Start the web UI
         id: serve
         run: |
@@ -213,9 +213,13 @@ jobs:
             cat "$log"
             exit 1
           fi
-          echo "url=$url" >> "$GITHUB_OUTPUT"
+          token="${url##*auth_token=}"
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+          echo "url=${url%%\?*}" >> "$GITHUB_OUTPUT"
 
       - name: Check that the page paints with its stylesheets and fonts
-        uses: kenn-io/actions/first-paint@b523fb403607f01de5eec5f4556c7668544c70fe # main
+        uses: kenn-io/actions/first-paint@5d46153e44375ef5ab11a3aaa1ad81ebcba0965c # authenticated system-font pages
         with:
           urls: ${{ steps.serve.outputs.url }}
+          bearer-token: ${{ steps.serve.outputs.token }}

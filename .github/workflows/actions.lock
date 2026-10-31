@@ -55,7 +55,7 @@ workflows:
         - 'actions/setup-go@v7.0.0'
         - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
-        - 'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe'
+        - 'kenn-io/actions@5d46153e44375ef5ab11a3aaa1ad81ebcba0965c'
         - 'step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e'
         - 'step-security/rust-cache@v2.9.2'
     '.github/workflows/rust-wsl-live.yml':
@@ -190,6 +190,11 @@ dependencies:
         commit: 'sha1-949feb2413d6458794dcd2491c4babbbce0c15c1'
         owner_id: 44036562
         repo_id: 189476904
+    'actions/setup-node@v7.1.0':
+        ref: 'v7.1.0'
+        commit: 'sha1-949feb2413d6458794dcd2491c4babbbce0c15c1'
+        owner_id: 44036562
+        repo_id: 189476904
     'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9':
         ref: 'v7.0.2'
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
@@ -210,6 +215,13 @@ dependencies:
         commit: 'sha1-07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         owner_id: 115962839
         repo_id: 846733598
+    'kenn-io/actions@5d46153e44375ef5ab11a3aaa1ad81ebcba0965c':
+        ref: 'fix/first-paint-authenticated-system-fonts'
+        commit: 'sha1-5d46153e44375ef5ab11a3aaa1ad81ebcba0965c'
+        owner_id: 259885253
+        repo_id: 1427332808
+        uses:
+            - 'actions/setup-node@v7.1.0'
     'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe':
         ref: 'main'
         commit: 'sha1-b523fb403607f01de5eec5f4556c7668544c70fe'
