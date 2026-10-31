@@ -14,6 +14,7 @@ in `docs/content/`; repository-root `docs/` holds engineering references.
     pnpm lint       # oxlint
     pnpm test       # vitest unit tests
     pnpm build      # production build to dist/
+    pnpm test:browser  # scrollbar layout tests against dist/; needs Chrome and a prior build
 
 The website build downloads repository-supported `uv` platform archives with
 repository-pinned archive and executable checksums through `scripts/run-uv.sh`
