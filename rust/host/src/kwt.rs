@@ -462,6 +462,24 @@ impl KwtWorktreeOpen {
 }
 
 impl KwtWorktreeCreate {
+    pub(crate) fn arguments(&self) -> Vec<&str> {
+        let mut command = vec!["add"];
+        if self.creates_branch() {
+            command.push("--branch");
+        } else if let Some(source) = self.source().filter(|source| *source != self.branch()) {
+            command.extend(["--from", source]);
+        }
+        command.extend([
+            self.branch(),
+            "--no-launch",
+            "--expected-repository",
+            self.repository(),
+            "--expected-registration",
+            self.registration_fingerprint(),
+        ]);
+        command
+    }
+
     #[must_use]
     pub fn new(
         project_path: impl Into<String>,

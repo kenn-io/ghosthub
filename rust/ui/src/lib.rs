@@ -4784,6 +4784,7 @@ impl RootView {
                 )
             }
             ProjectDialog::NewWorktree {
+                host_id,
                 project_name,
                 branch,
                 mode,
@@ -4832,23 +4833,35 @@ impl RootView {
                                 this.switch_new_worktree_mode(NewWorktreeMode::Branch, cx);
                             })),
                     )
-                    .child(
-                        div()
-                            .id("new-worktree-pr-mode")
-                            .px_3()
-                            .py_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .bg(rgb(if *mode == NewWorktreeMode::PullRequest {
-                                0x25_3549
-                            } else {
-                                0x13_161c
-                            }))
-                            .text_xs()
-                            .child("Pull Request")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.switch_new_worktree_mode(NewWorktreeMode::PullRequest, cx);
-                            })),
+                    .when(
+                        self.workspace
+                            .snapshot()
+                            .hosts()
+                            .iter()
+                            .any(|host| host.id() == host_id && !host.is_ssh()),
+                        |tabs| {
+                            tabs.child(
+                                div()
+                                    .id("new-worktree-pr-mode")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .bg(rgb(if *mode == NewWorktreeMode::PullRequest {
+                                        0x25_3549
+                                    } else {
+                                        0x13_161c
+                                    }))
+                                    .text_xs()
+                                    .child("Pull Request")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.switch_new_worktree_mode(
+                                            NewWorktreeMode::PullRequest,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        },
                     );
                 let mut body = div().m_4().flex().flex_col().gap_2().child(tabs).child(
                     div()
@@ -7555,7 +7568,7 @@ impl RootView {
                         .truncate()
                         .child(project.name().to_owned()),
                 );
-            if can_remove && !host.is_ssh() {
+            if can_remove {
                 let create_host_id = host_id.clone();
                 let create_endpoint = endpoint.clone();
                 row = row.child(

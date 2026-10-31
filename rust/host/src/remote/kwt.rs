@@ -104,6 +104,54 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             .map_err(|error| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, error))
     }
 
+    /// List branch candidates in the selected remote repository.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid path, unavailable helper, or failed listing.
+    pub fn list_kwt_branches(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<crate::KwtBranchCandidate>, RemoteTmuxError> {
+        require_absolute("remote project path", project_path)?;
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let output = self.kwt_command_in_directory(
+            snapshot.lease(),
+            &helper,
+            Some(project_path),
+            &["branches", "--json"],
+            true,
+            cancellation,
+        )?;
+        crate::kwt::parse_branches(&output.stdout).map_err(|error| {
+            RemoteTmuxError::new(DiagnosticKind::MalformedOutput, error.to_string())
+        })
+    }
+
+    /// Create a worktree through the pinned helper without starting a terminal.
+    ///
+    /// # Errors
+    /// Returns an error for a stale registration, unavailable helper, or rejected branch.
+    pub fn create_kwt_worktree(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        request: &crate::KwtWorktreeCreate,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        require_absolute("remote project path", request.project_path())?;
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        self.kwt_command_in_directory(
+            snapshot.lease(),
+            &helper,
+            Some(request.project_path()),
+            &request.arguments(),
+            false,
+            cancellation,
+        )?;
+        Ok(())
+    }
+
     /// Remove only the exact project registration confirmed by the user.
     ///
     /// # Errors
@@ -471,12 +519,28 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         read: bool,
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, RemoteTmuxError> {
+        self.kwt_command_in_directory(lease, helper, None, args, read, cancellation)
+    }
+
+    fn kwt_command_in_directory(
+        &self,
+        lease: &SshLease,
+        helper: &str,
+        directory: Option<&str>,
+        args: &[&str],
+        read: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<CommandOutput, RemoteTmuxError> {
         let command = posix_command(&tmux_command(
             &self.config,
             helper,
             RemoteCommandLocale::Login,
             args.iter().copied(),
         ));
+        let command = directory.map_or_else(
+            || command.clone(),
+            |path| format!("cd {} && {command}", shell_quoted_argument(path)),
+        );
         let mut delays = [1, 4, 15].into_iter();
         loop {
             let output = self.run_framed_remote_shell(

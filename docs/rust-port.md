@@ -470,6 +470,23 @@ Registrations persist through KWT on that host across Ghosthub restarts.
 
 ![Add a remote project in the native Rust application](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-project.png)
 
+Select **+** beside a remote project to create a worktree from a new or existing
+branch. The searchable branch list preserves KWT's exact source reference when
+multiple remotes have the same branch name. **Create** uses the pinned helper's
+guarded, non-launching operation, refreshes inventory, and opens the resulting
+worktree through the ordinary remote workspace path. Later navigation prevents
+automatic selection of that result. Remote pull-request imports remain unavailable.
+
+The branch listing and creation share the host's KWT operation reservation.
+Cancel releases the listing immediately; closing its owning scene cancels a
+queued creation. Fresh inventory verifies the repository and registration before
+execution, and KWT checks both again when it creates the checkout. Creation is
+never retried automatically. After a timeout, Ghosthub checks fresh inventory
+for a new worktree identity; an unconfirmed result asks the user to refresh before
+trying again.
+
+![Create a remote worktree from a branch](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-create-worktree.png)
+
 The project tree opens ordinary remote worktrees through the pinned KWT helper,
 including worktrees with no running session. KWT receives the captured repository,
 registration, worktree generation, and exact session name. The ordinary SSH client
@@ -497,7 +514,7 @@ refresh; Ghosthub does not open an arbitrary path from a stale row.
 
 ![A registered remote directory opened from its idle row](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-directory.png)
 
-Protected imports, other named sockets, remote worktree creation/removal,
+Protected imports, other named sockets, remote worktree removal,
 and automatic transport recovery remain separate work. Their
 unsupported controls are unavailable in the remote project tree.
 
