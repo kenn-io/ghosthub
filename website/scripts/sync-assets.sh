@@ -59,9 +59,21 @@ if git fetch --depth=1 origin website-assets 2>/dev/null; then
   fetched_ref="FETCH_HEAD"
 fi
 
+# shasum -c checks only the files a manifest lists, so a manifest written for
+# an older asset list passes without vouching for assets added since.
+manifest_lists_every_asset() {
+  local asset
+  for asset in "${assets[@]}"; do
+    awk -v path="src/assets/$asset" \
+      '$2 == path { found = 1 } END { exit !found }' \
+      "$generation_manifest" || return 1
+  done
+}
+
 cached_generation_is_synced() {
   [[ -f "$generation_manifest" ]] \
     && [[ ! -f "$placeholder_manifest" ]] \
+    && manifest_lists_every_asset \
     && shasum -a 256 -c "$generation_manifest" >/dev/null 2>&1
 }
 
@@ -97,7 +109,7 @@ stage_cached_assets() {
   mkdir "$destination"
   cached_generation_is_synced || return 1
   for asset in "${assets[@]}"; do
-    cp "src/assets/$asset" "$destination/$asset"
+    cp "src/assets/$asset" "$destination/$asset" || return 1
   done
 }
 

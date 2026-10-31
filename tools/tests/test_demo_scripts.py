@@ -1453,6 +1453,82 @@ def test_offline_asset_reuse_requires_synced_provenance(
         assert all((published / name).is_file() for name in WEBSITE_ASSET_NAMES)
 
 
+def make_stale_asset_cache(
+    tmp_path: Path, *, file_present: bool
+) -> tuple[Path, dict[str, str], Path]:
+    script, env = make_offline_asset_tree(tmp_path, trusted=True)
+    assets = script.parents[1] / "src" / "assets"
+    manifest = assets / ".website-assets.synced"
+    # Not the last name in the list: a failed cp of the last asset sets the
+    # stage function's return status by accident and hides an ignored failure.
+    omitted = "guide-rust-appearance.png"
+    lines = manifest.read_text().splitlines(keepends=True)
+    manifest.write_text(
+        "".join(line for line in lines if not line.endswith(f"src/assets/{omitted}\n"))
+    )
+    if not file_present:
+        (assets / omitted).unlink()
+    return script, env, assets
+
+
+@pytest.mark.parametrize("file_present", [False, True])
+def test_offline_asset_cache_rejects_manifest_missing_current_asset(
+    tmp_path: Path, file_present: bool
+) -> None:
+    script, env, assets = make_stale_asset_cache(tmp_path, file_present=file_present)
+    before = {path.name: path.read_bytes() for path in assets.iterdir()}
+
+    result = subprocess.run(
+        ["bash", str(script)], env=env, text=True, capture_output=True, check=False
+    )
+
+    assert result.returncode == 1
+    assert "is missing or stale" in result.stderr
+    assert {path.name: path.read_bytes() for path in assets.iterdir()} == before
+
+
+@pytest.mark.parametrize("file_present", [False, True])
+def test_stale_offline_asset_cache_falls_back_to_placeholders(
+    tmp_path: Path, file_present: bool
+) -> None:
+    script, env, assets = make_stale_asset_cache(tmp_path, file_present=file_present)
+    node = tmp_path / "bin" / "node"
+    node.write_text("#!/usr/bin/env bash\nprintf 'placeholder-%s' \"$ASSET_NAME\" > \"$3\"\n")
+    node.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        env={**env, "SYNC_ASSETS_ALLOW_PLACEHOLDER": "1"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {name: (assets / name).read_text() for name in WEBSITE_ASSET_NAMES} == {
+        name: f"placeholder-{name}" for name in WEBSITE_ASSET_NAMES
+    }
+    assert (assets / ".website-assets.placeholder").is_file()
+    assert not (assets / ".website-assets.synced").exists()
+
+
+def test_offline_asset_cache_copy_failure_rejects_cache(tmp_path: Path) -> None:
+    script, env = make_offline_asset_tree(tmp_path, trusted=True)
+    assets = script.parents[1] / "src" / "assets"
+    before = {path.name: path.read_bytes() for path in assets.iterdir()}
+    copy = tmp_path / "bin" / "cp"
+    copy.write_text('#!/usr/bin/env bash\n[[ "$1" == src/assets/hero.png ]] && exit 1\nexit 0\n')
+    copy.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(script)], env=env, text=True, capture_output=True, check=False
+    )
+
+    assert result.returncode == 1
+    assert "is missing or stale" in result.stderr
+    assert {path.name: path.read_bytes() for path in assets.iterdir()} == before
+
+
 def test_fetched_asset_ref_is_authoritative_and_atomic(tmp_path: Path) -> None:
     website = tmp_path / "website"
     scripts = website / "scripts"
