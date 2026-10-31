@@ -28,12 +28,10 @@ sessions Ghosthub discovers and the actions available for each kind.
 Native Windows hosts are experimental and have additional requirements. See
 [Remote Hosts](remote-hosts.md#experimental-windows-hosts).
 
-Native Windows and Linux applications are also in development, separate from
-the macOS release described here. The Linux source build supports local tmux
-sessions, projects and worktrees, and optional Herdr sessions. Native Zellij
-and platform packaging remain in progress.
-See the [Rust development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md)
-for build instructions and current limits.
+Native Windows and Linux applications are in development and are not included
+in this macOS release. See the
+[Rust development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md)
+for their current capabilities, build instructions, and limits.
 
 ## Install Ghosthub
 
@@ -77,7 +75,8 @@ brew install zellij
 Ghosthub attaches the ordinary whole-session client for that backend. Existing
 tmux windows and panes, Herdr workspaces, or Zellij tabs and panes stay under their
 backend's control. Closing the presentation detaches without stopping the
-server.
+server. Sessions started by a shell or agent appear here too; see
+[agent sessions](sessions.md#sessions-started-by-tools-and-agents).
 
 ![Ghosthub sidebar with local and remote session groups](/docs/assets/guide-sessions.png)
 

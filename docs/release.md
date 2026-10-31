@@ -6,6 +6,28 @@ DMG, its individual checksum, `SHA256SUMS`, and a signed Sparkle appcast.
 Packaged releases check the stable feed at
 `https://github.com/kenn-io/ghosthub/releases/latest/download/appcast.xml`.
 
+## Release a new version
+
+1. Update `RELEASE_VERSION` and add the matching dated `CHANGELOG.md` entry.
+   Lead with what users and their agents can do. Review the public guides and
+   [refresh screenshots](https://github.com/kenn-io/ghosthub/blob/main/website/README.md#product-screenshots) for accepted
+   changes that alter the views they show.
+2. Validate the changes and merge the release preparation pull request with
+   the repository owner's authorization.
+3. Run the [signed candidate](#candidate-run) from `main` and complete its
+   installation checks before creating a release tag.
+4. [Publish the tag](#publishing) from that same clean `main` revision. The
+   workflow rebuilds, signs, and notarizes the app before publishing the DMG,
+   checksums, and Sparkle update feed.
+5. Confirm the release assets and updater version, then
+   [deploy the website](https://github.com/kenn-io/ghosthub/blob/main/website/README.md#deployment). Uploading screenshot
+   assets alone does not update the live site.
+
+The candidate, published release, and deployed website are separate results.
+Report which are complete. A queued workflow is not a published release.
+
+## What ships in the app
+
 The application bundles an ordinary `kwt` CLI helper at
 `Ghosthub.app/Contents/Helpers/kwt`. Ghosthub invokes that exact helper for
 local project inventory, worktree operations, and effective SSH route
@@ -99,7 +121,7 @@ release inputs that must move deliberately:
 - the Go compiler in `KWT_GO_VERSION` for every bundled KWT helper
 - Sparkle 2.10.0 as an exact Swift package dependency
 - Xcode 26.0.1
-- Ghostty source and Zig 0.17.0 in `Vendor/ghostty.version.json`
+- libghostty from Ghostty 1.4.0 and Zig 0.17.0 in `Vendor/ghostty.version.json`
 - the same Zig compiler in `mise.toml` and its official archive checksum in CI
 - immutable revisions for every GitHub Action
 
@@ -112,8 +134,8 @@ request can use them.
 Sandbox-capable builds will also consume the root `SANDBOX_IMAGE` file as the
 sole runtime image identity. Packaging reads the tag-free digest from that
 file and embeds it as `GhosthubSandboxImage`; Swift, build scripts, workflows,
-and documentation must not duplicate the digest literal. The provider
-implementation issue `3ed9` owns that packaging boundary.
+and documentation must not duplicate the digest literal. This packaging
+boundary belongs to the unimplemented [sandbox design](sandboxes.md).
 
 The embedded kwt revision and release-facing version are written into
 `Info.plist` as `GhosthubKwtSourceRevision` and `GhosthubKwtVersion`. The
@@ -290,10 +312,9 @@ credentials. `tools/tests/test_workflow_fork_guards.py` enforces that contract.
 Validation lanes (`pull_request` and branch pushes) stay unguarded so forks
 can still build and test.
 
-Create a `release-signing` GitHub Actions environment before running the
-workflow. Configure it with:
+The `release-signing` GitHub Actions environment is owner-operated. Its current
+policy does not require a second reviewer. Keep:
 
-- required reviewers, with self-review disabled
 - deployment branches and tags restricted to `main` and `v*`
 - the following environment secrets (not repository secrets)
 

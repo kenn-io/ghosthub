@@ -5,16 +5,10 @@ icon: lucide/server
 
 # Remote hosts
 
-Ghosthub can discover tmux, running and stopped Herdr sessions, and active
-Zellij sessions on remote macOS and Linux machines over SSH. Herdr and Zellij
-are optional; native Windows hosts using psmux are experimental and do not
-support them.
-
-The unreleased Rust/Linux source build also connects to POSIX SSH hosts using
-its bundled KWT controller. See the [native Linux SSH guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
-for setup and current limits. It supports remote tmux, Herdr, and Zellij
-session lifecycle actions, plus the project registration workflow below.
-Remote worktree mutation and automatic recovery remain follow-up work.
+Connect a Mac or Linux machine over SSH to open its sessions alongside local
+work. Ghosthub lists tmux sessions, running and stopped Herdr sessions, and
+active Zellij sessions. Herdr and Zellij are optional. Native Windows hosts
+using psmux are experimental and do not support them.
 
 ## Before you add a host
 
@@ -211,3 +205,11 @@ Windows, although already registered project inventory can be shown.
 [Session activity indicators](sessions.md#activity-indicators) require psmux
 3.3.4 or newer; older supported versions remain attachable but publish no
 passive activity state.
+
+## Rust source builds
+
+The unreleased Rust/Linux source build also connects to POSIX SSH hosts using
+its bundled KWT controller. See the [native Linux SSH guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
+for setup and current limits. It supports remote tmux, Herdr, and Zellij
+session lifecycle actions, plus [project registration](projects-worktrees.md#rust-source-builds).
+Remote worktree mutation and automatic recovery remain follow-up work.

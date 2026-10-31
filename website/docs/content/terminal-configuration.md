@@ -5,8 +5,9 @@ icon: lucide/settings-2
 
 # Terminal configuration
 
-Ghosthub's macOS app embeds libghostty for terminal rendering. It does not embed or run
-Ghostty.app, and Ghostty.app is not a runtime dependency.
+On macOS, choose fonts, colors, and shell behavior in Ghosthub's own
+configuration file. The app embeds libghostty 1.4.0, built with Zig 0.17.0.
+You do not need to install Ghostty.app or Zig to use it.
 
 ## Rust Linux fonts (unreleased)
 

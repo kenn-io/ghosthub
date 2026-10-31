@@ -5,62 +5,13 @@ icon: lucide/git-branch
 
 # Projects, worktrees, and directories
 
-Projects and worktrees add Git context to Ghosthub's ordinary tmux workflow.
-They are optional.
+Give each branch or pull request its own checkout and terminal session. You
+and your agents can work on separate tasks without switching branches in the
+same folder. Projects and worktrees are optional.
 
 Ghosthub delegates repository and worktree identity to
 [kwt](https://kwt.sh). Packaged builds use their revision-pinned bundled kwt
 locally and a matching managed helper on remote macOS or Linux hosts.
-
-## Rust source builds
-
-The unreleased Rust app can also register projects on connected macOS and Linux
-SSH hosts. Select **+** beside that host's **Projects**, enter the repository's
-absolute path on the remote machine, and select **Add Project**. Ghosthub
-installs or repairs its bundled remote helper automatically. If this fails,
-the **Projects** section shows the error and a **Retry** action. Ordinary
-terminal sessions remain available. Select **Retry** after resolving the error
-to reconnect and refresh projects.
-
-![Add a project on the Studio SSH host in the native Rust application](/docs/assets/guide-rust-remote-project.png)
-
-![Remote project diagnostic and Retry action beside an active terminal](/docs/assets/guide-rust-project-retry.png)
-
-Select **×** beside a project and confirm **Remove** to unregister it. The
-repository, worktrees, and running sessions remain intact. Cancel leaves the
-registration unchanged.
-
-![Confirm removing the remote project registration while its terminal stays open](/docs/assets/guide-rust-remove-project.png)
-
-Select an ordinary remote worktree to open its terminal, even when its session
-is stopped. Ghosthub asks KWT to open the exact registered worktree and checks
-the resulting client before showing it. Registered directories also open when
-their sessions are stopped. The Rust app supports direct sessions on the default tmux
-server and KWT's standard `kwt` server. Switching rows keeps already-opened
-tmux clients available for reuse. A same-name session on the other server remains separate.
-
-![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
-
-To register a directory, run `kwt workspace add /absolute/path` on the remote
-host. Refresh that host in Ghosthub and select the row under **Directory Workspaces**.
-Ghosthub opens the registered directory and reuses its terminal when you switch
-away and return.
-
-![A registered remote directory opened from its idle row](/docs/assets/guide-rust-remote-directory.png)
-
-Open a running worktree or directory row's **⋯** menu, select **Kill**,
-and confirm **Kill Session** to stop its session. Its files and registration
-remain intact.
-
-![Confirm killing a remote worktree session in the native Rust application](/docs/assets/guide-rust-project-kill.png)
-
-Idle worktrees also open with tmux's `destroy-unattached` option enabled.
-KWT keeps the new session alive during setup, then restores the session's
-captured policy when its first client attaches.
-
-Remote worktree creation/removal, other named sockets, protected
-imports, and directory registration in the Rust UI are still in development.
-The remaining instructions on this page describe the macOS app.
 
 ## Register a project
 
@@ -179,8 +130,6 @@ entries visible.
 
 ## Flag worktrees
 
-This feature is unreleased.
-
 Open the **…** menu beside a worktree and choose **Flag Worktree**. Its name
 turns amber and its leading icon becomes a filled flag. Use **Unflag Worktree**
 to restore the original icon and text color. Control-clicking the row offers
@@ -287,3 +236,52 @@ another worktree or open its tmux session on your behalf.
 Drag worktrees within a project to set their display order. The insertion line
 shows the destination. This changes Ghosthub's navigation only; it does not
 rename or reorder anything in Git, kwt, or tmux.
+
+## Rust source builds
+
+The unreleased Rust app can also register projects on connected macOS and Linux
+SSH hosts. Select **+** beside that host's **Projects**, enter the repository's
+absolute path on the remote machine, and select **Add Project**. Ghosthub
+installs or repairs its bundled remote helper automatically. If this fails,
+the **Projects** section shows the error and a **Retry** action. Ordinary
+terminal sessions remain available. Select **Retry** after resolving the error
+to reconnect and refresh projects.
+
+![Add a project on the Studio SSH host in the native Rust application](/docs/assets/guide-rust-remote-project.png)
+
+![Remote project diagnostic and Retry action beside an active terminal](/docs/assets/guide-rust-project-retry.png)
+
+Select **×** beside a project and confirm **Remove** to unregister it. The
+repository, worktrees, and running sessions remain intact. Cancel leaves the
+registration unchanged.
+
+![Confirm removing the remote project registration while its terminal stays open](/docs/assets/guide-rust-remove-project.png)
+
+Select an ordinary remote worktree to open its terminal, even when its session
+is stopped. Ghosthub asks KWT to open the exact registered worktree and checks
+the resulting client before showing it. Registered directories also open when
+their sessions are stopped. The Rust app supports direct sessions on the default tmux
+server and KWT's standard `kwt` server. Switching rows keeps already-opened
+tmux clients available for reuse. A same-name session on the other server remains separate.
+
+![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
+
+To register a directory, run `kwt workspace add /absolute/path` on the remote
+host. Refresh that host in Ghosthub and select the row under **Directory Workspaces**.
+Ghosthub opens the registered directory and reuses its terminal when you switch
+away and return.
+
+![A registered remote directory opened from its idle row](/docs/assets/guide-rust-remote-directory.png)
+
+Open a running worktree or directory row's **⋯** menu, select **Kill**,
+and confirm **Kill Session** to stop its session. Its files and registration
+remain intact.
+
+![Confirm killing a remote worktree session in the native Rust application](/docs/assets/guide-rust-project-kill.png)
+
+Idle worktrees also open with tmux's `destroy-unattached` option enabled.
+KWT keeps the new session alive during setup, then restores the session's
+captured policy when its first client attaches.
+
+Remote worktree creation/removal, other named sockets, protected
+imports, and directory registration in the Rust UI are still in development.
