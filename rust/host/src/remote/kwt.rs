@@ -8,6 +8,11 @@ use super::{
 use crate::kwt::{parse_command_failure, parse_project_mutation, validate_project_removal};
 use crate::{CommandOutput, KwtBundle, KwtInventory, KwtProject};
 
+#[cfg(test)]
+mod tests;
+
+const MUTATION_TIMEOUT: Duration = Duration::from_mins(5);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoteKwtTarget {
     DarwinAmd64,
@@ -541,13 +546,19 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             || command.clone(),
             |path| format!("cd {} && {command}", shell_quoted_argument(path)),
         );
+        let timeout = if read {
+            super::COMMAND_TIMEOUT
+        } else {
+            MUTATION_TIMEOUT
+        };
         let mut delays = [1, 4, 15].into_iter();
         loop {
-            let output = self.run_framed_remote_shell(
+            let output = self.run_framed_remote_shell_with_timeout(
                 lease,
                 &command,
                 "GHOSTHUB_KWT_COMMAND_",
                 cancellation,
+                timeout,
             )?;
             if output.status == 0 {
                 return Ok(output);
@@ -584,8 +595,16 @@ fn require_kwt_output(output: &CommandOutput) -> Result<(), RemoteTmuxError> {
     if output.status == 0 {
         return Ok(());
     }
+    let kind = if parse_command_failure(&output.stdout)
+        .or_else(|| parse_command_failure(&output.stderr))
+        .is_some_and(|failure| failure.code() == "inventory_timeout")
+    {
+        DiagnosticKind::Timeout
+    } else {
+        DiagnosticKind::Transport
+    };
     let message = crate::kwt_command_failure_message(&output.stdout)
         .or_else(|| crate::kwt_command_failure_message(&output.stderr))
         .unwrap_or_else(|| nonempty_diagnostic(&output.stderr, "Remote KWT command failed"));
-    Err(RemoteTmuxError::new(DiagnosticKind::Transport, message))
+    Err(RemoteTmuxError::new(kind, message))
 }
