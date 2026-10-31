@@ -5,100 +5,181 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/ci-pr.yml': []
     '.github/workflows/ci.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
     '.github/workflows/docs.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
         - 'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe'
     '.github/workflows/macos-compatibility.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
     '.github/workflows/nightly.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
         - 'actions/create-github-app-token@v3.3.0'
+        - 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
         - 'actions/download-artifact@v8.0.2'
+        - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
+        - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
     '.github/workflows/release.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
         - 'actions/download-artifact@v8.0.2'
+        - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
+        - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
     '.github/workflows/rust-port.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
-        - 'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe'
+        - 'kenn-io/actions@5d46153e44375ef5ab11a3aaa1ad81ebcba0965c'
+        - 'step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e'
         - 'step-security/rust-cache@v2.9.2'
     '.github/workflows/rust-wsl-live.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
+        - 'step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e'
         - 'step-security/rust-cache@v2.9.2'
     '.github/workflows/sandbox-image-maintenance.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
+        - 'step-security/setup-buildx-action@e50058a0fcd8d1a7d626c905502d010a468bf238'
         - 'step-security/setup-buildx-action@v4.4.1'
+        - 'step-security/setup-qemu-action@d21542abd2ae44772cf2276e75ee4ec531d598b6'
         - 'step-security/setup-qemu-action@v4.4.0'
     '.github/workflows/sandbox-image-promote.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
         - 'actions/create-github-app-token@v3.3.0'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
+        - 'step-security/docker-login-action@8c7b695d8738c5699a679ff5254baf0f19f20a94'
         - 'step-security/docker-login-action@v4.6.0'
+        - 'step-security/setup-buildx-action@e50058a0fcd8d1a7d626c905502d010a468bf238'
         - 'step-security/setup-buildx-action@v4.4.1'
     '.github/workflows/sandbox-image-promotion-gate.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
         - 'actions/create-github-app-token@v3.3.0'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
     '.github/workflows/sandbox-image-publish.yml':
+        - 'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6'
         - 'actions/attest@v4.2.2'
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
         - 'actions/download-artifact@v8.0.2'
+        - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
+        - 'step-security/docker-login-action@8c7b695d8738c5699a679ff5254baf0f19f20a94'
         - 'step-security/docker-login-action@v4.6.0'
+        - 'step-security/setup-buildx-action@e50058a0fcd8d1a7d626c905502d010a468bf238'
         - 'step-security/setup-buildx-action@v4.4.1'
+        - 'step-security/setup-qemu-action@d21542abd2ae44772cf2276e75ee4ec531d598b6'
         - 'step-security/setup-qemu-action@v4.4.0'
     '.github/workflows/sandbox-image.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
+        - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
+        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
+        - 'step-security/setup-buildx-action@e50058a0fcd8d1a7d626c905502d010a468bf238'
         - 'step-security/setup-buildx-action@v4.4.1'
+        - 'step-security/setup-qemu-action@d21542abd2ae44772cf2276e75ee4ec531d598b6'
         - 'step-security/setup-qemu-action@v4.4.0'
     '.github/workflows/website.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
         - 'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe'
+        - 'step-security/action-setup@8beec6731697ff7a074963eaa56f6d8e02e1c399'
         - 'step-security/action-setup@v6.1.0'
     '.github/workflows/workflow-validation.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
 dependencies:
+    'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6':
+        ref: 'v4.2.2'
+        commit: 'sha1-1e69f48acb82d1966a394da916b4c1698aa569d6'
+        owner_id: 44036562
+        repo_id: 760701061
     'actions/attest@v4.2.2':
         ref: 'v4.2.2'
         commit: 'sha1-1e69f48acb82d1966a394da916b4c1698aa569d6'
         owner_id: 44036562
         repo_id: 760701061
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
+        ref: 'v7.0.1'
+        commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
+        owner_id: 44036562
+        repo_id: 197814629
     'actions/checkout@v7.0.1':
         ref: 'v7.0.1'
         commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
         owner_id: 44036562
         repo_id: 197814629
+    'actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510':
+        ref: 'v3.3.0'
+        commit: 'sha1-64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
+        owner_id: 44036562
+        repo_id: 642580244
     'actions/create-github-app-token@v3.3.0':
         ref: 'v3.3.0'
         commit: 'sha1-64ab729a6294000f5aa4a4bc0b73d1f32bc45510'
         owner_id: 44036562
         repo_id: 642580244
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333':
+        ref: 'v8.0.2'
+        commit: 'sha1-9000827ccba6bdab643e8b6fd33ac0654aef8333'
+        owner_id: 44036562
+        repo_id: 192626254
     'actions/download-artifact@v8.0.2':
         ref: 'v8.0.2'
         commit: 'sha1-9000827ccba6bdab643e8b6fd33ac0654aef8333'
         owner_id: 44036562
         repo_id: 192626254
+    'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e':
+        ref: 'v7.0.0'
+        commit: 'sha1-b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
+        owner_id: 44036562
+        repo_id: 192624594
     'actions/setup-go@v7.0.0':
         ref: 'v7.0.0'
         commit: 'sha1-b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
@@ -109,16 +190,38 @@ dependencies:
         commit: 'sha1-949feb2413d6458794dcd2491c4babbbce0c15c1'
         owner_id: 44036562
         repo_id: 189476904
+    'actions/setup-node@v7.1.0':
+        ref: 'v7.1.0'
+        commit: 'sha1-949feb2413d6458794dcd2491c4babbbce0c15c1'
+        owner_id: 44036562
+        repo_id: 189476904
+    'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9':
+        ref: 'v7.0.2'
+        commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
+        owner_id: 44036562
+        repo_id: 192625955
     'actions/upload-artifact@v7.0.2':
         ref: 'v7.0.2'
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         owner_id: 44036562
         repo_id: 192625955
+    'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e':
+        ref: 'v10.3.2'
+        commit: 'sha1-07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
+        owner_id: 115962839
+        repo_id: 846733598
     'astral-sh/setup-uv@v10.3.2':
         ref: 'v10.3.2'
         commit: 'sha1-07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         owner_id: 115962839
         repo_id: 846733598
+    'kenn-io/actions@5d46153e44375ef5ab11a3aaa1ad81ebcba0965c':
+        ref: 'fix/first-paint-authenticated-system-fonts'
+        commit: 'sha1-5d46153e44375ef5ab11a3aaa1ad81ebcba0965c'
+        owner_id: 259885253
+        repo_id: 1427332808
+        uses:
+            - 'actions/setup-node@v7.1.0'
     'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe':
         ref: 'main'
         commit: 'sha1-b523fb403607f01de5eec5f4556c7668544c70fe'
@@ -126,26 +229,51 @@ dependencies:
         repo_id: 1427332808
         uses:
             - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
+    'step-security/action-setup@8beec6731697ff7a074963eaa56f6d8e02e1c399':
+        ref: 'v6.1.0'
+        commit: 'sha1-8beec6731697ff7a074963eaa56f6d8e02e1c399'
+        owner_id: 88700172
+        repo_id: 893833428
     'step-security/action-setup@v6.1.0':
         ref: 'v6.1.0'
         commit: 'sha1-8beec6731697ff7a074963eaa56f6d8e02e1c399'
         owner_id: 88700172
         repo_id: 893833428
+    'step-security/docker-login-action@8c7b695d8738c5699a679ff5254baf0f19f20a94':
+        ref: 'v4.6.0'
+        commit: 'sha1-8c7b695d8738c5699a679ff5254baf0f19f20a94'
+        owner_id: 88700172
+        repo_id: 1117327531
     'step-security/docker-login-action@v4.6.0':
         ref: 'v4.6.0'
         commit: 'sha1-8c7b695d8738c5699a679ff5254baf0f19f20a94'
         owner_id: 88700172
         repo_id: 1117327531
+    'step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e':
+        ref: 'v2.9.2'
+        commit: 'sha1-8871c8ba063416da7c32246932ea6ae08700453e'
+        owner_id: 88700172
+        repo_id: 822636713
     'step-security/rust-cache@v2.9.2':
         ref: 'v2.9.2'
         commit: 'sha1-8871c8ba063416da7c32246932ea6ae08700453e'
         owner_id: 88700172
         repo_id: 822636713
+    'step-security/setup-buildx-action@e50058a0fcd8d1a7d626c905502d010a468bf238':
+        ref: 'v4.4.1'
+        commit: 'sha1-e50058a0fcd8d1a7d626c905502d010a468bf238'
+        owner_id: 88700172
+        repo_id: 1114493823
     'step-security/setup-buildx-action@v4.4.1':
         ref: 'v4.4.1'
         commit: 'sha1-e50058a0fcd8d1a7d626c905502d010a468bf238'
         owner_id: 88700172
         repo_id: 1114493823
+    'step-security/setup-qemu-action@d21542abd2ae44772cf2276e75ee4ec531d598b6':
+        ref: 'v4.4.0'
+        commit: 'sha1-d21542abd2ae44772cf2276e75ee4ec531d598b6'
+        owner_id: 88700172
+        repo_id: 1139064163
     'step-security/setup-qemu-action@v4.4.0':
         ref: 'v4.4.0'
         commit: 'sha1-d21542abd2ae44772cf2276e75ee4ec531d598b6'

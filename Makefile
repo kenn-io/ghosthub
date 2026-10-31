@@ -815,9 +815,10 @@ gh-actions-lock-install:
 		gh extension install github/gh-actions-lock --pin $(GH_ACTIONS_LOCK_VERSION); \
 	fi
 
-# Lock every workflow action after adding or bumping a `uses:` line
+# Keep SHA uses intact: GitHub requires matching lockfile keys, and zizmor
+# requires SHA-pinned workflow actions. Tag-keyed aliases are insufficient.
 actions-lock: gh-actions-lock-install
-	gh actions-lock --no-interactive
+	gh actions-lock --no-interactive --no-narrow
 
 # Offline check that every workflow action has a lockfile entry
 actions-lock-check-local: gh-actions-lock-install
