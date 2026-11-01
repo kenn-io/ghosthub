@@ -1490,7 +1490,7 @@ def run_zig_build(
     command: list[str], source_root: Path, environment: dict[str, str]
 ) -> None:
     for attempt in range(1, 4):
-        download_reset = False
+        download_interrupted = False
         other_error = False
         with subprocess.Popen(
             command,
@@ -1505,21 +1505,21 @@ def run_zig_build(
                 print(line, end="", flush=True)
                 if re.search(
                     r"(?:^|/)build\.zig\.zon:\d+:\d+: error: "
-                    r"HTTP response read failure: ConnectionResetByPeer\s*$",
+                    r"HTTP response read failure: (?:ConnectionResetByPeer|ConnectionTimedOut)\s*$",
                     line,
                 ):
-                    download_reset = True
+                    download_interrupted = True
                 elif "error:" in line:
                     other_error = True
             status = process.wait()
         if status == 0:
             return
-        if not download_reset or other_error:
+        if not download_interrupted or other_error:
             raise subprocess.CalledProcessError(status, command)
         if attempt == 3:
             raise BootstrapError(
                 "Zig dependency downloads failed after 3 attempts because the "
-                "connection was reset. Check access to the dependency URL reported "
+                "connection was reset or timed out. Check access to the dependency URL reported "
                 "above and rerun the build. Downloaded dependencies remain cached."
             )
         print(

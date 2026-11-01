@@ -4,6 +4,7 @@ use crate::{
     WorkspaceEvent, begin_snapshot_write, current_remote_context, next_operation_id, scene,
 };
 
+pub(crate) mod removal;
 mod worktree;
 pub(crate) use worktree::{cancel_listing, start_worktree};
 
@@ -17,6 +18,7 @@ struct Operation {
     id: u64,
     cancellation: CancellationToken,
     mutation: bool,
+    removal: bool,
     scene_id: crate::SceneId,
     listing: bool,
 }
@@ -130,9 +132,9 @@ pub(crate) fn cancel(entry: &RemoteEntry) {
     }
 }
 
-pub(crate) fn cancel_read(entry: &RemoteEntry) {
+pub(crate) fn cancel_for_reconnect(entry: &RemoteEntry) {
     if let Some(operation) = &entry.kwt.operation
-        && !operation.mutation
+        && (!operation.mutation || operation.removal)
     {
         operation.cancellation.cancel();
     }
@@ -151,6 +153,8 @@ pub(crate) fn cancel_scene(scene: &Scene) {
             operation.cancellation.cancel();
         }
     }
+    drop(entries);
+    removal::cancel(scene);
 }
 
 pub(crate) fn refresh_all(scene: &Arc<Scene>) {
@@ -289,6 +293,7 @@ fn reserve(
         id: task.id,
         cancellation: task.cancellation.clone(),
         mutation: task.mutation.is_some(),
+        removal: false,
         scene_id: scene.id,
         listing: false,
     });

@@ -125,6 +125,7 @@ pub(crate) struct Scene {
     /// this per-scene counter.
     pub(crate) herdr_lifecycle_generation: AtomicU64,
     pub(crate) pending_kwt_removal: Mutex<Option<PendingKwtRemoval>>,
+    pub(crate) remote_kwt_removal: Mutex<Option<crate::remote_kwt::removal::Pending>>,
     /// Target of this scene's in-flight asynchronous KWT removal identity
     /// capture; confirmed removals fence matching captures through it. Lock
     /// order: `pending_kwt_removal` first when both are held.
@@ -182,6 +183,7 @@ pub(crate) fn attach_scene(
         pending_herdr_lifecycle: Mutex::new(None),
         herdr_lifecycle_generation: AtomicU64::new(0),
         pending_kwt_removal: Mutex::new(None),
+        remote_kwt_removal: Mutex::new(None),
         kwt_removal_capture_intent: Mutex::new(None),
         kwt_removal_generation: AtomicU64::new(0),
         operation_events: Mutex::new(std::collections::VecDeque::new()),

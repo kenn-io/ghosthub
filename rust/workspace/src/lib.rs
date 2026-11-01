@@ -4829,7 +4829,7 @@ impl Workspace {
                     .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
                 cancel_remote_constructive(entry);
                 cancel_remote_attachment(entry);
-                remote_kwt::cancel_read(entry);
+                remote_kwt::cancel_for_reconnect(entry);
                 if let Some(previous) = entry.cancellation.replace(cancellation.clone()) {
                     previous.cancel();
                 }
@@ -5478,6 +5478,23 @@ impl Workspace {
         tmux_socket_name: Option<&str>,
         tmux_attach_mode: host::KwtTmuxAttachMode,
     ) -> Result<u64, WorkspaceError> {
+        if !is_local_host_id(host_id) {
+            return remote_kwt::removal::request(
+                &self.scene,
+                KwtWorktreeTarget {
+                    host_id: host_id.to_owned(),
+                    endpoint: endpoint.to_owned(),
+                    repository: repository.to_owned(),
+                    project_path: project_path.to_owned(),
+                    registration_fingerprint: registration_fingerprint.to_owned(),
+                    worktree_path: worktree_path.to_owned(),
+                    generation: Some(generation.to_owned()),
+                    session_name: session_name.to_owned(),
+                    tmux_socket_name: tmux_socket_name.map(str::to_owned),
+                    tmux_attach_mode,
+                },
+            );
+        }
         // Same closed-scene fence as the other destructive confirmations,
         // held from authority creation through the identity-query
         // scheduling: a retained handle of a closed scene arms nothing.
@@ -5558,6 +5575,7 @@ impl Workspace {
     }
 
     pub fn cancel_kwt_worktree_removal(&self) {
+        remote_kwt::removal::cancel(&self.scene);
         let mut pending = self
             .scene
             .pending_kwt_removal
@@ -5612,9 +5630,9 @@ impl Workspace {
 
     /// Remove one exact non-main KWT worktree while preserving its Git branch.
     ///
-    /// The operation revalidates the project, worktree generation, WSL
-    /// runtime, and expected tmux state off the UI thread. Ghosthub terminates
-    /// a freshly confirmed exact tmux identity first; KWT then requires that
+    /// The operation revalidates the project, worktree generation, local
+    /// runtime or SSH connection, and expected tmux state off the UI thread.
+    /// Ghosthub terminates a freshly confirmed exact tmux identity first; KWT then requires that
     /// workspace session to remain absent while it removes the checkout under
     /// the same lifecycle fence used by guarded open.
     ///
@@ -5635,6 +5653,20 @@ impl Workspace {
         session_name: &str,
         authority: u64,
     ) -> Result<(), WorkspaceError> {
+        if !is_local_host_id(host_id) {
+            return remote_kwt::removal::confirm(
+                &self.scene,
+                host_id,
+                endpoint,
+                repository,
+                project_path,
+                registration_fingerprint,
+                worktree_path,
+                generation,
+                session_name,
+                authority,
+            );
+        }
         if !is_canonical_kwt_generation(generation) {
             return Err(WorkspaceError::new(
                 "Refresh KWT inventory before removing this worktree.",
