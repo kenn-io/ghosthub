@@ -4,6 +4,9 @@ use super::{
 };
 use crate::{KwtWorktreeTarget, RemoteTmuxAttachRequest, SessionSelection, Workspace, runtime};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone)]
 pub(crate) struct Pending {
     task: Task,
@@ -219,8 +222,8 @@ pub(crate) fn confirm(
     session_name: &str,
     authority: u64,
 ) -> Result<(), WorkspaceError> {
-    let (task, pending) = {
-        let publication = scene
+    let pending = {
+        let _publication = scene
             .runtime
             .remote_publication
             .lock()
@@ -231,7 +234,7 @@ pub(crate) fn confirm(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pending = slot
-            .as_ref()
+            .as_mut()
             .filter(|p| {
                 let t = &p.target;
                 p.ready
@@ -252,51 +255,93 @@ pub(crate) fn confirm(
             pending.task.generation,
             &pending.task.snapshot,
         )?;
-        let task = reserve(scene, &publication, host_id, None)?;
-        let mut entries = scene
-            .runtime
-            .remote_hosts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let operation = entries
-            .get_mut(host_id)
-            .unwrap()
-            .kwt
-            .operation
-            .as_mut()
-            .unwrap();
-        operation.mutation = true;
-        // Destructive authority belongs to the reviewed connection, including
-        // provisioning between its final identity check and the helper command.
-        operation.removal = true;
-        drop(entries);
-        update_host(scene, host_id, |host| host.kwt_state = KwtState::Mutating);
-        (task, slot.take().unwrap())
+        // Consume confirmation, but keep cancellation reachable while queued.
+        pending.ready = false;
+        pending.clone()
     };
     let owner = Arc::clone(scene);
-    let background = task.clone();
+    let background = pending.clone();
     if let Err(error) = scene.runtime.refresh_runtime.spawn(
         "ghosthub-remote-worktree-remove",
-        Box::new(move || {
-            let operation = crate::lock_session_operations(&owner, &background.cancellation);
-            let result = if operation.is_some() {
-                remove(&owner, &background, &pending)
-            } else {
-                Err(WorkspaceError::new("Worktree removal was cancelled"))
-            };
-            // Queued workspace opens need the KWT reservation cleared before they resume.
-            finish(&owner, &background);
-            drop(operation);
-            scene::push_lossless_event(
-                &owner,
-                result.unwrap_or_else(|e| pending.failure(e.to_string())),
-            );
-        }),
+        Box::new(move || run(&owner, &background)),
     ) {
-        finish(scene, &task);
+        let _publication = scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = scene
+            .remote_kwt_removal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|p| p.task.id == pending.task.id) {
+            slot.take().unwrap().task.cancellation.cancel();
+        }
         return Err(WorkspaceError::new(error.to_string()));
     }
     Ok(())
+}
+
+fn run(scene: &Arc<Scene>, pending: &Pending) {
+    let result = (|| {
+        let _operation = crate::lock_session_operations(scene, &pending.task.cancellation)
+            .ok_or_else(|| WorkspaceError::new("Worktree removal was cancelled"))?;
+        // Workspace opens take this lane before reserving KWT. Removal must use
+        // the same order so a queued removal cannot reject the open ahead of it.
+        let task = {
+            let publication = scene
+                .runtime
+                .remote_publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _navigation = scene::lock_live_navigation(scene)?;
+            let mut slot = scene
+                .remote_kwt_removal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if pending.task.cancellation.is_cancelled()
+                || slot.as_ref().is_none_or(|p| p.task.id != pending.task.id)
+            {
+                return Err(WorkspaceError::new("Worktree removal was cancelled"));
+            }
+            slot.take();
+            let host_id = &pending.task.host_id;
+            runtime::recapture_remote_attachment_context(
+                &scene.runtime,
+                host_id,
+                pending.task.generation,
+                &pending.task.snapshot,
+            )?;
+            let task = reserve(scene, &publication, host_id, None)?;
+            let mut entries = scene
+                .runtime
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let operation = entries
+                .get_mut(host_id)
+                .unwrap()
+                .kwt
+                .operation
+                .as_mut()
+                .unwrap();
+            operation.mutation = true;
+            // Destructive authority belongs to the reviewed connection, including
+            // provisioning between its final identity check and the helper command.
+            operation.removal = true;
+            drop(entries);
+            update_host(scene, host_id, |host| host.kwt_state = KwtState::Mutating);
+            task
+        };
+        let result = remove(scene, &task, pending);
+        // Settle KWT before releasing queued workspace opens on every outcome.
+        finish(scene, &task);
+        result
+    })();
+    scene::push_lossless_event(
+        scene,
+        result.unwrap_or_else(|e| pending.failure(e.to_string())),
+    );
 }
 
 fn require_current(scene: &Scene, task: &Task) -> Result<(), WorkspaceError> {

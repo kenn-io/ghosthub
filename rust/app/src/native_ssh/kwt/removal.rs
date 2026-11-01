@@ -533,6 +533,48 @@ fn removal_settles_before_queued_worktree_and_directory_opens() {
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn removal_waits_for_a_workspace_open_that_already_owns_the_lane() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::removal::removal_waits_for_a_workspace_open_that_already_owns_the_lane",
+    ) else {
+        return;
+    };
+    let path = project(&fixture);
+    let destination = seed(&fixture, &path, "open-first", None);
+    let target = seed(&fixture, &path, "remove-second", Some(false));
+    let authority = target.ready(&fixture);
+    let other = fixture.open_scene();
+    let release = block_probe(&fixture, 1);
+    other
+        .workspace
+        .open_kwt_worktree(
+            &fixture.host_id,
+            &fixture.endpoint,
+            destination.project.repository(),
+            destination.project.path(),
+            destination.project.registration_fingerprint(),
+            destination.worktree.path(),
+            destination.worktree.generation(),
+            destination.worktree.session_name(),
+            destination.worktree.tmux_socket_name(),
+            destination.worktree.tmux_attach_mode(),
+        )
+        .unwrap();
+    other.wait(|_| fixture.root.join("home/removal-started").exists());
+    target.confirm(&fixture, authority).unwrap();
+    std::fs::write(release, "").unwrap();
+    assert!(matches!(
+        wait_worktree_event(&fixture, authority),
+        WorkspaceEvent::KwtWorktreeRemoved { .. }
+    ));
+    assert!(!Path::new(target.worktree.path()).exists());
+    other.tmux_shell(destination.worktree.session_name(), "opened-before-removal");
+    other.workspace.close();
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 fn cancelling_and_closing_removal_releases_the_operation_lane() {
     let Some(fixture) = Fixture::isolated(
         "native_ssh::kwt::removal::cancelling_and_closing_removal_releases_the_operation_lane",
