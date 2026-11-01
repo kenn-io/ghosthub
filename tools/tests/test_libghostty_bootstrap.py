@@ -662,6 +662,9 @@ def test_universal_build_requires_both_sdk_targets(
 DOWNLOAD_RESET = (
     "./build.zig.zon:27:20: error: HTTP response read failure: ConnectionResetByPeer"
 )
+DOWNLOAD_TIMEOUT = (
+    "./build.zig.zon:15:20: error: HTTP response read failure: ConnectionTimedOut"
+)
 COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
 
 
@@ -681,6 +684,10 @@ COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
         ),
         (["./build.zig.zon:27:20: error: hash mismatch"], 1, False),
         ([DOWNLOAD_RESET + "\n" + COMPILE_ERROR], 1, False),
+        ([DOWNLOAD_TIMEOUT], 2, True),
+        ([DOWNLOAD_RESET, DOWNLOAD_TIMEOUT], 3, True),
+        ([DOWNLOAD_TIMEOUT] * 3, 3, False),
+        ([DOWNLOAD_TIMEOUT + "\n" + COMPILE_ERROR], 1, False),
     ],
     ids=[
         "success",
@@ -692,6 +699,10 @@ COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
         "not-found",
         "hash",
         "mixed-errors",
+        "timeout-recovers",
+        "reset-then-timeout",
+        "timeout-exhausted",
+        "timeout-and-compiler",
     ],
 )
 def test_bootstrap_retries_only_interrupted_dependency_downloads(
@@ -767,7 +778,7 @@ def test_bootstrap_retries_only_interrupted_dependency_downloads(
         else:
             with pytest.raises(bootstrap.BootstrapError) as raised:
                 build()
-            if failures[-1] == DOWNLOAD_RESET:
+            if failures[-1] in (DOWNLOAD_RESET, DOWNLOAD_TIMEOUT):
                 assert "3 attempts" in str(raised.value)
             else:
                 assert "full Xcode installation selected via `xcode-select`" in str(

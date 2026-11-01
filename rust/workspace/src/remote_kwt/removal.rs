@@ -278,8 +278,15 @@ pub(crate) fn confirm(
     if let Err(error) = scene.runtime.refresh_runtime.spawn(
         "ghosthub-remote-worktree-remove",
         Box::new(move || {
-            let result = remove(&owner, &background, &pending);
+            let operation = crate::lock_session_operations(&owner, &background.cancellation);
+            let result = if operation.is_some() {
+                remove(&owner, &background, &pending)
+            } else {
+                Err(WorkspaceError::new("Worktree removal was cancelled"))
+            };
+            // Queued workspace opens need the KWT reservation cleared before they resume.
             finish(&owner, &background);
+            drop(operation);
             scene::push_lossless_event(
                 &owner,
                 result.unwrap_or_else(|e| pending.failure(e.to_string())),
@@ -340,8 +347,6 @@ fn remove(
     task: &Task,
     pending: &Pending,
 ) -> Result<WorkspaceEvent, WorkspaceError> {
-    let _operation = crate::lock_session_operations(scene, &task.cancellation)
-        .ok_or_else(|| WorkspaceError::new("Worktree removal was cancelled"))?;
     require_current(scene, task)?;
     let inventory = task
         .host

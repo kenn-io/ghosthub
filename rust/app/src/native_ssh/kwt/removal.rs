@@ -428,6 +428,111 @@ fn removal_preserves_navigation_queued_during_preflight() {
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+#[allow(clippy::too_many_lines)] // Both KWT open paths must resume after successful and rejected removal.
+fn removal_settles_before_queued_worktree_and_directory_opens() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::removal::removal_settles_before_queued_worktree_and_directory_opens",
+    ) else {
+        return;
+    };
+    let path = project(&fixture);
+    for (directory, dirty) in [(false, false), (false, true), (true, false), (true, true)] {
+        let name = format!("queued-{directory}-{dirty}");
+        let destination = seed(&fixture, &path, &name, None);
+        let directory_path = fixture.root.join(&name);
+        if directory {
+            std::fs::create_dir(&directory_path).unwrap();
+            remote_kwt(&["workspace", "add", directory_path.to_str().unwrap()]);
+        }
+        let target = seed(&fixture, &path, &format!("remove-{name}"), Some(false));
+        let other = fixture.open_scene();
+        other
+            .workspace
+            .switch_session(&target.selection(&fixture))
+            .unwrap();
+        other.tmux_shell(target.worktree.session_name(), "before-queued-workspace");
+        let authority = target.ready(&fixture);
+        let release = block_probe(&fixture, 1);
+        target.confirm(&fixture, authority).unwrap();
+        fixture.wait(|_| fixture.root.join("home/removal-started").exists());
+        let session = if directory {
+            let snapshot = other.workspace.snapshot();
+            let row = snapshot
+                .hosts()
+                .iter()
+                .find(|h| h.id() == fixture.host_id)
+                .unwrap()
+                .directory_workspaces()
+                .iter()
+                .find(|w| Path::new(w.path()) == directory_path)
+                .unwrap();
+            assert!(!row.session_available());
+            other
+                .workspace
+                .switch_session(&SessionSelection::kwt_workspace(
+                    &fixture.host_id,
+                    &fixture.endpoint,
+                    row.session_name(),
+                    row.tmux_attach_mode(),
+                    row.tmux_socket_name().map(str::to_owned),
+                    row.path(),
+                    None,
+                ))
+                .unwrap();
+            row.session_name().to_owned()
+        } else {
+            assert!(!destination.worktree.session_available());
+            other
+                .workspace
+                .open_kwt_worktree(
+                    &fixture.host_id,
+                    &fixture.endpoint,
+                    destination.project.repository(),
+                    destination.project.path(),
+                    destination.project.registration_fingerprint(),
+                    destination.worktree.path(),
+                    destination.worktree.generation(),
+                    destination.worktree.session_name(),
+                    destination.worktree.tmux_socket_name(),
+                    destination.worktree.tmux_attach_mode(),
+                )
+                .unwrap();
+            destination.worktree.session_name().to_owned()
+        };
+        if dirty {
+            std::fs::write(
+                Path::new(target.worktree.path()).join("unfinished.txt"),
+                "keep this work\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(&release, "").unwrap();
+        if dirty {
+            assert!(failure(&fixture, authority).contains("has changes"));
+            assert!(Path::new(target.worktree.path()).is_dir());
+        } else {
+            assert!(matches!(
+                wait_worktree_event(&fixture, authority),
+                WorkspaceEvent::KwtWorktreeRemoved { .. }
+            ));
+            assert!(!Path::new(target.worktree.path()).exists());
+        }
+        other.tmux_shell(&session, "queued-workspace-opened");
+        other.workspace.close();
+        for file in [
+            "removal-probe/sha256sum",
+            "home/removal-count",
+            "home/removal-started",
+            "home/removal-release",
+        ] {
+            std::fs::remove_file(fixture.root.join(file)).unwrap();
+        }
+    }
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 fn cancelling_and_closing_removal_releases_the_operation_lane() {
     let Some(fixture) = Fixture::isolated(
         "native_ssh::kwt::removal::cancelling_and_closing_removal_releases_the_operation_lane",
