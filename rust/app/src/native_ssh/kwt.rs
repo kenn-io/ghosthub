@@ -2,6 +2,315 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 #[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+#[allow(clippy::too_many_lines)] // One registration through new, existing, and selected-source creation.
+fn creates_remote_worktrees_from_new_and_existing_branches() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::creates_remote_worktrees_from_new_and_existing_branches",
+    ) else {
+        return;
+    };
+    let project_path = fixture.root.join("orbit 'one'");
+    create_project(&project_path);
+    let output = Command::new("git")
+        .current_dir(&project_path)
+        .args(["branch", "existing"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&project_path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    git(&[
+        "remote",
+        "add",
+        "upstream",
+        "https://example.com/upstream/orbit.git",
+    ]);
+    git(&["update-ref", "refs/remotes/origin/review", "HEAD"]);
+    git(&["switch", "-c", "source-seed"]);
+    std::fs::write(
+        project_path.join("source.txt"),
+        "selected upstream branch\n",
+    )
+    .unwrap();
+    git(&["add", "source.txt"]);
+    git(&["commit", "-m", "Selected source"]);
+    git(&["update-ref", "refs/remotes/upstream/review", "HEAD"]);
+    git(&["switch", "main"]);
+    git(&["branch", "-D", "source-seed"]);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let path = project_path.to_str().unwrap();
+    fixture
+        .workspace
+        .add_kwt_project(&fixture.host_id, &fixture.endpoint, path)
+        .unwrap();
+    wait_mutation(&fixture).unwrap();
+    let snapshot = fixture.workspace.snapshot();
+    let project = &snapshot
+        .hosts()
+        .iter()
+        .find(|h| h.id() == fixture.host_id)
+        .unwrap()
+        .projects()[0];
+    let listing = fixture
+        .workspace
+        .load_kwt_branches(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            path,
+            project.registration_fingerprint(),
+        )
+        .unwrap();
+    let event = wait_worktree_event(&fixture, listing);
+    let WorkspaceEvent::KwtBranchesLoaded { branches, .. } = event else {
+        panic!("unexpected worktree result")
+    };
+    assert!(
+        branches
+            .iter()
+            .any(|branch| branch.name() == "existing" && branch.source() == "existing")
+    );
+    assert!(
+        branches
+            .iter()
+            .any(|branch| branch.name() == "review"
+                && branch.source() == "refs/remotes/upstream/review"),
+        "{branches:?}"
+    );
+    for (branch, source, creates_branch) in [
+        ("feature/new", None, true),
+        ("existing", Some("existing"), false),
+        ("review", Some("refs/remotes/upstream/review"), false),
+    ] {
+        let operation = fixture
+            .workspace
+            .create_kwt_worktree(
+                &fixture.host_id,
+                &fixture.endpoint,
+                project.repository(),
+                path,
+                project.registration_fingerprint(),
+                branch,
+                source,
+                creates_branch,
+            )
+            .unwrap();
+        let event = wait_worktree_event(&fixture, operation);
+        let WorkspaceEvent::KwtWorktreeCreated { target, .. } = event else {
+            panic!("unexpected worktree result")
+        };
+        let output = Command::new("git")
+            .args(["-C", target.worktree_path(), "branch", "--show-current"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), branch);
+        if branch == "review" {
+            assert_eq!(
+                std::fs::read_to_string(Path::new(target.worktree_path()).join("source.txt"))
+                    .unwrap(),
+                "selected upstream branch\n"
+            );
+        }
+        fixture
+            .workspace
+            .open_kwt_worktree(
+                target.host_id(),
+                target.endpoint(),
+                target.repository(),
+                target.project_path(),
+                target.registration_fingerprint(),
+                target.worktree_path(),
+                target.generation(),
+                target.session_name(),
+                target.tmux_socket_name(),
+                target.tmux_attach_mode(),
+            )
+            .unwrap();
+        fixture.tmux_shell(target.session_name(), "created-worktree-opened");
+        fixture.workspace.detach();
+        wait_kwt_ready(&fixture);
+    }
+    remote_kwt(&[
+        "projects",
+        "remove",
+        path,
+        "--expected-repository",
+        project.repository(),
+        "--expected-registration",
+        project.registration_fingerprint(),
+        "--json",
+    ]);
+    remote_kwt(&["projects", "add", path, "--json"]);
+    let operation = fixture
+        .workspace
+        .create_kwt_worktree(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            path,
+            project.registration_fingerprint(),
+            "stale",
+            None,
+            true,
+        )
+        .unwrap();
+    let event = wait_worktree_event(&fixture, operation);
+    assert!(
+        matches!(event, WorkspaceEvent::KwtWorktreeOperationFailed { message, .. } if message.contains("project changed"))
+    );
+    let output = Command::new("git")
+        .current_dir(project_path)
+        .args(["show-ref", "--verify", "refs/heads/stale"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+#[allow(clippy::too_many_lines)] // Exercise dialog cancellation and owner close on a blocked real SSH probe.
+fn cancels_remote_worktree_operations_before_they_mutate() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::kwt::cancels_remote_worktree_operations_before_they_mutate")
+    else {
+        return;
+    };
+    let project_path = fixture.root.join("orbit");
+    create_project(&project_path);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let path = project_path.to_str().unwrap();
+    fixture
+        .workspace
+        .add_kwt_project(&fixture.host_id, &fixture.endpoint, path)
+        .unwrap();
+    wait_mutation(&fixture).unwrap();
+    let snapshot = fixture.workspace.snapshot();
+    let project = &snapshot
+        .hosts()
+        .iter()
+        .find(|h| h.id() == fixture.host_id)
+        .unwrap()
+        .projects()[0];
+    let bin = fixture.root.join("kwt-probe");
+    std::fs::create_dir(&bin).unwrap();
+    let probe = bin.join("sha256sum");
+    std::fs::write(&probe, "#!/bin/sh\nif [ ! -e \"$HOME/probe-claimed\" ]; then\n : > \"$HOME/probe-claimed\"\n while [ ! -e \"$HOME/probe-release\" ]; do sleep .02; done\nfi\nexec /usr/bin/sha256sum \"$@\"\n").unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let profile = fixture.root.join("home/.profile");
+    let contents = std::fs::read_to_string(&profile).unwrap_or_default();
+    std::fs::write(
+        &profile,
+        format!("{contents}\nexport PATH='{}':\"$PATH\"\n", bin.display()),
+    )
+    .unwrap();
+    let listing = fixture
+        .workspace
+        .load_kwt_branches(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            path,
+            project.registration_fingerprint(),
+        )
+        .unwrap();
+    fixture.wait(|_| fixture.root.join("home/probe-claimed").exists());
+    let other = fixture.open_scene();
+    assert!(!other.workspace.cancel_kwt_worktree_listing(listing));
+    assert!(fixture.workspace.cancel_kwt_worktree_listing(listing));
+    let replacement = other
+        .workspace
+        .load_kwt_branches(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            path,
+            project.registration_fingerprint(),
+        )
+        .unwrap();
+    assert!(matches!(
+        wait_worktree_event(&other, replacement),
+        WorkspaceEvent::KwtBranchesLoaded { .. }
+    ));
+    // The first cancelled request must settle before arming a fresh blocked probe.
+    assert!(matches!(
+        wait_worktree_event(&fixture, listing),
+        WorkspaceEvent::KwtWorktreeOperationFailed { .. }
+    ));
+    std::fs::write(fixture.root.join("home/probe-release"), "").unwrap();
+    // A different filename keeps the abandoned remote shell from owning this gate.
+    std::fs::write(&probe, "#!/bin/sh\n: > \"$HOME/create-probe-started\"\nwhile [ ! -e \"$HOME/create-probe-release\" ]; do sleep .02; done\nexec /usr/bin/sha256sum \"$@\"\n").unwrap();
+    fixture
+        .workspace
+        .create_kwt_worktree(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            path,
+            project.registration_fingerprint(),
+            "cancelled",
+            None,
+            true,
+        )
+        .unwrap();
+    fixture.wait(|_| fixture.root.join("home/create-probe-started").exists());
+    fixture.workspace.close();
+    other.wait(|snapshot| {
+        snapshot
+            .hosts()
+            .iter()
+            .any(|host| host.id() == fixture.host_id && !host.kwt_mutating())
+    });
+    std::fs::write(fixture.root.join("home/create-probe-release"), "").unwrap();
+    let output = Command::new("git")
+        .current_dir(&project_path)
+        .args(["show-ref", "--verify", "refs/heads/cancelled"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    other.attach("review", "after-cancelled-creation");
+    other.workspace.close();
+}
+
+fn wait_worktree_event(fixture: &Fixture, operation: u64) -> WorkspaceEvent {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        for event in fixture.workspace.drain_events().0 {
+            match &event {
+                WorkspaceEvent::KwtBranchesLoaded { operation_id, .. }
+                | WorkspaceEvent::KwtWorktreeOperationFailed { operation_id, .. }
+                    if *operation_id == operation =>
+                {
+                    return event;
+                }
+                WorkspaceEvent::KwtWorktreeCreated {
+                    navigation_generation,
+                    ..
+                } if *navigation_generation == operation => return event,
+                WorkspaceEvent::Error(message) => panic!("{message}"),
+                _ => {}
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "KWT worktree operation did not settle"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
 #[ignore = "requires the pinned KWT helper and isolated OpenSSH; run make rust-test-ssh-live"]
 #[allow(clippy::too_many_lines)] // One real project through registration, restart, attachment, and removal.
 fn registers_refreshes_and_removes_a_remote_project() {

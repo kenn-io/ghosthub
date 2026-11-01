@@ -1279,9 +1279,26 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         prefix: &str,
         cancellation: &CancellationToken,
     ) -> Result<crate::CommandOutput, RemoteTmuxError> {
+        self.run_framed_remote_shell_with_timeout(
+            lease,
+            command,
+            prefix,
+            cancellation,
+            COMMAND_TIMEOUT,
+        )
+    }
+
+    fn run_framed_remote_shell_with_timeout(
+        &self,
+        lease: &SshLease,
+        command: &str,
+        prefix: &str,
+        cancellation: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<crate::CommandOutput, RemoteTmuxError> {
         let (begin, end) = payload_markers(prefix)?;
         let framed = framed_remote_shell_command(command, &begin, &end);
-        let output = self.run_remote_shell(lease, &framed, cancellation)?;
+        let output = self.run_remote_shell_with_timeout(lease, &framed, cancellation, timeout)?;
         extract_framed_command_output(output, &begin, &end)
     }
 
@@ -2014,7 +2031,7 @@ mod tests {
         framed
     }
 
-    fn exited_lease() -> SshLease {
+    pub(super) fn controller_lease(exits: bool) -> SshLease {
         let target = SshTarget::new("host-alias", None, None).expect("target");
         let route = crate::SshRouteSnapshot::parse(
             br#"{
@@ -2035,6 +2052,12 @@ mod tests {
         .expect("route");
         let complete = r#"{"operation_id":"op-1","sequence":1,"kind":"complete","result":{"lease_id":"lease-1","route_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generation":7,"mode":"multiplexed","arguments":["-S","control-path","-o","ProxyCommand=/usr/bin/false"]}}"#;
         #[cfg(windows)]
+        let finish = if exits {
+            "exit 23"
+        } else {
+            "$null = [Console]::ReadLine()"
+        };
+        #[cfg(windows)]
         let command = CommandPrefix::new(
             "powershell.exe",
             [
@@ -2042,27 +2065,33 @@ mod tests {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                &format!("[Console]::Out.WriteLine('{complete}'); exit 23; #"),
+                &format!("[Console]::Out.WriteLine('{complete}'); {finish}; #"),
             ]
             .map(OsString::from)
             .to_vec(),
         );
         #[cfg(not(windows))]
+        let finish = if exits { "exit 23" } else { "read -r reply" };
+        #[cfg(not(windows))]
         let command = CommandPrefix::new(
             "/bin/sh",
             vec![
                 "-c".into(),
-                format!("printf '%s\\n' '{complete}'; exit 23").into(),
+                format!("printf '%s\\n' '{complete}'; {finish}").into(),
             ],
         );
-        let lease = KwtSshLeaseClient::with_command(command)
+        KwtSshLeaseClient::with_command(command)
             .acquire(
                 &route,
                 &CancellationToken::new(),
                 |_| Err(crate::SshError::prompt_cancelled()),
                 |_| {},
             )
-            .expect("acquire lease before scripted exit");
+            .expect("acquire fixture lease")
+    }
+
+    fn exited_lease() -> SshLease {
+        let lease = controller_lease(true);
         let deadline = Instant::now() + Duration::from_secs(3);
         while lease.ensure_live().is_ok() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));

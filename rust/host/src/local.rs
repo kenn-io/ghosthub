@@ -1830,23 +1830,7 @@ impl<R: CommandRunner> LocalHost<R> {
             )
         })?;
         let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
-        let mut command = vec!["add"];
-        if request.creates_branch() {
-            command.push("--branch");
-        } else if let Some(source) = request
-            .source()
-            .filter(|source| *source != request.branch())
-        {
-            command.extend(["--from", source]);
-        }
-        command.extend([
-            request.branch(),
-            "--no-launch",
-            "--expected-repository",
-            request.repository(),
-            "--expected-registration",
-            request.registration_fingerprint(),
-        ]);
+        let command = request.arguments();
         self.require_runtime(endpoint, runtime, cancellation)?;
         let output = self.run_kwt_mutation_in_directory(
             endpoint,
