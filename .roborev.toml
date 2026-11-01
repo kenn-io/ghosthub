@@ -2,20 +2,35 @@ review_guidelines = """
 We are not performing database migrations before the first production release.
 
 Threat model:
+- `docs/threat-model.md` defines Ghosthub's security boundaries and is the
+  arbiter for classifying security findings. A finding whose only prerequisite
+  is a malicious or compromised configured SSH host, a hostile tmux, Herdr, or
+  Zellij server or pane process, or code running as the same local user is not
+  a security finding. For the loopback web UI, demands for server-side VT
+  sanitization and attackers with network reach are also out of scope; the
+  server relays terminal bytes uninterpreted by design. Remote use of local
+  capabilities (such as OSC 52 clipboard reads), bypassing the user's OpenSSH
+  host-key or authentication policy, and host, worktree, pane, or session
+  identity confusion that mutates a different target remain in scope even when
+  the triggering bytes come from a trusted host.
 - A branch the user explicitly chooses to check out locally is trusted as local
   working content, regardless of whether its source ref is local or remote.
   Ghosthub may inspect that checkout with ordinary Git commands and may use its
   repository-local terminal configuration. Do not report those expected actions
-  as untrusted-workspace or credential-exposure vulnerabilities.
-- CI intentionally routes canonical `main` pushes and same-repository pull
-  requests to the managed public macOS runner. Fork pull requests and
-  noncanonical repository copies fall back to GitHub-hosted runners. The managed
-  runner group admits only the reusable `.github/workflows/ci.yml` definition
-  from `main`, and `.github/workflows/ci-pr.yml` invokes that exact main-pinned
-  workflow. Pull-request changes therefore cannot retarget the managed runner by
-  editing or adding a dispatcher. Do not report this routing as PR-controlled
-  self-hosted execution unless the immutable-workflow runner-group restriction
-  or the same-repository checks are removed.
+  as untrusted-workspace or credential-exposure vulnerabilities. Imported
+  pull-request workspaces are the exception: their checkout is
+  contributor-controlled, they use protected attachment mode, and Ghosthub must
+  not load their `.ghosthub/terminal.conf`.
+- `.github/workflows/ci-pr.yml` runs on `pull_request` and calls the
+  main-pinned `.github/workflows/ci.yml@main` on a GitHub-hosted macOS runner,
+  so a pull request's own edits to `ci.yml` do not run in its CI. The sandbox
+  image promotion gate intentionally uses `pull_request_target` and
+  `workflow_run`: it runs trusted `main` tooling and treats proposed content as
+  inert data, read through the GitHub API or audited without being executed.
+  Report any change that executes pull-request content in that workflow, lets
+  repository code share a runner with the status-write or package-writer
+  credential, or grants status-write or package-write permission to a
+  `GITHUB_TOKEN`.
 - Continue to report actual command/argument injection, unsafe interpolation,
   automatic execution that is not a consequence of the user's explicit checkout
   or open action, and violations of an established credential boundary.
