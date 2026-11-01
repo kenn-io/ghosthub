@@ -2838,8 +2838,12 @@ impl RootView {
         let error = match dialog {
             ProjectDialog::Add { error, .. }
             | ProjectDialog::Remove { error, .. }
-            | ProjectDialog::NewWorktree { error, .. }
-            | ProjectDialog::RemoveWorktree { error, .. } => error,
+            | ProjectDialog::NewWorktree { error, .. } => error,
+            ProjectDialog::RemoveWorktree { target, error, .. } => {
+                target.authority = None;
+                target.operation_id = None;
+                error
+            }
         };
         *error = Some(message.into());
     }
@@ -5063,8 +5067,8 @@ impl RootView {
                     .text_sm()
                     .text_color(rgb(0xb6_bcc7))
                     .child(format!(
-                        "Remove “{}” from {}?{}",
-                        target.branch, target.project_name, session_copy
+                        "Remove “{}” from {} on {}?{}",
+                        target.branch, target.project_name, target.open.endpoint, session_copy
                     ))
                     .child(
                         div()
@@ -7660,8 +7664,7 @@ impl RootView {
                 };
                 let repair_open_target =
                     (open_mode == WorktreeOpenMode::RepairOrOpen).then(|| open_target.clone());
-                let remove_target = (!host.is_ssh()
-                    && !worktree.is_main()
+                let remove_target = (!worktree.is_main()
                     && worktree.generation().is_some()
                     && endpoint_is_resolved
                     && host.connection() == HostConnectionState::Ready

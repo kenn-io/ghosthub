@@ -1,6 +1,8 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+mod removal;
+
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 #[allow(clippy::too_many_lines)] // One registration through new, existing, and selected-source creation.
@@ -289,8 +291,14 @@ fn wait_worktree_event(fixture: &Fixture, operation: u64) -> WorkspaceEvent {
         for event in fixture.workspace.drain_events().0 {
             match &event {
                 WorkspaceEvent::KwtBranchesLoaded { operation_id, .. }
+                | WorkspaceEvent::KwtWorktreeRemoved { operation_id, .. }
                 | WorkspaceEvent::KwtWorktreeOperationFailed { operation_id, .. }
                     if *operation_id == operation =>
+                {
+                    return event;
+                }
+                WorkspaceEvent::KwtWorktreeRemovalReady { authority, .. }
+                    if *authority == operation =>
                 {
                     return event;
                 }
