@@ -157,6 +157,101 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok(())
     }
 
+    /// Check for uncommitted changes before terminating a worktree's session.
+    ///
+    /// # Errors
+    /// Returns an error for changed identity, incomplete inspection, or local changes.
+    pub fn check_kwt_worktree_removal(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        project: &KwtProject,
+        worktree: &crate::KwtWorktree,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        let generation = removal_generation(worktree)?;
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let output = self.kwt_command(
+            snapshot.lease(),
+            &helper,
+            &[
+                "changes",
+                worktree.path(),
+                "--expected-repository",
+                project.repository(),
+                "--expected-generation",
+                generation,
+                "--json",
+            ],
+            true,
+            cancellation,
+        )?;
+        let inspection: serde_json::Value =
+            serde_json::from_slice(&output.stdout).map_err(|error| {
+                RemoteTmuxError::new(DiagnosticKind::MalformedOutput, error.to_string())
+            })?;
+        let identity = &inspection["worktree"];
+        if identity["repository"].as_str() != Some(project.repository())
+            || identity["path"].as_str() != Some(worktree.path())
+            || identity["generation"].as_str() != Some(generation)
+        {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "The worktree changed. Refresh and review the removal again.",
+            ));
+        }
+        match inspection["changes"]["state"].as_str() {
+            Some("clean") => Ok(()),
+            Some("modified" | "staged" | "conflicted") => Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "This worktree has changes. Commit or stash them before removing it.",
+            )),
+            _ => Err(RemoteTmuxError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT could not verify the worktree's changes. Try again.",
+            )),
+        }
+    }
+
+    /// Remove a confirmed ordinary worktree only while its exact session is absent.
+    ///
+    /// # Errors
+    /// Returns an error when the generation or endpoint changes, or KWT refuses removal.
+    pub fn remove_kwt_worktree(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        project: &KwtProject,
+        worktree: &crate::KwtWorktree,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        let generation = removal_generation(worktree)?;
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let mut args = vec![
+            "remove",
+            "--if-generation",
+            generation,
+            "--if-session-name",
+            worktree.session_name(),
+            "--if-session-absent",
+        ];
+        if let Some(socket) = worktree.tmux_socket_name() {
+            args.extend(["--if-session-socket-name", socket]);
+        }
+        // KWT verifies absence on both shared servers before deleting the checkout.
+        if let Some(directory) = self.config.socket_directory() {
+            args.extend(["--if-session-socket-directory", directory]);
+        }
+        args.push(worktree.path());
+        self.kwt_command_in_directory(
+            snapshot.lease(),
+            &helper,
+            Some(project.path()),
+            &args,
+            false,
+            cancellation,
+        )?;
+        Ok(())
+    }
+
     /// Remove only the exact project registration confirmed by the user.
     ///
     /// # Errors
@@ -607,4 +702,22 @@ fn require_kwt_output(output: &CommandOutput) -> Result<(), RemoteTmuxError> {
         .or_else(|| crate::kwt_command_failure_message(&output.stderr))
         .unwrap_or_else(|| nonempty_diagnostic(&output.stderr, "Remote KWT command failed"));
     Err(RemoteTmuxError::new(kind, message))
+}
+
+fn removal_generation(worktree: &crate::KwtWorktree) -> Result<&str, RemoteTmuxError> {
+    if worktree.is_main()
+        || worktree.tmux_attach_mode() != crate::KwtTmuxAttachMode::Direct
+        || !matches!(worktree.tmux_socket_name(), None | Some("kwt"))
+    {
+        return Err(RemoteTmuxError::new(
+            DiagnosticKind::UnsupportedEnvironment,
+            "This worktree cannot be removed through SSH.",
+        ));
+    }
+    worktree.generation().ok_or_else(|| {
+        RemoteTmuxError::new(
+            DiagnosticKind::Transport,
+            "Refresh KWT inventory before removing this worktree.",
+        )
+    })
 }

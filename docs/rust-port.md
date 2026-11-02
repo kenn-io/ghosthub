@@ -514,7 +514,17 @@ refresh; Ghosthub does not open an arbitrary path from a stale row.
 
 ![A registered remote directory opened from its idle row](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-directory.png)
 
-Protected imports, other named sockets, remote worktree removal,
+Ordinary remote worktrees also offer **Remove Worktree**. The confirmation
+captures the current session identity and checks for uncommitted changes.
+Removal rechecks the project registration, worktree generation, changes, and
+SSH connection before ending that exact session and asking KWT to remove the
+checkout. The Git branch remains. A replacement session or checkout requires
+a fresh review. KWT refuses removal while the workspace session name remains
+on either shared server. Cancel leaves the checkout and session intact.
+
+![Confirm removal of a remote worktree](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remove-worktree.png)
+
+Protected imports, force removal, other named sockets,
 and automatic transport recovery remain separate work. Their
 unsupported controls are unavailable in the remote project tree.
 
@@ -1357,8 +1367,12 @@ When a remote client exits with a nonzero status, its error banner reports
 the exit status without copying terminal contents or control sequences.
 Ghosthub's attachment identity check retains its specific error. A successful
 exit detaches silently; Refresh and session selection can open a new client.
-Remote worktree creation/removal, protected imports, automatic reconnect, and
-restoration still require their own remote identity and lifecycle fencing. An absent control cannot silently fall back to
+Remote branch-backed creation and ordinary worktree removal use the managed
+helper and host KWT lane. Removal also holds the session operation lane, so
+attachments queued in other windows resume after it settles. Reconnect cancels
+pending destructive commands; known successful removals tombstone the exact
+checkout before inventory reconciliation. Protected imports, force removal,
+automatic reconnect, and restoration remain separate work. An absent control cannot silently fall back to
 WSL or unguarded SSH.
 
 Rust config resolution is:
@@ -1780,8 +1794,9 @@ The Windows WSL slice remains independently tested throughout this work.
    optional Herdr/Zellij inventory, attach-only presentation, and one-shot
    tmux/Herdr/Zellij creation now ship.
    Remote lifecycle controls, managed-helper installation, project registration,
-   and ordinary worktree opening also ship. Follow-on work adds worktree
-   creation/removal, protected imports, transport recovery, and remote Windows.
+   ordinary worktree opening, branch-backed creation, and confirmed ordinary
+   worktree removal also ship. Follow-on work adds protected imports, force
+   removal, transport recovery, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.

@@ -1589,7 +1589,7 @@ fn retained_herdr_recovery_does_not_block_snapshots_during_discovery() {
 type SpawnFailureHook = Box<dyn FnOnce() + Send>;
 
 #[derive(Default)]
-struct ManualRefreshRuntime {
+pub(super) struct ManualRefreshRuntime {
     work: Mutex<VecDeque<RefreshTask>>,
     deadlines: Mutex<VecDeque<(Duration, CancellationToken, RefreshTask)>>,
     fail_next_work: AtomicBool,
@@ -1600,7 +1600,7 @@ struct ManualRefreshRuntime {
 }
 
 impl ManualRefreshRuntime {
-    fn run_next_work(&self) {
+    pub(super) fn run_next_work(&self) {
         let task = self.work.lock().expect("work queue").pop_front();
         task.expect("queued work")();
     }

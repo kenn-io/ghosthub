@@ -78,12 +78,29 @@ impl Fixture {
         self.wait(|_| self.workspace.session_kill_confirmation().is_some());
     }
 
-    fn zellij_list(&self) -> String {
-        let output = Command::new(self.root.join("bin/zellij"))
-            .args(["list-sessions", "--no-formatting"])
-            .output()
-            .unwrap();
-        String::from_utf8(output.stdout).unwrap()
+    fn wait_zellij_exit(&self, name: &str) {
+        // On Unix, kill-session returns after sending the request. The server
+        // can still answer inventory probes until it finishes shutting down.
+        self.wait(|_| {
+            let output = Command::new(self.root.join("bin/zellij"))
+                .args(["list-sessions", "--no-formatting"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    || (output.status.code() == Some(1)
+                        && output.stdout.is_empty()
+                        && String::from_utf8_lossy(&output.stderr).trim()
+                            == "No active zellij sessions found."),
+                "Zellij inventory failed: {output:?}"
+            );
+            !String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .any(|line| {
+                    line.starts_with(&format!("{name} [Created ")) && !line.contains("EXITED")
+                })
+        });
     }
 
     fn gate_zellij_kill(&self, second_probe: bool, reject: bool) {
@@ -156,12 +173,7 @@ fn confirmed_kill_preserves_other_sessions_and_clears_every_matching_window() {
         });
     }
     assert!(other.workspace.confirm_session_kill().is_err());
-    assert!(
-        !fixture
-            .zellij_list()
-            .lines()
-            .any(|line| line.starts_with("review 'one' ") && !line.contains("EXITED"))
-    );
+    fixture.wait_zellij_exit(selection.session());
     fixture.workspace.switch_session(&keep).unwrap();
     fixture.zellij_shell("keep", "survived");
     fixture.tmux(&["has-session", "-t", "=review"]);
@@ -209,12 +221,7 @@ fn a_confirmed_kill_fences_competing_kills_and_queued_attachments() {
             .iter()
             .any(|session| session.name() == "guarded")
     });
-    assert!(
-        !fixture
-            .zellij_list()
-            .lines()
-            .any(|line| line.starts_with("guarded ") && !line.contains("EXITED"))
-    );
+    fixture.wait_zellij_exit(selection.session());
     fixture.workspace.close();
     other.workspace.close();
 }
@@ -337,12 +344,7 @@ fn kill_accepts_names_that_zellij_cannot_attach_to() {
                 .iter()
                 .any(|record| record.name() == name)
         });
-        assert!(
-            !fixture
-                .zellij_list()
-                .lines()
-                .any(|line| line.starts_with(&format!("{name} ")) && !line.contains("EXITED"))
-        );
+        fixture.wait_zellij_exit(name);
     }
     fixture.workspace.close();
 }

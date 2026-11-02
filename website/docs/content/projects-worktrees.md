@@ -295,5 +295,17 @@ Idle worktrees also open with tmux's `destroy-unattached` option enabled.
 KWT keeps the new session alive during setup, then restores the session's
 captured policy when its first client attaches.
 
-Remote worktree removal, other named sockets, protected
-imports, and directory registration in the Rust UI are still in development.
+To remove an ordinary remote worktree, open its **⋯** menu and choose
+**Remove Worktree**. Review the worktree and host, then select **Remove
+Worktree** to end its confirmed session and delete the checkout. The Git branch
+is kept. Cancel leaves both the checkout and session intact.
+
+![Confirm removal of a remote worktree in the native Rust application](/docs/assets/guide-rust-remove-worktree.png)
+
+Commit or stash uncommitted changes before removing a remote worktree. If its
+session, checkout, project registration, or SSH connection changes, refresh the
+host and review the removal again. KWT also refuses removal while the workspace
+session name remains on either shared tmux server.
+
+Force removal, other named sockets, protected imports, and directory
+registration in the Rust UI are still in development.

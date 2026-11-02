@@ -1271,6 +1271,14 @@ uses KWT's no-launch branch flow,
 then refreshes machine-readable inventory before granting RepairOrOpen
 authority. Branch reads, creation, and reconciliation share the serialized KWT
 background lane and never block GPUI or replace the last usable sidebar tree.
+Rust SSH worktree removal uses that host's KWT lane and the session operation
+lane. A confirmation binds the project registration, worktree generation,
+connection, and fresh tmux identity. Clean-change inspection precedes both the
+confirmation and the exact session kill. KWT's generation and session-absence
+guards then govern checkout deletion; the branch is kept. Reconnect cancels
+pending removal commands. Successful deletion tombstones the exact cached
+checkout before fresh inventory is published. Dirty worktrees require changes
+to be committed or stashed; the Rust remote UI does not offer force removal.
 Herdr's JSON session list is independently authoritative for running and
 stopped Herdr sessions. Exit 127 means optional capability absence and emits no diagnostic;
 malformed output or another failure produces only a host-scoped warning and
