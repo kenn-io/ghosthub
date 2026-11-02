@@ -114,18 +114,20 @@ pub(crate) fn request(
 }
 
 pub(crate) fn cancel(scene: &Scene) {
-    let pending = {
-        let _publication = scene
-            .runtime
-            .remote_publication
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        scene
-            .remote_kwt_removal
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-    };
+    let _publication = scene
+        .runtime
+        .remote_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cancel_pending(scene);
+}
+
+pub(super) fn cancel_pending(scene: &Scene) {
+    let pending = scene
+        .remote_kwt_removal
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
     if let Some(pending) = pending {
         pending.task.cancellation.cancel();
     }

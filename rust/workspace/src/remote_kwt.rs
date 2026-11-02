@@ -154,7 +154,9 @@ pub(crate) fn cancel_scene(scene: &Scene) {
         }
     }
     drop(entries);
-    removal::cancel(scene);
+    // Teardown has closed the scene, fencing new removal requests. It can run
+    // inside inventory publication, so it must not reacquire that fence.
+    removal::cancel_pending(scene);
 }
 
 pub(crate) fn refresh_all(scene: &Arc<Scene>) {

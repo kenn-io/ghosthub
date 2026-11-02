@@ -15,6 +15,18 @@ impl Target {
         }
     }
     fn current(fixture: &Fixture, branch: &str) -> Self {
+        // SSH readiness can precede the KWT refresh for a newly seeded branch.
+        fixture.wait(|snapshot| {
+            snapshot.hosts().iter().any(|host| {
+                host.id() == fixture.host_id
+                    && host.projects().iter().any(|project| {
+                        project
+                            .worktrees()
+                            .iter()
+                            .any(|worktree| worktree.branch() == branch)
+                    })
+            })
+        });
         let snapshot = fixture.workspace.snapshot();
         let project = snapshot
             .hosts()
