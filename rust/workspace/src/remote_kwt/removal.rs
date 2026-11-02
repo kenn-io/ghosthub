@@ -491,6 +491,8 @@ fn remove(
 }
 
 fn tombstone(scene: &Scene, task: &Task, target: &KwtWorktreeTarget) {
+    // A final scene reference can run teardown that locks shared host state.
+    let scenes = runtime::live_scenes(&scene.runtime);
     publish(scene, task, |state, host| {
         crate::remove_cached_kwt_worktree(
             host,
@@ -501,7 +503,7 @@ fn tombstone(scene: &Scene, task: &Task, target: &KwtWorktreeTarget) {
             target.generation.as_deref().unwrap(),
         );
         state.inventory = None;
-        for other in runtime::live_scenes(&scene.runtime) {
+        for other in &scenes {
             let mut slot = other
                 .remote_kwt_removal
                 .lock()
