@@ -60,11 +60,13 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.96.1 --profile minimal --component clippy,rustfmt
 
-      - name: Restore Windows Rust cache
-        if: runner.os == 'Windows'
+      # Linux also keeps the pinned Zellij helper. A changed revision is a
+      # different git source, so `cargo install` rebuilds it.
+      - name: Restore Rust cache
         uses: step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e # v2.9.2
         with:
           workspaces: rust
+          cache-directories: ${{ runner.os == 'Linux' && '.build/zellij-test' || '' }}
 
       - name: Set up Go for the Linux KWT helper
         if: runner.os == 'Linux'
