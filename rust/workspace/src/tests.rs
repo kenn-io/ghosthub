@@ -721,6 +721,7 @@ fn worktree_removal_authority_can_be_restored_before_dispatch() {
         .lock()
         .expect("pending removal")
         .replace(PendingKwtRemoval {
+            force_required: false,
             authority,
             endpoint: snapshot.endpoint().clone(),
             repository: "github.com/acme/widget".to_owned(),
@@ -748,6 +749,7 @@ fn worktree_removal_authority_can_be_restored_before_dispatch() {
         "/work/widget/topic",
         "0123456789abcdef0123456789abcdef",
         "widget-topic",
+        false,
     )
     .expect("exact confirmation authority");
 
@@ -831,6 +833,7 @@ fn worktree_removal_reservation_requires_the_exact_non_main_inventory_row() {
                   socket_name: Option<&str>,
                   tmux_attach_mode: host::KwtTmuxAttachMode| {
         KwtWorktreeOperation::Remove {
+            force: false,
             worktree_path: path.to_owned(),
             generation: generation.to_owned(),
             session_name: session.to_owned(),
@@ -9159,6 +9162,7 @@ fn removed_kwt_worktree_drops_matching_confirmations_in_every_scene() {
     let c = a.open_scene();
     let generation = "0123456789abcdef0123456789abcdef";
     let pending = |scene: &Scene, worktree_path: &str| PendingKwtRemoval {
+        force_required: false,
         authority: scene.kwt_removal_generation.load(Ordering::Acquire),
         endpoint: snapshot.endpoint().clone(),
         repository: "github.com/acme/widget".to_owned(),
@@ -9246,6 +9250,7 @@ fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
     let worktree_path = "/work/widget/topic";
     let install_pending = |scene: &Scene| {
         *scene.pending_kwt_removal.lock().expect("pending removal") = Some(PendingKwtRemoval {
+            force_required: false,
             authority: scene.kwt_removal_generation.load(Ordering::Acquire),
             endpoint: snapshot.endpoint().clone(),
             repository: "github.com/acme/widget".to_owned(),
@@ -9306,6 +9311,7 @@ fn kwt_removal_reconciliation_branches_gate_confirmation_drops() {
         project_path: "/code/widget".to_owned(),
         registration_fingerprint: "registration".to_owned(),
         operation: KwtWorktreeOperation::Remove {
+            force: false,
             worktree_path: worktree_path.to_owned(),
             generation: generation.to_owned(),
             session_name: "widget-topic".to_owned(),
@@ -10261,7 +10267,7 @@ fn removal_completing_during_identity_capture_cannot_publish_a_stale_confirmatio
 
     // The straddling capture's publication is fenced by the advanced
     // authority: no dialog and no removal-ready event appear in scene B.
-    publish_captured_kwt_removal(&b.scene, b_capture, None);
+    publish_captured_kwt_removal(&b.scene, b_capture, None, false);
     assert!(
         b.scene
             .pending_kwt_removal
@@ -10279,7 +10285,7 @@ fn removal_completing_during_identity_capture_cannot_publish_a_stale_confirmatio
     );
 
     // Scene C's capture targets a different worktree and still publishes.
-    publish_captured_kwt_removal(&c.scene, c_capture, None);
+    publish_captured_kwt_removal(&c.scene, c_capture, None, false);
     assert!(
         c.scene
             .pending_kwt_removal

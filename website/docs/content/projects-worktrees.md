@@ -309,11 +309,17 @@ ordinary removal. The Git branch is kept after either action.
 
 ![Confirm force removal of a dirty remote worktree](/docs/assets/guide-rust-force-remove-worktree.png)
 
+Local Linux and WSL worktrees use the same confirmation. Open the worktree's
+**⋯** menu and choose **Remove Worktree**. A dirty checkout requires
+**Force Remove Worktree**; Cancel leaves its checkout and session intact.
+
+![Confirm force removal of a dirty local worktree](/docs/assets/guide-rust-local-force-remove-worktree.png)
+
 If the pre-removal check finds new changes after a clean confirmation, Ghosthub
 keeps the checkout and session and offers **Review Again**. If its session, checkout,
-project registration, or SSH connection changes, refresh the host and review
+project registration, local host runtime, or SSH connection changes, refresh the host and review
 the removal again. KWT also refuses removal while the workspace session name
 remains on either shared tmux server. Failed change inspection blocks removal.
 
-Local force removal, other named sockets, protected imports, and directory
-registration in the Rust UI are still in development.
+Other named SSH sockets, protected SSH imports, and directory registration
+in the Rust UI are still in development.

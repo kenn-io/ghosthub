@@ -1100,7 +1100,16 @@ host has usable KWT inventory. On Linux, choose a repository folder or enter
 its absolute POSIX path. Use the **+** beside a project to create a worktree
 or import a branch or PR. Click a worktree to open its terminal. Choose
 **Remove Worktree** from its **…** menu or use the project's **×** control
-to unregister it. Both actions require confirmation.
+to unregister it. Both actions require confirmation. Local worktree removal
+inspects the exact checkout before confirmation. Dirty checkouts require
+**Force Remove Worktree**, which discards staged, unstaged, and untracked
+changes while preserving the Git branch. Cancel leaves the checkout and
+session intact. A fresh inspection before terminating the session rejects
+changes found after a clean confirmation and offers **Review Again**. Failed
+or incomplete inspection blocks removal. The same captured force
+acknowledgement is required through the workspace API on Linux and WSL.
+
+![Confirm force removal of a local worktree](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-local-force-remove-worktree.png)
 
 ![Add a project in native Linux Ghosthub](https://github.com/user-attachments/assets/2ef61ac0-e6da-4e4e-95f8-ed2ad14ac003)
 
@@ -1806,8 +1815,8 @@ The Windows WSL slice remains independently tested throughout this work.
    Remote lifecycle controls, managed-helper installation, project registration,
    ordinary worktree opening, branch-backed creation, and confirmed ordinary
    worktree removal, including explicit force removal of dirty ordinary SSH
-   worktrees, also ship. Follow-on work adds protected imports, local force
-   removal, transport recovery, and remote Windows.
+   worktrees, also ship. Follow-on work adds protected imports,
+   transport recovery, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.

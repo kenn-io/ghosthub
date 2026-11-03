@@ -2288,6 +2288,27 @@ pub(crate) fn capture_kwt_removal_authority(scene: &Scene, capture: KwtRemovalCa
         return;
     }
     let cancellation = CancellationToken::new();
+    let force_required = match capture.host.kwt_worktree_has_changes(
+        &capture.endpoint,
+        &capture.runtime,
+        &capture.repository,
+        &capture.project_path,
+        &capture.worktree_path,
+        &capture.generation,
+        &cancellation,
+    ) {
+        Ok(changed) => changed,
+        Err(error) => {
+            publish_kwt_removal_capture_failure(
+                scene,
+                capture.authority,
+                &capture.project_path,
+                &capture.worktree_path,
+                error.to_string(),
+            );
+            return;
+        }
+    };
     let running = if let Some(socket_name) = capture.socket_name.as_deref() {
         capture.host.session_is_running_on_socket(
             &capture.endpoint,
@@ -2348,7 +2369,7 @@ pub(crate) fn capture_kwt_removal_authority(scene: &Scene, capture: KwtRemovalCa
             return;
         }
     };
-    publish_captured_kwt_removal(scene, capture, live_target);
+    publish_captured_kwt_removal(scene, capture, live_target, force_required);
 }
 
 /// Publish one completed removal identity capture as this scene's pending
@@ -2359,6 +2380,7 @@ pub(crate) fn publish_captured_kwt_removal(
     scene: &Scene,
     capture: KwtRemovalCapture,
     live_target: Option<Arc<host::LiveSessionTarget>>,
+    force_required: bool,
 ) {
     let session_was_running = live_target.is_some();
     let mut pending = scene
@@ -2372,6 +2394,7 @@ pub(crate) fn publish_captured_kwt_removal(
     let worktree_path = capture.worktree_path.clone();
     *pending = Some(PendingKwtRemoval {
         authority: capture.authority,
+        force_required,
         endpoint: capture.endpoint,
         repository: capture.repository,
         project_path: capture.project_path,
@@ -2396,7 +2419,7 @@ pub(crate) fn publish_captured_kwt_removal(
             worktree_path,
             authority: capture.authority,
             session_was_running,
-            force_required: false,
+            force_required,
         },
     );
 }
@@ -2437,6 +2460,7 @@ pub(crate) fn take_pending_kwt_removal(
     worktree_path: &str,
     generation: &str,
     session_name: &str,
+    force: bool,
 ) -> Result<PendingKwtRemoval, WorkspaceError> {
     let pending = scene
         .pending_kwt_removal
@@ -2444,7 +2468,8 @@ pub(crate) fn take_pending_kwt_removal(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .ok_or_else(|| WorkspaceError::new("review the worktree removal again"))?;
-    let matches = pending.authority == authority
+    let matches = pending.force_required == force
+        && pending.authority == authority
         && pending.endpoint.name() == endpoint
         && pending.repository == repository
         && pending.project_path == project_path
@@ -2720,6 +2745,7 @@ pub(crate) fn run_kwt_worktree_operation(scene: &Arc<Scene>, task: &KwtWorktreeT
             socket_name,
             tmux_attach_mode,
             live_target,
+            force,
             ..
         } => run_kwt_worktree_remove(
             scene,
@@ -2730,6 +2756,7 @@ pub(crate) fn run_kwt_worktree_operation(scene: &Arc<Scene>, task: &KwtWorktreeT
             socket_name.as_deref(),
             *tmux_attach_mode,
             live_target.as_deref(),
+            *force,
         ),
     };
     finish_kwt_worktree_operation(scene, task);
@@ -2912,6 +2939,7 @@ pub(crate) fn run_kwt_worktree_remove(
     socket_name: Option<&str>,
     tmux_attach_mode: host::KwtTmuxAttachMode,
     live_target: Option<&host::LiveSessionTarget>,
+    force: bool,
 ) -> KwtWorktreeOutcome {
     let _session_operation = scene
         .runtime
@@ -2928,6 +2956,30 @@ pub(crate) fn run_kwt_worktree_remove(
     ) {
         fail_kwt_worktree_remove(scene, task, error);
         return KwtWorktreeOutcome::default();
+    }
+
+    match task.host.kwt_worktree_has_changes(
+        &task.endpoint,
+        &task.runtime,
+        &task.repository,
+        &task.project_path,
+        worktree_path,
+        generation,
+        &task.cancellation,
+    ) {
+        Ok(true) if !force => {
+            fail_kwt_worktree_remove(
+                scene,
+                task,
+                "This worktree has changes. Review it again before force removal.".to_owned(),
+            );
+            return KwtWorktreeOutcome::default();
+        }
+        Ok(_) => {}
+        Err(error) => {
+            fail_kwt_worktree_remove(scene, task, error.to_string());
+            return KwtWorktreeOutcome::default();
+        }
     }
 
     if let Some(target) = live_target {
@@ -2949,6 +3001,7 @@ pub(crate) fn run_kwt_worktree_remove(
         generation,
         session_name,
         socket_name,
+        force,
         &task.cancellation,
     ) {
         if error.kind() == DiagnosticKind::Timeout {

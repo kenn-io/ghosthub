@@ -674,7 +674,7 @@ rust-test-fonts-live:
 .PHONY: rust-test-kwt-live
 rust-test-kwt-live: ensure-kwt
 	@cd "$(RUST_DIR)" && GHOSTHUB_KWT_BUNDLE_TEST="$(shell realpath -m -- "$(KWT_BINARY_PATH)")" \
-		$(CARGO) test --locked -p ghosthub-workspace --test native_kwt -- --ignored --exact projects_and_worktrees_use_native_linux
+		$(CARGO) test --locked -p ghosthub-workspace --test native_kwt -- --ignored --skip pull_request_import_attaches_to_the_protected_native_socket
 
 .PHONY: rust-test-kwt-pr-live
 rust-test-kwt-pr-live: ensure-kwt
