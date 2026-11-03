@@ -30,7 +30,10 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: `pnpm exec astro preview --host 127.0.0.1 --port ${port}`,
+    // --ignore-lock keeps the server in the foreground. Without it, Astro
+    // backgrounds preview when it detects an AI agent, and Playwright then
+    // sees the command exit early.
+    command: `pnpm exec astro preview --ignore-lock --host 127.0.0.1 --port ${port}`,
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: false,
   },

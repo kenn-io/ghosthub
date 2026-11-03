@@ -6,7 +6,7 @@ dependencies = ["pyyaml==6.0.3"]
 
 [dependency-groups]
 dev = [
-  "pytest==8.4.1",
+  "pytest==9.0.3",
   "ruff==0.16.3",
   "ty==0.0.71",
 ]
