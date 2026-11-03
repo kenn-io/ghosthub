@@ -47,8 +47,24 @@ jobs:
       - run: pnpm check
       - run: pnpm lint
       - run: pnpm test
+      - name: Upload Vitest JSON report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vitest-website-attempt-${{ github.run_attempt }}
+          path: website/test-results/vitest/website.json
+          retention-days: 14
+          if-no-files-found: ignore
       - run: pnpm build
       - run: pnpm test:browser
+      - name: Upload Playwright JSON report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-website-browser-attempt-${{ github.run_attempt }}
+          path: website/test-results/playwright/website-browser.json
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Check that pages paint with their stylesheets and fonts
         uses: kenn-io/actions/first-paint@b523fb403607f01de5eec5f4556c7668544c70fe # main
         with:
