@@ -198,39 +198,35 @@ def test_artifact_state_flags_archive_missing_ghostty_api(tmp_path: Path) -> Non
     )
 
 
-def _git(root: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+_UPSTREAM_FIX_DIFF = """\
+diff --git a/Surface.zig b/Surface.zig
+--- a/Surface.zig
++++ b/Surface.zig
+@@ -1 +1,3 @@
+-pub fn deinit() void {}
++pub fn deinit() void {
++    drain();
++}
+diff --git a/drain.zig b/drain.zig
+new file mode 100644
+--- /dev/null
++++ b/drain.zig
+@@ -0,0 +1 @@
++pub fn drain() void {}
+"""
 
 
 def _write_upstream_patch_fixture(repo: Repo, name: str) -> Path:
-    """Commit a one-file source checkout and vendor a diff that edits it
+    """Create a one-file source checkout and vendor a diff that edits it
     and adds a file, as upstream fixes do."""
     source = repo.paths.source_checkout_root
     source.mkdir(parents=True)
-    _git(source, "init", "-q")
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
     (source / "Surface.zig").write_text("pub fn deinit() void {}\n")
-    _git(source, "add", "Surface.zig")
-    _git(
-        source,
-        "-c", "user.name=fixture",
-        "-c", "user.email=fixture@example.com",
-        "commit", "-q", "-m", "pinned",
-    )
-
-    (source / "Surface.zig").write_text("pub fn deinit() void {\n    drain();\n}\n")
-    (source / "drain.zig").write_text("pub fn drain() void {}\n")
-    _git(source, "add", "-N", "drain.zig")
-    diff = subprocess.run(
-        ["git", "-C", str(source), "diff"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    _git(source, "reset", "-q", "--hard")
 
     patch = repo.root / "Vendor" / "ghostty-patches" / name
     patch.parent.mkdir(parents=True, exist_ok=True)
-    patch.write_text(diff)
+    patch.write_text(_UPSTREAM_FIX_DIFF)
     return source
 
 
