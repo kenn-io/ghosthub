@@ -101,6 +101,8 @@ help:
 		'      Exercise the exact pinned kwt helper through its daemon-backed project lifecycle.' \
 		'  make test-essential-workflows' \
 		'      Run the pinned kwt contract and focused host, inventory, sidebar, and tmux workflows.' \
+		'  make test-zellij-attach ZELLIJ_BINARY_PATH=/path/to/zellij' \
+		'      Attach to isolated existing Zellij sessions through a native macOS terminal.' \
 		'  make build' \
 		'      Build the Swift package.' \
 		'  make build-release' \
@@ -574,6 +576,14 @@ test-tmux-attach: bootstrap-libghostty
 		$(SWIFT) test --filter GhosthubTmuxTests; \
 	sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
 		$(SWIFT) test --filter TmuxInjectionSmokeTests
+
+.PHONY: test-zellij-attach
+test-zellij-attach: bootstrap-libghostty
+	@test -x "$(ZELLIJ_BINARY_PATH)" || \
+		{ printf 'Set ZELLIJ_BINARY_PATH to a macOS Zellij executable.\n' >&2; exit 1; }
+	@GHOSTHUB_TEST_ZELLIJ="$(abspath $(ZELLIJ_BINARY_PATH))" \
+		sh tools/run_with_timeout.sh 180 sh tools/run_swift_tests.sh \
+		$(SWIFT) test --filter TerminalSurfaceViewInputTests/testExistingZellijSessionAttachesByExactName
 
 purge-test-tmux:
 	@sh tools/purge_test_tmux.sh

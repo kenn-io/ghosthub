@@ -21,6 +21,9 @@ test, and documentation-only changes are omitted.
 
 ### Fixed
 
+- On macOS, opening an existing Zellij session with Zellij 0.45 now attaches
+  to the selected session instead of asking you to choose one again. This
+  applies to local and SSH hosts.
 - Closing a terminal whose program is still writing output, such as a Herdr
   session, no longer freezes Ghosthub. Before, the app could stop responding
   until it was force quit.

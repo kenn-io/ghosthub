@@ -113,6 +113,17 @@ registration, daemon-backed inventory, removal of a missing checkout, and
 inventory refresh in an isolated `KWT_HOME`. It then runs the focused kwt
 inventory, host resolution, sidebar, and ordinary tmux attachment contracts.
 
+To check Zellij attachment through a native libghostty terminal on macOS:
+
+```bash
+make test-zellij-attach ZELLIJ_BINARY_PATH="$(command -v zellij)"
+```
+
+The test creates isolated sessions, selects exact names among multiple
+sessions, types into their shells, and detaches and reattaches. Its config,
+cache, data, logs, and sockets stay in a temporary directory. It does not
+connect to your existing Zellij sessions.
+
 The SSH cutover suite uses two isolated Docker hosts to exercise a direct
 connection, a ProxyJump route, and an interactive ProxyJump route through the
 pinned kwt helper:

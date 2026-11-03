@@ -10,6 +10,7 @@ import GhosthubTmux
 import GhosthubTransport
 @testable import GhosthubUI
 import GhosthubWorkspace
+import GhosthubZellij
 import IOSurface
 import SwiftUI
 import XCTest
@@ -191,6 +192,119 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         // receive libghostty's login prefix and launch Python normally.
         return (["/usr/bin/env", executable] + arguments)
             .map(shellQuotedCommandArgument).joined(separator: " ")
+    }
+
+    func testExistingZellijSessionAttachesByExactName() async throws {
+        guard let binary = ProcessInfo.processInfo.environment["GHOSTHUB_TEST_ZELLIJ"] else {
+            throw XCTSkip("Run make test-zellij-attach with ZELLIJ_BINARY_PATH.")
+        }
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: binary))
+        // Zellij's macOS cache has no directory flag, so give the server a
+        // scratch HOME as well as private config, data, logs, and sockets.
+        let root = URL(fileURLWithPath: "/tmp/gz-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        for directory in ["home", "tmp", "sockets", "data"] {
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent(directory),
+                withIntermediateDirectories: false
+            )
+        }
+        let shell = root.appendingPathComponent("shell")
+        try """
+        #!/bin/sh
+        printf '\\n<session:%s>\\n' "$ZELLIJ_SESSION_NAME"
+        printf '%s\\n' "$ZELLIJ_SESSION_NAME" >> "$HOME/shell-starts"
+        export PS1='ready> '
+        exec /bin/sh
+        """.write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shell.path)
+        try "layout { pane; }\n".write(
+            to: root.appendingPathComponent("test.kdl"), atomically: true, encoding: .utf8
+        )
+        try """
+        default_shell "\(shell.path)"
+        default_layout "\(root.path)/test.kdl"
+        pane_frames false
+        show_release_notes false
+        show_startup_tips false
+        """.write(to: root.appendingPathComponent("config.kdl"), atomically: true, encoding: .utf8)
+        let executable = root.appendingPathComponent("zellij")
+        let launch = [
+            "/usr/bin/env", "-i", "HOME=\(root.path)/home", "PATH=/usr/bin:/bin",
+            "TMPDIR=\(root.path)/tmp", "ZELLIJ_SOCKET_DIR=\(root.path)/sockets",
+            "TERM=xterm-256color", "LANG=en_US.UTF-8", binary,
+            "--config", "\(root.path)/config.kdl", "--data-dir", "\(root.path)/data",
+        ].map(shellQuotedCommandArgument).joined(separator: " ")
+        try "#!/bin/sh\nexec \(launch) \"$@\"\n".write(
+            to: executable, atomically: true, encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+        let names = ["review", "review 'two'"]
+        defer {
+            for name in names {
+                let kill = Process()
+                kill.executableURL = executable
+                kill.arguments = ["kill-session", "--", name]
+                try? kill.run()
+                kill.waitUntilExit()
+            }
+        }
+        for name in names {
+            // Start outside the attachment path, as another terminal would.
+            let command = [executable.path, "--session=\(name)"]
+                .map(shellQuotedCommandArgument).joined(separator: " ")
+            let view = makeSurface(
+                app: try requireAppHandle(),
+                configuration: .init(command: command)
+            )
+            let window = hostInWindow(view)
+            // Establish server readiness independently of the creating
+            // client's first paint; the attachment below must render it.
+            let startsPath = root.appendingPathComponent("home/shell-starts")
+            waitUntil(timeout: 10) {
+                ((try? String(contentsOf: startsPath, encoding: .utf8)) ?? "")
+                    .split(separator: "\n").contains(Substring(name))
+            }
+            XCTAssertTrue(((try? String(contentsOf: startsPath, encoding: .utf8)) ?? "")
+                .split(separator: "\n").contains(Substring(name)))
+            await view.shutdown()
+            window.orderOut(nil)
+        }
+        // Two sessions, including an overlapping prefix and shell quotes,
+        // distinguish exact-name attachment from chooser/first-session behavior.
+        for name in names + [names[0]] {
+            let command = try ZellijAttachmentInfo(sessionName: name, host: .local)
+                .attachCommand(zellijPath: executable.path)
+            let view = makeSurface(
+                app: try requireAppHandle(),
+                configuration: .init(command: command)
+            )
+            let window = hostInWindow(view)
+            waitForViewportText("<session:\(name)>", in: view, timeout: 10)
+            let text = readViewportText(from: view)
+            XCTAssertTrue(text.contains("<session:\(name)>"), text)
+            typeText("echo abcd\r", into: view, window: window)
+            waitForViewportText("\nabcd", in: view)
+            XCTAssertTrue(readViewportText(from: view).contains("\nabcd"))
+            await view.shutdown()
+            window.orderOut(nil)
+        }
+        let starts = try String(
+            contentsOf: root.appendingPathComponent("home/shell-starts"),
+            encoding: .utf8
+        )
+        XCTAssertEqual(
+            starts,
+            "review\nreview 'two'\n",
+            "Detaching must preserve the original shells"
+        )
     }
 
     private func makeRawInputProbeScript(readBytes: Int) -> URL {

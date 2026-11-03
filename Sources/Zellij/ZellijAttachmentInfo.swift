@@ -1,4 +1,5 @@
 import GhosthubTransport
+import GhosthubWorkspace
 
 public enum ZellijAttachmentLaunchMode: Equatable, Sendable {
     case attachExisting
@@ -14,26 +15,13 @@ public struct ZellijAttachmentInfo: Equatable, Sendable {
         self.host = host
     }
 
-    /// Whether `zellij attach` can take this name as its session argument.
-    /// Since Zellij 0.45.1, `--` starts an initial command instead of ending
-    /// options, so a leading-dash name reads as a flag and `help` or
-    /// `options` reads as a subcommand.
-    public static func canAttach(sessionName: String) -> Bool {
-        guard !sessionName.isEmpty else { return false }
-        if sessionName.hasPrefix("-"), sessionName != "-" {
-            return false
-        }
-        return sessionName != "help" && sessionName != "options"
-    }
-
     public func attachCommand(
         zellijPath: String,
         launchMode: ZellijAttachmentLaunchMode = .attachExisting,
         sshConnectionArguments: [String] = [],
         remoteExitStatusPath: String? = nil
     ) throws -> String {
-        if launchMode == .attachExisting,
-           !Self.canAttach(sessionName: sessionName) {
+        guard ZellijSessionName.isAttachable(sessionName) else {
             throw ZellijCommandError.unattachableSessionName(sessionName)
         }
         let attach = localAttachCommand(
@@ -78,6 +66,8 @@ public struct ZellijAttachmentInfo: Equatable, Sendable {
             // Zellij has no atomic active-only client command. Callers must
             // validate active inventory first; the scene-wide kill fence
             // prevents Ghosthub reconnects from racing a confirmed kill.
+            // Since Zellij 0.45, arguments after -- are an initial command,
+            // not the session name. Pass the exact name as the positional.
             arguments = [zellijPath, "attach", sessionName]
         case .create:
             arguments = [zellijPath, "--session=\(sessionName)"]
