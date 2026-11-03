@@ -5,6 +5,11 @@ const port = 4329;
 
 export default defineConfig({
   testDir: 'browser-tests',
+  // The list reporter names every test with its result, so our CI flake
+  // monitor can confirm that a test which failed passed on a rerun. It is
+  // already the local default; on CI the default dot reporter names only
+  // failures.
+  reporter: 'list',
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     ...(chromePath === undefined ? { channel: 'chrome' } : {}),
