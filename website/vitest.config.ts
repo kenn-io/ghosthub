@@ -1,15 +1,25 @@
 import { getViteConfig } from 'astro/config';
 
+const onGitHubActions = process.env['GITHUB_ACTIONS'] === 'true';
+
 export default getViteConfig({
   test: {
     include: ['src/**/*.test.ts'],
-    // On GitHub Actions, the tree reporter lists every test with its result
-    // under its file, so our CI flake monitor can confirm that a test which
-    // failed passed on a rerun; the default reporter names only files there.
-    // Naming any reporter replaces Vitest's defaults, so keep its
-    // github-actions reporter for failure annotations.
-    ...(process.env['GITHUB_ACTIONS'] === 'true'
-      ? { reporters: ['tree', 'github-actions'] }
+    // On GitHub Actions, retry failed tests and write a JSON report that CI
+    // uploads. Our CI flake monitor reads that report: a test that failed and
+    // then passed on a retry reports "passed" with its earlier failure
+    // messages. The tree reporter names every test in the log, and naming any
+    // reporter replaces Vitest's defaults, so keep its github-actions reporter
+    // for failure annotations.
+    ...(onGitHubActions
+      ? {
+          retry: 2,
+          reporters: [
+            'tree',
+            'github-actions',
+            ['json', { outputFile: 'test-results/vitest/website.json' }],
+          ],
+        }
       : {}),
   },
 });
