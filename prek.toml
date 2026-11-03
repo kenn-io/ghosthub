@@ -9,7 +9,8 @@ hooks = [
   { id = "detect-private-key" },
   # no-commit-to-branch disabled — no remote, main is the working branch
   { id = "check-added-large-files", args = ["--maxkb=1024"] },
-  { id = "trailing-whitespace", args = ["--markdown-linebreak-ext=md"] },
+  # Vendored unified diffs need their single-space blank context lines.
+  { id = "trailing-whitespace", args = ["--markdown-linebreak-ext=md"], exclude = "\\.patch$" },
   { id = "end-of-file-fixer" },
   { id = "check-json" },
   { id = "check-toml" },

@@ -198,6 +198,67 @@ def test_artifact_state_flags_archive_missing_ghostty_api(tmp_path: Path) -> Non
     )
 
 
+def _git(root: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+def _write_upstream_patch_fixture(repo: Repo, name: str) -> Path:
+    """Commit a one-file source checkout and vendor a diff that edits it
+    and adds a file, as upstream fixes do."""
+    source = repo.paths.source_checkout_root
+    source.mkdir(parents=True)
+    _git(source, "init", "-q")
+    (source / "Surface.zig").write_text("pub fn deinit() void {}\n")
+    _git(source, "add", "Surface.zig")
+    _git(
+        source,
+        "-c", "user.name=fixture",
+        "-c", "user.email=fixture@example.com",
+        "commit", "-q", "-m", "pinned",
+    )
+
+    (source / "Surface.zig").write_text("pub fn deinit() void {\n    drain();\n}\n")
+    (source / "drain.zig").write_text("pub fn drain() void {}\n")
+    _git(source, "add", "-N", "drain.zig")
+    diff = subprocess.run(
+        ["git", "-C", str(source), "diff"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    _git(source, "reset", "-q", "--hard")
+
+    patch = repo.root / "Vendor" / "ghostty-patches" / name
+    patch.parent.mkdir(parents=True, exist_ok=True)
+    patch.write_text(diff)
+    return source
+
+
+def test_upstream_source_patches_apply_to_the_checkout(
+    repo: Repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _write_upstream_patch_fixture(repo, "fix.patch")
+    monkeypatch.setattr(bootstrap, "UPSTREAM_SOURCE_PATCHES", ("fix.patch",))
+
+    bootstrap.apply_upstream_source_patches(repo.paths)
+
+    assert (source / "Surface.zig").read_text() == "pub fn deinit() void {\n    drain();\n}\n"
+    assert (source / "drain.zig").read_text() == "pub fn drain() void {}\n"
+
+
+def test_upstream_source_patch_conflict_names_the_patch(
+    repo: Repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _write_upstream_patch_fixture(repo, "fix.patch")
+    monkeypatch.setattr(bootstrap, "UPSTREAM_SOURCE_PATCHES", ("fix.patch",))
+    (source / "Surface.zig").write_text("pub fn deinit(self: *Surface) void {}\n")
+
+    with pytest.raises(bootstrap.BootstrapError, match="fix.patch"):
+        bootstrap.apply_upstream_source_patches(repo.paths)
+
+    assert not (source / "drain.zig").exists()
+
+
 def test_clipboard_write_patch_marks_both_osc52_paths(tmp_path: Path) -> None:
     surface = tmp_path / "Surface.zig"
     surface.write_text(
