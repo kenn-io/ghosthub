@@ -665,6 +665,25 @@ DOWNLOAD_RESET = (
 DOWNLOAD_TIMEOUT = (
     "./build.zig.zon:15:20: error: HTTP response read failure: ConnectionTimedOut"
 )
+# Captured from Nightly run 41664857789, where the dependency host briefly
+# returned 500 for a lazy dependency.
+SERVER_ERROR = (
+    "pkg/dcimgui/build.zig.zon:11:20: error: bad HTTP response code: "
+    "'500 Internal Server Error'\n"
+    '            .url = "https://deps.files.ghostty.org/'
+    'DearBindings_v0.17_ImGui_v1.92.5-docking.tar.gz",\n'
+    "                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+)
+SERVICE_UNAVAILABLE = (
+    "./build.zig.zon:27:20: error: bad HTTP response code: '503 Service Unavailable'"
+)
+NOT_FOUND = "./build.zig.zon:27:20: error: bad HTTP response code: '404 Not Found'"
+TRANSIENT_FAILURES = (
+    DOWNLOAD_RESET,
+    DOWNLOAD_TIMEOUT,
+    SERVER_ERROR,
+    SERVICE_UNAVAILABLE,
+)
 COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
 
 
@@ -677,17 +696,18 @@ COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
         ([DOWNLOAD_RESET] * 3, 3, False),
         ([COMPILE_ERROR], 1, False),
         ([DOWNLOAD_RESET, COMPILE_ERROR], 2, False),
-        (
-            ["./build.zig.zon:27:20: error: bad HTTP response code: '404 Not Found'"],
-            1,
-            False,
-        ),
+        ([NOT_FOUND], 1, False),
+        ([SERVER_ERROR, NOT_FOUND], 2, False),
         (["./build.zig.zon:27:20: error: hash mismatch"], 1, False),
         ([DOWNLOAD_RESET + "\n" + COMPILE_ERROR], 1, False),
         ([DOWNLOAD_TIMEOUT], 2, True),
         ([DOWNLOAD_RESET, DOWNLOAD_TIMEOUT], 3, True),
         ([DOWNLOAD_TIMEOUT] * 3, 3, False),
         ([DOWNLOAD_TIMEOUT + "\n" + COMPILE_ERROR], 1, False),
+        ([SERVER_ERROR], 2, True),
+        ([SERVER_ERROR, SERVICE_UNAVAILABLE], 3, True),
+        ([SERVER_ERROR] * 3, 3, False),
+        ([SERVER_ERROR + "\n" + COMPILE_ERROR], 1, False),
     ],
     ids=[
         "success",
@@ -697,15 +717,20 @@ COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
         "compiler",
         "compiler-after-reset",
         "not-found",
+        "not-found-after-server-error",
         "hash",
         "mixed-errors",
         "timeout-recovers",
         "reset-then-timeout",
         "timeout-exhausted",
         "timeout-and-compiler",
+        "server-error-recovers",
+        "server-errors-then-success",
+        "server-error-exhausted",
+        "server-error-and-compiler",
     ],
 )
-def test_bootstrap_retries_only_interrupted_dependency_downloads(
+def test_bootstrap_retries_only_transient_dependency_failures(
     repo: Repo,
     capfd: pytest.CaptureFixture[str],
     failures: list[str],
@@ -778,7 +803,7 @@ def test_bootstrap_retries_only_interrupted_dependency_downloads(
         else:
             with pytest.raises(bootstrap.BootstrapError) as raised:
                 build()
-            if failures[-1] in (DOWNLOAD_RESET, DOWNLOAD_TIMEOUT):
+            if failures[-1] in TRANSIENT_FAILURES:
                 assert "3 attempts" in str(raised.value)
             else:
                 assert "full Xcode installation selected via `xcode-select`" in str(

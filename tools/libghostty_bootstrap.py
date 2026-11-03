@@ -1504,8 +1504,11 @@ def run_zig_build(
             for line in process.stdout:
                 print(line, end="", flush=True)
                 if re.search(
-                    r"(?:^|/)build\.zig\.zon:\d+:\d+: error: "
-                    r"HTTP response read failure: (?:ConnectionResetByPeer|ConnectionTimedOut)\s*$",
+                    r"(?:^|/)build\.zig\.zon:\d+:\d+: error: (?:"
+                    r"HTTP response read failure: "
+                    r"(?:ConnectionResetByPeer|ConnectionTimedOut)"
+                    r"|bad HTTP response code: '5\d\d [^']*'"
+                    r")\s*$",
                     line,
                 ):
                     download_interrupted = True
@@ -1519,11 +1522,12 @@ def run_zig_build(
         if attempt == 3:
             raise BootstrapError(
                 "Zig dependency downloads failed after 3 attempts because the "
-                "connection was reset or timed out. Check access to the dependency URL reported "
-                "above and rerun the build. Downloaded dependencies remain cached."
+                "connection was reset or timed out, or the server returned a 5xx "
+                "error. Check access to the dependency URL reported above and rerun "
+                "the build. Downloaded dependencies remain cached."
             )
         print(
-            "Zig dependency download interrupted; "
+            "Zig dependency download failed transiently; "
             f"retrying build (attempt {attempt + 1}/3).",
             flush=True,
         )
