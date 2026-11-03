@@ -522,9 +522,17 @@ checkout. The Git branch remains. A replacement session or checkout requires
 a fresh review. KWT refuses removal while the workspace session name remains
 on either shared server. Cancel leaves the checkout and session intact.
 
+If KWT finds uncommitted changes, the confirmation warns that staged,
+unstaged, and untracked work will be permanently discarded and requires
+**Force Remove Worktree**. The workspace API also requires an explicit force
+acknowledgement matching that captured confirmation. A clean confirmation
+cannot authorize force removal if the checkout becomes dirty; **Review Again**
+captures a new confirmation before any session is terminated. Failed or
+incomplete change inspection still blocks removal.
+
 ![Confirm removal of a remote worktree](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remove-worktree.png)
 
-Protected imports, force removal, other named sockets,
+Protected imports, other named sockets,
 and automatic transport recovery remain separate work. Their
 unsupported controls are unavailable in the remote project tree.
 
@@ -1371,7 +1379,9 @@ Remote branch-backed creation and ordinary worktree removal use the managed
 helper and host KWT lane. Removal also holds the session operation lane, so
 attachments queued in other windows resume after it settles. Reconnect cancels
 pending destructive commands; known successful removals tombstone the exact
-checkout before inventory reconciliation. Protected imports, force removal,
+checkout before inventory reconciliation. Force removal of an ordinary SSH
+worktree requires a separate acknowledgement bound to its captured dirty
+state and identities. Protected imports,
 automatic reconnect, and restoration remain separate work. An absent control cannot silently fall back to
 WSL or unguarded SSH.
 
@@ -1795,7 +1805,8 @@ The Windows WSL slice remains independently tested throughout this work.
    tmux/Herdr/Zellij creation now ship.
    Remote lifecycle controls, managed-helper installation, project registration,
    ordinary worktree opening, branch-backed creation, and confirmed ordinary
-   worktree removal also ship. Follow-on work adds protected imports, force
+   worktree removal, including explicit force removal of dirty ordinary SSH
+   worktrees, also ship. Follow-on work adds protected imports, local force
    removal, transport recovery, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only

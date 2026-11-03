@@ -27,6 +27,7 @@ assets=(
   guide-rust-appearance.png
   guide-rust-create-worktree.png
   guide-rust-remove-worktree.png
+  guide-rust-force-remove-worktree.png
   guide-find.png
   guide-session-previews.png
   guide-session-activity.png

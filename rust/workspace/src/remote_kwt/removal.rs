@@ -12,6 +12,7 @@ pub(crate) struct Pending {
     task: Task,
     target: KwtWorktreeTarget,
     session: Option<session::DiscoveredSession>,
+    force_required: bool,
     ready: bool,
 }
 
@@ -91,6 +92,7 @@ pub(crate) fn request(
             task,
             target,
             session: None,
+            force_required: false,
             ready: false,
         };
         *scene
@@ -142,10 +144,10 @@ fn capture(scene: &Arc<Scene>, mut pending: Pending) {
             .discover_kwt(&pending.task.snapshot, &pending.task.cancellation)
             .map_err(|e| WorkspaceError::new(e.to_string()))?;
         let (project, worktree) = find_target(&inventory, &pending.target)?;
-        pending
+        pending.force_required = pending
             .task
             .host
-            .check_kwt_worktree_removal(
+            .kwt_worktree_has_changes(
                 &pending.task.snapshot,
                 project,
                 worktree,
@@ -202,6 +204,7 @@ fn capture(scene: &Arc<Scene>, mut pending: Pending) {
             worktree_path: pending.target.worktree_path.clone(),
             authority: pending.task.id,
             session_was_running: pending.session.is_some(),
+            force_required: pending.force_required,
         })
     })();
     finish(scene, &pending.task);
@@ -223,6 +226,7 @@ pub(crate) fn confirm(
     generation: &str,
     session_name: &str,
     authority: u64,
+    force: bool,
 ) -> Result<(), WorkspaceError> {
     let pending = {
         let _publication = scene
@@ -240,6 +244,7 @@ pub(crate) fn confirm(
             .filter(|p| {
                 let t = &p.target;
                 p.ready
+                    && p.force_required == force
                     && p.task.id == authority
                     && t.host_id == host_id
                     && t.endpoint == endpoint
@@ -389,6 +394,7 @@ fn find_target<'a>(
     Ok((project.project(), worktree))
 }
 
+#[allow(clippy::too_many_lines)] // Keep the guarded kill/remove sequence and outcome reconciliation together.
 fn remove(
     scene: &Arc<Scene>,
     task: &Task,
@@ -400,9 +406,15 @@ fn remove(
         .discover_kwt(&task.snapshot, &task.cancellation)
         .map_err(|e| WorkspaceError::new(e.to_string()))?;
     let (project, worktree) = find_target(&inventory, &pending.target)?;
-    task.host
-        .check_kwt_worktree_removal(&task.snapshot, project, worktree, &task.cancellation)
+    let has_changes = task
+        .host
+        .kwt_worktree_has_changes(&task.snapshot, project, worktree, &task.cancellation)
         .map_err(|e| WorkspaceError::new(e.to_string()))?;
+    if has_changes && !pending.force_required {
+        return Err(WorkspaceError::new(
+            "This worktree has changes. Review it again before force removal.",
+        ));
+    }
     require_current(scene, task)?;
     let workspace = Workspace {
         scene: Arc::clone(scene),
@@ -430,9 +442,13 @@ fn remove(
         })?;
     }
     require_current(scene, task)?;
-    let result =
-        task.host
-            .remove_kwt_worktree(&task.snapshot, project, worktree, &task.cancellation);
+    let result = task.host.remove_kwt_worktree(
+        &task.snapshot,
+        project,
+        worktree,
+        pending.force_required,
+        &task.cancellation,
+    );
     if let Err(error) = &result
         && error.kind() != crate::DiagnosticKind::Timeout
     {

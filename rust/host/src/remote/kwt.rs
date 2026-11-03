@@ -157,17 +157,17 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok(())
     }
 
-    /// Check for uncommitted changes before terminating a worktree's session.
+    /// Inspect uncommitted changes before confirming or removing a worktree.
     ///
     /// # Errors
-    /// Returns an error for changed identity, incomplete inspection, or local changes.
-    pub fn check_kwt_worktree_removal(
+    /// Returns an error for changed identity or incomplete inspection.
+    pub fn kwt_worktree_has_changes(
         &self,
         snapshot: &RemoteTmuxSnapshot,
         project: &KwtProject,
         worktree: &crate::KwtWorktree,
         cancellation: &CancellationToken,
-    ) -> Result<(), RemoteTmuxError> {
+    ) -> Result<bool, RemoteTmuxError> {
         let generation = removal_generation(worktree)?;
         let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
         let output = self.kwt_command(
@@ -200,11 +200,8 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             ));
         }
         match inspection["changes"]["state"].as_str() {
-            Some("clean") => Ok(()),
-            Some("modified" | "staged" | "conflicted") => Err(RemoteTmuxError::new(
-                DiagnosticKind::Transport,
-                "This worktree has changes. Commit or stash them before removing it.",
-            )),
+            Some("clean") => Ok(false),
+            Some("modified" | "staged" | "conflicted") => Ok(true),
             _ => Err(RemoteTmuxError::new(
                 DiagnosticKind::MalformedOutput,
                 "KWT could not verify the worktree's changes. Try again.",
@@ -221,6 +218,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         snapshot: &RemoteTmuxSnapshot,
         project: &KwtProject,
         worktree: &crate::KwtWorktree,
+        force: bool,
         cancellation: &CancellationToken,
     ) -> Result<(), RemoteTmuxError> {
         let generation = removal_generation(worktree)?;
@@ -233,6 +231,9 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             worktree.session_name(),
             "--if-session-absent",
         ];
+        if force {
+            args.push("--force");
+        }
         if let Some(socket) = worktree.tmux_socket_name() {
             args.extend(["--if-session-socket-name", socket]);
         }

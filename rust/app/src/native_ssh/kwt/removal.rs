@@ -62,7 +62,12 @@ impl Target {
             .unwrap()
     }
 
-    fn confirm(&self, fixture: &Fixture, authority: u64) -> Result<(), workspace::WorkspaceError> {
+    fn confirm(
+        &self,
+        fixture: &Fixture,
+        authority: u64,
+        force: bool,
+    ) -> Result<(), workspace::WorkspaceError> {
         fixture.workspace.remove_kwt_worktree(
             &fixture.host_id,
             &fixture.endpoint,
@@ -73,6 +78,7 @@ impl Target {
             self.worktree.generation().unwrap(),
             self.worktree.session_name(),
             authority,
+            force,
         )
     }
 
@@ -141,7 +147,7 @@ fn removes_remote_worktrees_and_keeps_their_branches() {
         }
         let cancelled = target.ready(&fixture);
         fixture.workspace.cancel_kwt_worktree_removal();
-        assert!(target.confirm(&fixture, cancelled).is_err());
+        assert!(target.confirm(&fixture, cancelled, false).is_err());
         assert!(Path::new(target.worktree.path()).is_dir());
         let authority = target.request(&fixture);
         let event = wait_worktree_event(&fixture, authority);
@@ -154,7 +160,7 @@ fn removes_remote_worktrees_and_keeps_their_branches() {
         };
         assert_eq!(session_was_running, socket.is_some());
         let other_authority = target.ready(&other);
-        target.confirm(&fixture, authority).unwrap();
+        target.confirm(&fixture, authority, false).unwrap();
         let event = wait_worktree_event(&fixture, authority);
         match event {
             WorkspaceEvent::KwtWorktreeRemoved { .. } => {}
@@ -173,7 +179,7 @@ fn removes_remote_worktrees_and_keeps_their_branches() {
             .status()
             .unwrap();
         assert!(branch_exists.success());
-        assert!(target.confirm(&other, other_authority).is_err());
+        assert!(target.confirm(&other, other_authority, false).is_err());
         other.wait(|s| s.active_selection().is_none());
         assert!(
             fixture
@@ -235,7 +241,16 @@ fn dirty_remote_worktrees_keep_the_checkout_and_running_session() {
     let target = seed(&fixture, &path, "dirty", Some(false));
     let dirty = Path::new(target.worktree.path()).join("unfinished.txt");
     std::fs::write(&dirty, "keep this work\n").unwrap();
-    assert!(failure(&fixture, target.request(&fixture)).contains("has changes"));
+    let authority = target.request(&fixture);
+    assert!(matches!(
+        wait_worktree_event(&fixture, authority),
+        WorkspaceEvent::KwtWorktreeRemovalReady {
+            force_required: true,
+            ..
+        }
+    ));
+    fixture.workspace.cancel_kwt_worktree_removal();
+    assert!(target.confirm(&fixture, authority, false).is_err());
     workspace_tmux(
         &fixture,
         false,
@@ -243,8 +258,9 @@ fn dirty_remote_worktrees_keep_the_checkout_and_running_session() {
     );
     std::fs::remove_file(&dirty).unwrap();
     let authority = target.ready(&fixture);
+    assert!(target.confirm(&fixture, authority, true).is_err());
     std::fs::write(&dirty, "changes made after confirmation\n").unwrap();
-    target.confirm(&fixture, authority).unwrap();
+    target.confirm(&fixture, authority, false).unwrap();
     assert!(failure(&fixture, authority).contains("has changes"));
     assert_eq!(
         std::fs::read_to_string(&dirty).unwrap(),
@@ -260,6 +276,95 @@ fn dirty_remote_worktrees_keep_the_checkout_and_running_session() {
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn force_removal_requires_explicit_approval_and_keeps_the_branch() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::removal::force_removal_requires_explicit_approval_and_keeps_the_branch",
+    ) else {
+        return;
+    };
+    let path = project(&fixture);
+    std::fs::write(path.join("tracked.txt"), "committed\n").unwrap();
+    for args in [
+        vec!["add", "tracked.txt"],
+        vec!["commit", "-m", "Track fixture file"],
+    ] {
+        assert!(
+            Command::new("git")
+                .current_dir(&path)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    for (branch, socket) in [
+        ("staged", Some(false)),
+        ("unstaged", Some(true)),
+        ("untracked", None),
+    ] {
+        let target = seed(&fixture, &path, branch, socket);
+        let file = Path::new(target.worktree.path()).join(if branch == "untracked" {
+            "untracked.txt"
+        } else {
+            "tracked.txt"
+        });
+        std::fs::write(&file, "work to discard\n").unwrap();
+        if branch == "staged" {
+            assert!(
+                Command::new("git")
+                    .current_dir(target.worktree.path())
+                    .args(["add", "tracked.txt"])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let authority = target.request(&fixture);
+        assert!(matches!(
+            wait_worktree_event(&fixture, authority),
+            WorkspaceEvent::KwtWorktreeRemovalReady {
+                force_required: true,
+                ..
+            }
+        ));
+        assert!(target.confirm(&fixture, authority, false).is_err());
+        fixture.workspace.cancel_kwt_worktree_removal();
+        assert!(target.confirm(&fixture, authority, true).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "work to discard\n");
+        if let Some(kwt_socket) = socket {
+            workspace_tmux(
+                &fixture,
+                kwt_socket,
+                &["has-session", "-t", target.worktree.session_name()],
+            );
+        }
+        let authority = target.ready(&fixture);
+        target.confirm(&fixture, authority, true).unwrap();
+        assert!(matches!(
+            wait_worktree_event(&fixture, authority),
+            WorkspaceEvent::KwtWorktreeRemoved { .. }
+        ));
+        assert!(!Path::new(target.worktree.path()).exists());
+        assert!(
+            Command::new("git")
+                .current_dir(&path)
+                .args([
+                    "show-ref",
+                    "--quiet",
+                    "--verify",
+                    &format!("refs/heads/{branch}")
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    fixture.attach("review", "after-force-removal");
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 fn remote_removal_rejects_new_and_replacement_sessions() {
     let Some(fixture) = Fixture::isolated(
         "native_ssh::kwt::removal::remote_removal_rejects_new_and_replacement_sessions",
@@ -267,12 +372,22 @@ fn remote_removal_rejects_new_and_replacement_sessions() {
         return;
     };
     let path = project(&fixture);
-    for (branch, socket) in [
-        ("idle", None),
-        ("default", Some(false)),
-        ("named", Some(true)),
+    for (branch, socket, force) in [
+        ("idle", None, false),
+        ("default", Some(false), false),
+        ("named", Some(true), false),
+        ("dirty-idle", None, true),
+        ("dirty-default", Some(false), true),
+        ("dirty-named", Some(true), true),
     ] {
         let target = seed(&fixture, &path, branch, socket);
+        if force {
+            std::fs::write(
+                Path::new(target.worktree.path()).join("unfinished.txt"),
+                "keep this work\n",
+            )
+            .unwrap();
+        }
         let authority = target.ready(&fixture);
         if let Some(kwt_socket) = socket {
             workspace_tmux(
@@ -288,7 +403,7 @@ fn remote_removal_rejects_new_and_replacement_sessions() {
             target.worktree.path(),
             target.worktree.generation(),
         );
-        target.confirm(&fixture, authority).unwrap();
+        target.confirm(&fixture, authority, force).unwrap();
         let _message = failure(&fixture, authority);
         assert!(Path::new(target.worktree.path()).is_dir());
         workspace_tmux(
@@ -310,11 +425,17 @@ fn remote_removal_rejects_replaced_checkouts_registrations_and_connections() {
     };
     let path = project(&fixture);
     let target = seed(&fixture, &path, "replacement", None);
+    std::fs::write(
+        Path::new(target.worktree.path()).join("unfinished.txt"),
+        "discard only this generation\n",
+    )
+    .unwrap();
     let authority = target.ready(&fixture);
     remote_kwt_in(
         path.to_str().unwrap(),
         &[
             "remove",
+            "--force",
             "--if-generation",
             target.worktree.generation().unwrap(),
             target.worktree.path(),
@@ -324,7 +445,7 @@ fn remote_removal_rejects_replaced_checkouts_registrations_and_connections() {
         path.to_str().unwrap(),
         &["add", "replacement", "--no-launch"],
     );
-    target.confirm(&fixture, authority).unwrap();
+    target.confirm(&fixture, authority, true).unwrap();
     assert!(failure(&fixture, authority).contains("worktree changed"));
     assert!(Path::new(target.worktree.path()).is_dir());
     fixture.connect();
@@ -346,7 +467,7 @@ fn remote_removal_rejects_replaced_checkouts_registrations_and_connections() {
         "--json",
     ]);
     remote_kwt(&["projects", "add", path.to_str().unwrap(), "--json"]);
-    replacement.confirm(&fixture, authority).unwrap();
+    replacement.confirm(&fixture, authority, false).unwrap();
     assert!(failure(&fixture, authority).contains("registration changed"));
     fixture.connect();
     wait_kwt_ready(&fixture);
@@ -354,7 +475,7 @@ fn remote_removal_rejects_replaced_checkouts_registrations_and_connections() {
     let authority = target.ready(&fixture);
     fixture.connect();
     wait_kwt_ready(&fixture);
-    assert!(target.confirm(&fixture, authority).is_err());
+    assert!(target.confirm(&fixture, authority, false).is_err());
     assert!(Path::new(target.worktree.path()).is_dir());
     assert!(path.join(".git").is_dir());
     fixture.workspace.close();
@@ -390,7 +511,7 @@ fn reconnect_cancels_removal_before_the_final_helper_command() {
     let authority = target.ready(&fixture);
     // Block provisioning for remove, after inventory and the clean inspection.
     let release = block_probe(&fixture, 3);
-    target.confirm(&fixture, authority).unwrap();
+    target.confirm(&fixture, authority, false).unwrap();
     fixture.wait(|_| fixture.root.join("home/removal-started").exists());
     fixture.workspace.connect_host(&fixture.host_id).unwrap();
     std::fs::write(release, "").unwrap();
@@ -417,7 +538,7 @@ fn removal_preserves_navigation_queued_during_preflight() {
     other.tmux_shell(target.worktree.session_name(), "before-remove-navigation");
     let authority = target.ready(&fixture);
     let release = block_probe(&fixture, 1);
-    target.confirm(&fixture, authority).unwrap();
+    target.confirm(&fixture, authority, false).unwrap();
     fixture.wait(|_| fixture.root.join("home/removal-started").exists());
     other
         .workspace
@@ -465,7 +586,7 @@ fn removal_settles_before_queued_worktree_and_directory_opens() {
         other.tmux_shell(target.worktree.session_name(), "before-queued-workspace");
         let authority = target.ready(&fixture);
         let release = block_probe(&fixture, 1);
-        target.confirm(&fixture, authority).unwrap();
+        target.confirm(&fixture, authority, false).unwrap();
         fixture.wait(|_| fixture.root.join("home/removal-started").exists());
         let session = if directory {
             let snapshot = other.workspace.snapshot();
@@ -573,7 +694,7 @@ fn removal_waits_for_a_workspace_open_that_already_owns_the_lane() {
         )
         .unwrap();
     other.wait(|_| fixture.root.join("home/removal-started").exists());
-    target.confirm(&fixture, authority).unwrap();
+    target.confirm(&fixture, authority, false).unwrap();
     std::fs::write(release, "").unwrap();
     assert!(matches!(
         wait_worktree_event(&fixture, authority),
@@ -600,14 +721,14 @@ fn cancelling_and_closing_removal_releases_the_operation_lane() {
     fixture.wait(|_| fixture.root.join("home/removal-started").exists());
     fixture.workspace.cancel_kwt_worktree_removal();
     let _message = failure(&fixture, authority);
-    assert!(target.confirm(&fixture, authority).is_err());
+    assert!(target.confirm(&fixture, authority, false).is_err());
     std::fs::write(&release, "").unwrap();
     let other = fixture.open_scene();
     let authority = target.ready(&other);
     std::fs::remove_file(&release).unwrap();
     std::fs::remove_file(fixture.root.join("home/removal-started")).unwrap();
     std::fs::remove_file(fixture.root.join("home/removal-count")).unwrap();
-    target.confirm(&other, authority).unwrap();
+    target.confirm(&other, authority, false).unwrap();
     fixture.wait(|_| fixture.root.join("home/removal-started").exists());
     other.workspace.close();
     fixture.wait(|s| {
@@ -643,7 +764,7 @@ fn removal_keeps_a_same_named_session_on_the_other_server() {
         target.worktree.session_name(),
         "/bin/sh",
     ]);
-    target.confirm(&fixture, authority).unwrap();
+    target.confirm(&fixture, authority, false).unwrap();
     assert!(failure(&fixture, authority).contains("session started after confirmation"));
     fixture.tmux(&[
         "has-session",

@@ -292,6 +292,7 @@ impl Fixture {
                 worktree.generation().unwrap(),
                 worktree.session_name(),
                 authority,
+                false,
             )
         });
         self.event(|event| {
