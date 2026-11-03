@@ -74,8 +74,8 @@ combination with Apache-licensed code, but the exception remains crate-scoped
 so a new copyleft dependency cannot arrive silently. Known unmaintained
 transitives are individually identified in deny.toml and must be reconsidered
 whenever the GPUI pin changes. GPL and AGPL third-party dependencies remain
-unconditionally rejected. Ghosthub's own Rust packages retain the repository's
-AGPL-3.0-or-later license and are excluded from the third-party allowlist check.
+unconditionally rejected. Ghosthub's own Rust packages use the repository's
+Apache-2.0 license and are checked by the same allowlist.
 
 ### Verified dependency findings
 

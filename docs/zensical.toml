@@ -2,7 +2,7 @@
 site_name = "Ghosthub"
 site_description = "Internal engineering documentation for Ghosthub"
 site_author = "Kenn Software LLC"
-copyright = "Copyright &copy; 2026 Kenn Software LLC. AGPL-3.0."
+copyright = "Copyright &copy; 2026 Kenn Software LLC. Apache-2.0."
 docs_dir = "docs"
 site_dir = "site"
 use_directory_urls = true

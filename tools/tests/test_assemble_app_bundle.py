@@ -10,7 +10,7 @@ import pytest
 
 COPYRIGHT_NOTICE = (
     "Copyright © 2026 Kenn Software LLC. "
-    "Licensed under the GNU AGPL v3.0 or later."
+    "Licensed under the Apache License 2.0."
 )
 
 
@@ -71,7 +71,7 @@ def make_release_inputs(
     source_bin_dir: Path,
 ) -> tuple[Path, Path, Path, Path]:
     app_license = tmp_path / "Ghosthub-LICENSE"
-    app_license.write_text("GNU AGPL version 3", encoding="utf-8")
+    app_license.write_text("Apache License 2.0", encoding="utf-8")
     kwt_binary = make_executable(tmp_path / "kwt")
     kwt_variants_dir = tmp_path / "kwt-variants"
     for target in (
@@ -172,9 +172,7 @@ def test_assemble_app_bundle_stages_icon_and_binary(tmp_path):
         assert helper.is_file()
         assert stat.S_IMODE(helper.stat().st_mode) == 0o644
     licenses = app_root / "Contents" / "Resources" / "Licenses"
-    assert (licenses / "Ghosthub-AGPL-3.0.txt").read_text() == (
-        "GNU AGPL version 3"
-    )
+    assert (licenses / "Ghosthub-Apache-2.0.txt").read_text() == "Apache License 2.0"
     assert (licenses / "kwt-Apache-2.0.txt").read_text() == "Apache License 2.0"
     assert (licenses / "kwt-NOTICE.txt").read_text() == (
         "Copyright 2026 Kenn Software LLC"

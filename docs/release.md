@@ -83,7 +83,8 @@ compiled terminfo, so both trees must keep those exact names and positions.
 Assembly fails rather than shipping a bundle whose themes would silently
 resolve only against a user's `~/.config/ghostty/themes`.
 
-Every packaged app also carries Ghosthub's AGPL-3.0 license and all notices in
+Every packaged app also carries Ghosthub's Apache-2.0 license as
+`Ghosthub-Apache-2.0.txt` and all notices in
 the repository's `LICENSES` directory under `Contents/Resources/Licenses`.
 `LICENSES/THIRD-PARTY-NOTICES.md` is the audited inventory for GRDB, Sparkle,
 the components compiled into libghostty, and the resources the bundle
@@ -443,8 +444,7 @@ locally built. Verify at minimum:
 
 - Gatekeeper opens the app without a quarantine override.
 - About Ghosthub reports the version in `RELEASE_VERSION`, Kenn Software LLC
-  copyright, and the
-  GNU AGPL v3.0-or-later license notice.
+  copyright, and the Apache License 2.0 notice.
 - Local kwt projects and worktrees load without a system kwt on `PATH`.
 - Existing local tmux sessions remain discoverable and attach normally.
 - A configured SSH host discovers and attaches tmux without managed kwt.
@@ -836,8 +836,8 @@ resources; the Linux ELF variants do not. Sparkle remains under
 `GRDB_GRDB.bundle` into `Contents/Resources`, including its privacy manifest.
 It ignores unrelated bundles left in cached build output. Placing compatibility
 symlinks at the `.app` root creates unsealed content that strict code-signing
-rejects. Ghosthub's AGPL license and
-every third-party notice in `LICENSES` are staged during the same assembly step.
+rejects. Ghosthub's Apache-2.0 license and every third-party notice in `LICENSES`
+are staged during the same assembly step.
 
 `make debug-app` keeps the hardened runtime but adds the library-validation
 exception only to its temporary ad-hoc signature. Ad-hoc signatures have no

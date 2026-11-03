@@ -5,6 +5,12 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Changed
+
+- Ghosthub is now licensed under Apache 2.0. Contributions use the same
+  license and no longer require a contributor license agreement. Third-party
+  components retain their own licenses.
+
 ## [0.12.0] - 2026-10-30
 
 Flag worktrees to return to later, rename running tmux sessions, and find
