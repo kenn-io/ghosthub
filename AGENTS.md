@@ -172,8 +172,8 @@ layer, as subject to direct iteration.
   experience, and the body must say which one.
 - The public repository does not accept unsolicited pull requests. Direct bug
   reports and feature requests to GitHub issues. Prospective code contributors
-  must coordinate privately with Kenn Software and sign the CLA before their
-  work can be accepted.
+  must coordinate privately with Kenn Software before starting work.
+  Contributions use Apache-2.0; no contributor license agreement is required.
 - Never include superpowers planning documents (`docs/superpowers/specs/`,
   `docs/superpowers/plans/`) in a pull request. Creating and using them locally
   during development is fine; they are local working artifacts. Remove them

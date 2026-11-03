@@ -17,7 +17,7 @@
   <img alt="macOS 15 or newer" src="https://img.shields.io/badge/macOS-15%2B-111111?style=flat-square&logo=apple">
   <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-native-111111?style=flat-square">
   <a href="LICENSE">
-    <img alt="GNU AGPL v3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square">
+    <img alt="Apache 2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square">
   </a>
 </p>
 
@@ -141,8 +141,8 @@ Ghosthub does not accept unsolicited pull requests. Bug reports and feature
 requests are welcome through
 [GitHub issues](https://github.com/kenn-io/ghosthub/issues). Prospective code
 contributors should [read the contribution policy](CONTRIBUTING.md) and
-contact Kenn Software privately before starting work; accepted contributors
-must sign a CLA.
+contact Kenn Software privately before starting work. Contributions use the
+Apache License 2.0; no contributor license agreement is required.
 
 Internal build instructions, architecture, security boundaries, terminal
 behavior, and release operations are documented in [`docs/`](docs/README.md).
@@ -152,4 +152,5 @@ behavior, and release operations are documented in [`docs/`](docs/README.md).
 Copyright 2026 Kenn Software LLC.
 
 Ghosthub is free and open source software licensed under the
-[GNU Affero General Public License v3.0](LICENSE).
+[Apache License 2.0](LICENSE). Third-party components retain their own licenses;
+see [the notices](LICENSES/THIRD-PARTY-NOTICES.md).

@@ -370,7 +370,7 @@ def assemble_app_bundle(
         symlinks=True,
     )
 
-    shutil.copy2(app_license_path, licenses_dir / "Ghosthub-AGPL-3.0.txt")
+    shutil.copy2(app_license_path, licenses_dir / "Ghosthub-Apache-2.0.txt")
     for license_path in third_party_license_paths:
         shutil.copy2(license_path, licenses_dir / license_path.name)
 
