@@ -1847,6 +1847,74 @@ impl<R: CommandRunner> LocalHost<R> {
         }
     }
 
+    /// Inspect an exact checkout before confirming or removing it.
+    ///
+    /// # Errors
+    /// Returns an error for a changed runtime or checkout, failed helper
+    /// execution, or incomplete change inspection.
+    #[allow(clippy::too_many_arguments)] // Each identity is captured before confirmation.
+    pub fn kwt_worktree_has_changes(
+        &self,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
+        repository: &str,
+        project_path: &str,
+        worktree_path: &str,
+        generation: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "the revision-pinned KWT helper is not bundled",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let output = self.run_kwt_in_directory(
+            endpoint,
+            &helper,
+            project_path,
+            &[
+                "changes",
+                worktree_path,
+                "--expected-repository",
+                repository,
+                "--expected-generation",
+                generation,
+                "--json",
+            ],
+            cancellation,
+        )?;
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        if output.status != 0 {
+            return Err(classify_kwt_command_failure(
+                &output,
+                "inspect worktree changes",
+            ));
+        }
+        let inspection: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error.to_string()))?;
+        let identity = &inspection["worktree"];
+        if identity["repository"].as_str() != Some(repository)
+            || identity["path"].as_str() != Some(worktree_path)
+            || identity["generation"].as_str() != Some(generation)
+        {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "The worktree changed. Refresh and review the removal again.",
+            ));
+        }
+        match inspection["changes"]["state"].as_str() {
+            Some("clean") => Ok(false),
+            Some("modified" | "staged" | "conflicted") => Ok(true),
+            _ => Err(HostError::new(
+                DiagnosticKind::MalformedOutput,
+                "KWT could not verify the worktree's changes. Try again.",
+            )),
+        }
+    }
+
     /// Remove one exact KWT worktree while preserving its Git branch and
     /// requiring its workspace session to remain absent.
     ///
@@ -1873,6 +1941,7 @@ impl<R: CommandRunner> LocalHost<R> {
         generation: &str,
         session_name: &str,
         socket_name: Option<&str>,
+        force: bool,
         cancellation: &CancellationToken,
     ) -> Result<(), HostError> {
         self.require_runtime(endpoint, runtime, cancellation)?;
@@ -1892,6 +1961,9 @@ impl<R: CommandRunner> LocalHost<R> {
             session_name.to_owned(),
             "--if-session-absent".to_owned(),
         ];
+        if force {
+            command.push("--force".to_owned());
+        }
         if socket_name.is_none()
             && let Some(socket_directory) = self.config.tmux_tmpdir.as_deref()
         {
@@ -5281,6 +5353,7 @@ mod tests {
         mutation_timeouts: Arc<Mutex<Vec<Duration>>>,
         provider_timeouts: Arc<Mutex<Vec<Duration>>>,
         mutation_failure: Arc<Mutex<Option<String>>>,
+        change_output: Arc<Mutex<Option<CommandOutput>>>,
         branch_failure: Arc<AtomicBool>,
         helper_exists: Arc<AtomicBool>,
         helper_matches: Arc<AtomicBool>,
@@ -5294,6 +5367,7 @@ mod tests {
                 mutation_timeouts: Arc::default(),
                 provider_timeouts: Arc::default(),
                 mutation_failure: Arc::default(),
+                change_output: Arc::default(),
                 branch_failure: Arc::new(AtomicBool::new(false)),
                 helper_exists: Arc::new(AtomicBool::new(true)),
                 helper_matches: Arc::new(AtomicBool::new(true)),
@@ -5334,6 +5408,15 @@ mod tests {
                 && args.iter().any(|argument| argument == "--no-launch"))
                 || (args.iter().any(|argument| argument == "remove")
                     && args.iter().any(|argument| argument == "--if-generation"));
+            if args.iter().any(|arg| arg == "changes") {
+                self.calls.lock().unwrap().push(args.clone());
+                return Ok(self
+                    .change_output
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("change response"));
+            }
             if is_worktree_mutation {
                 self.mutation_timeouts
                     .lock()
@@ -5704,6 +5787,7 @@ mod tests {
             "0123456789abcdef0123456789abcdef",
             "kwt-workspace-widget-feature-ready",
             None,
+            false,
             &cancellation,
         )
         .expect("remove exact worktree while preserving its branch");
@@ -5749,6 +5833,81 @@ mod tests {
     }
 
     #[test]
+    fn kwt_change_inspection_rejects_replaced_or_incomplete_results() {
+        let (host, runner, endpoint, runtime) = kwt_mutation_host();
+        let inspect = || {
+            host.kwt_worktree_has_changes(
+                &endpoint,
+                &runtime,
+                "github.com/acme/widget",
+                "/code/widget",
+                "/work/widget/topic",
+                "0123456789abcdef0123456789abcdef",
+                &CancellationToken::new(),
+            )
+        };
+        let clean = serde_json::json!({
+            "worktree": {
+                "repository": "github.com/acme/widget",
+                "path": "/work/widget/topic",
+                "generation": "0123456789abcdef0123456789abcdef"
+            },
+            "changes": { "state": "clean" }
+        });
+        for field in ["repository", "path", "generation"] {
+            let mut response = clean.clone();
+            response["worktree"][field] = serde_json::Value::String("replacement".to_owned());
+            *runner.change_output.lock().unwrap() = Some(CommandOutput {
+                status: 0,
+                stdout: serde_json::to_vec(&response).unwrap(),
+                stderr: Vec::new(),
+            });
+            assert_eq!(inspect().unwrap_err().kind(), DiagnosticKind::Transport);
+        }
+        for state in [serde_json::Value::Null, serde_json::json!("unknown")] {
+            let mut response = clean.clone();
+            response["changes"]["state"] = state;
+            *runner.change_output.lock().unwrap() = Some(CommandOutput {
+                status: 0,
+                stdout: serde_json::to_vec(&response).unwrap(),
+                stderr: Vec::new(),
+            });
+            assert_eq!(
+                inspect().unwrap_err().kind(),
+                DiagnosticKind::MalformedOutput
+            );
+        }
+        *runner.change_output.lock().unwrap() = Some(CommandOutput {
+            status: 1,
+            stdout: br#"{"error":{"code":"response_too_large","message":"Inspection is incomplete","retryable":false}}"#.to_vec(),
+            stderr: Vec::new(),
+        });
+        assert!(inspect().is_err());
+        *runner.change_output.lock().unwrap() = Some(CommandOutput {
+            status: 0,
+            stdout: serde_json::to_vec(&clean).unwrap(),
+            stderr: Vec::new(),
+        });
+        assert!(!inspect().unwrap());
+        assert!(
+            runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|args| args.ends_with(&[
+                    "changes".to_owned(),
+                    "/work/widget/topic".to_owned(),
+                    "--expected-repository".to_owned(),
+                    "github.com/acme/widget".to_owned(),
+                    "--expected-generation".to_owned(),
+                    "0123456789abcdef0123456789abcdef".to_owned(),
+                    "--json".to_owned(),
+                ]))
+        );
+    }
+
+    #[test]
     fn protected_kwt_removal_uses_the_exact_named_socket() {
         let (host, runner, endpoint, runtime) = kwt_mutation_host();
         let cancellation = CancellationToken::new();
@@ -5761,6 +5920,7 @@ mod tests {
             "fedcba9876543210fedcba9876543210",
             "kwt-pr-widget-17",
             Some("kwt-pr-fedcba9876543210"),
+            false,
             &cancellation,
         )
         .expect("remove an absent protected worktree session on its exact socket");
@@ -5897,6 +6057,7 @@ mod tests {
                 "0123456789abcdef0123456789abcdef",
                 "kwt-workspace-widget-feature-ready",
                 None,
+                false,
                 &cancellation,
             )
             .expect_err("uncertain removal must remain a timeout");

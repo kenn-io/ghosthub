@@ -5637,8 +5637,7 @@ impl Workspace {
     /// workspace session to remain absent while it removes the checkout under
     /// the same lifecycle fence used by guarded open.
     /// `force` must match the captured confirmation's `force_required` value.
-    /// Only ordinary SSH worktrees support explicit force removal. A clean
-    /// confirmation never authorizes discarding changes made afterward.
+    /// A clean confirmation never authorizes discarding changes made afterward.
     ///
     /// # Errors
     ///
@@ -5673,11 +5672,6 @@ impl Workspace {
                 force,
             );
         }
-        if force {
-            return Err(WorkspaceError::new(
-                "Force removal is only available for ordinary SSH worktrees.",
-            ));
-        }
         if !is_canonical_kwt_generation(generation) {
             return Err(WorkspaceError::new(
                 "Refresh KWT inventory before removing this worktree.",
@@ -5693,6 +5687,7 @@ impl Workspace {
             worktree_path,
             generation,
             session_name,
+            force,
         )?;
         let result = self.start_kwt_worktree_operation(
             host_id,
@@ -5708,6 +5703,7 @@ impl Workspace {
                 tmux_attach_mode: pending.tmux_attach_mode,
                 live_target: pending.live_target.clone(),
                 operation_id: authority,
+                force: pending.force_required,
             },
         );
         if result.is_err() {
@@ -9120,6 +9116,7 @@ enum KwtWorktreeOperation {
         tmux_attach_mode: host::KwtTmuxAttachMode,
         live_target: Option<Arc<host::LiveSessionTarget>>,
         operation_id: u64,
+        force: bool,
     },
 }
 
@@ -9156,6 +9153,7 @@ impl KwtWorktreeTask {
 }
 
 struct PendingKwtRemoval {
+    force_required: bool,
     authority: u64,
     endpoint: host::LocalEndpoint,
     repository: String,

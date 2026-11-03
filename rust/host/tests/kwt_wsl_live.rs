@@ -301,6 +301,7 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
         "00000000000000000000000000000000",
         worktree.session_name(),
         None,
+        false,
         &cancellation,
     );
     assert!(
@@ -323,6 +324,7 @@ fn pinned_helper_honors_the_worktree_lifecycle_contract() {
         generation,
         worktree.session_name(),
         None,
+        false,
         &cancellation,
     )
     .expect("remove the worktree while the exact session remains absent");

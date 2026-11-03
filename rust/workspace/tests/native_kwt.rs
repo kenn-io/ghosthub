@@ -204,9 +204,14 @@ impl Fixture {
             let snapshot = self.workspace.snapshot();
             matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == worktree.session_name()).then_some(())
         });
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let expected = format!("kwt-native-{nonce}");
         self.workspace
             .send_key(KeyInput::text(
-                "printf 'kwt-native-%s\\n' ready",
+                format!("printf 'kwt-native-%s\\n' {nonce}"),
                 Modifiers::default(),
             ))
             .unwrap();
@@ -223,7 +228,7 @@ impl Fixture {
                 .cells()
                 .map(surface::Cell::text)
                 .collect::<String>()
-                .contains("kwt-native-ready")
+                .contains(&expected)
                 .then_some(())
         });
     }
@@ -254,7 +259,7 @@ impl Fixture {
         })
     }
 
-    fn remove(&self, worktree: &WorktreeItem) {
+    fn review_removal(&self, worktree: &WorktreeItem) -> (u64, bool) {
         let project = self.project();
         self.workspace
             .request_kwt_worktree_removal(
@@ -270,31 +275,41 @@ impl Fixture {
                 worktree.tmux_attach_mode(),
             )
             .unwrap();
-        let authority = self.event(|event| match event {
+        self.event(|event| match event {
             WorkspaceEvent::KwtWorktreeRemovalReady {
                 authority,
-                session_was_running,
+                force_required,
                 ..
-            } => {
-                assert!(session_was_running);
-                Some(authority)
-            }
+            } => Some((authority, force_required)),
             _ => None,
-        });
-        self.mutate(|| {
-            self.workspace.remove_kwt_worktree(
-                "local",
-                &self.endpoint(),
-                project.repository(),
-                project.path(),
-                project.registration_fingerprint(),
-                worktree.path(),
-                worktree.generation().unwrap(),
-                worktree.session_name(),
-                authority,
-                false,
-            )
-        });
+        })
+    }
+
+    fn confirm_removal(
+        &self,
+        worktree: &WorktreeItem,
+        authority: u64,
+        force: bool,
+    ) -> Result<(), workspace::WorkspaceError> {
+        let project = self.project();
+        self.workspace.remove_kwt_worktree(
+            "local",
+            &self.endpoint(),
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+            worktree.path(),
+            worktree.generation().unwrap(),
+            worktree.session_name(),
+            authority,
+            force,
+        )
+    }
+
+    fn remove(&self, worktree: &WorktreeItem) {
+        let (authority, force_required) = self.review_removal(worktree);
+        assert!(!force_required);
+        self.mutate(|| self.confirm_removal(worktree, authority, false));
         self.event(|event| {
             matches!(event, WorkspaceEvent::KwtWorktreeRemoved { .. }).then_some(())
         });
@@ -513,6 +528,147 @@ fn projects_and_worktrees_use_native_linux() {
             .unwrap()
             .success()
     );
+}
+
+#[test]
+#[ignore = "requires a staged pinned Linux KWT helper; run make rust-test-kwt-live"]
+#[allow(clippy::too_many_lines)] // One real lifecycle checks both explicit discard and later edits.
+fn local_force_removal_requires_fresh_explicit_approval() {
+    let Some(fixture) = isolated_fixture(
+        "local_force_removal_requires_fresh_explicit_approval",
+        false,
+    ) else {
+        return;
+    };
+    let repo = fixture.root.join("repo with spaces");
+    fs::write(repo.join("tracked.txt"), "committed\n").unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.name", "Demo"],
+        vec!["config", "user.email", "demo@example.invalid"],
+        vec!["add", "tracked.txt"],
+        vec!["commit", "-m", "Initial"],
+    ] {
+        output(Command::new("/usr/bin/git").arg("-C").arg(&repo).args(args));
+    }
+    fixture.mutate(|| {
+        fixture
+            .workspace
+            .add_kwt_project("local", &fixture.endpoint(), repo.to_str().unwrap())
+    });
+    fixture.event(|event| {
+        matches!(event, WorkspaceEvent::KwtProjectMutationFinished { .. }).then_some(())
+    });
+    fixture.wait(|| {
+        (!fixture.workspace.snapshot().hosts()[0]
+            .projects()
+            .is_empty())
+        .then_some(())
+    });
+    for branch in ["staged", "unstaged", "untracked"] {
+        let worktree = fixture.create(branch, true);
+        fixture.open(&fixture.project(), &worktree).unwrap();
+        fixture.probe(&worktree);
+        let path = Path::new(worktree.path());
+        let file = path.join(if branch == "untracked" {
+            "draft.txt"
+        } else {
+            "tracked.txt"
+        });
+        fs::write(&file, "work to discard\n").unwrap();
+        if branch == "staged" {
+            output(
+                Command::new("/usr/bin/git")
+                    .arg("-C")
+                    .arg(path)
+                    .args(["add", "tracked.txt"]),
+            );
+        }
+        let (authority, force) = fixture.review_removal(&worktree);
+        assert!(force, "dirty work needs an explicit force confirmation");
+        assert!(
+            fixture
+                .confirm_removal(&worktree, authority, false)
+                .is_err()
+        );
+        let (authority, force) = fixture.review_removal(&worktree);
+        assert!(force);
+        fixture.workspace.cancel_kwt_worktree_removal();
+        assert!(fixture.confirm_removal(&worktree, authority, true).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "work to discard\n");
+        output(
+            Command::new("/usr/bin/tmux")
+                .env_remove("TMUX_TMPDIR")
+                .args([
+                    "-L",
+                    "kwt",
+                    "has-session",
+                    "-t",
+                    &format!("={}", worktree.session_name()),
+                ]),
+        );
+        let (authority, force) = fixture.review_removal(&worktree);
+        assert!(force);
+        fixture.mutate(|| fixture.confirm_removal(&worktree, authority, true));
+        fixture.event(|event| {
+            matches!(event, WorkspaceEvent::KwtWorktreeRemoved { .. }).then_some(())
+        });
+        assert!(!path.exists());
+        output(Command::new("/usr/bin/git").arg("-C").arg(&repo).args([
+            "show-ref",
+            "--verify",
+            &format!("refs/heads/{branch}"),
+        ]));
+        assert!(
+            !Command::new("/usr/bin/tmux")
+                .env_remove("TMUX_TMPDIR")
+                .args([
+                    "-L",
+                    "kwt",
+                    "has-session",
+                    "-t",
+                    &format!("={}", worktree.session_name())
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let worktree = fixture.create("later-edits", true);
+    fixture.open(&fixture.project(), &worktree).unwrap();
+    fixture.probe(&worktree);
+    let (authority, force) = fixture.review_removal(&worktree);
+    assert!(!force);
+    assert!(fixture.confirm_removal(&worktree, authority, true).is_err());
+    let (authority, force) = fixture.review_removal(&worktree);
+    assert!(!force);
+    let file = Path::new(worktree.path()).join("draft.txt");
+    fs::write(&file, "keep later edits\n").unwrap();
+    fixture.mutate(|| fixture.confirm_removal(&worktree, authority, false));
+    let message = fixture.wait(|| {
+        fixture
+            .workspace
+            .drain_events()
+            .0
+            .into_iter()
+            .find_map(|event| match event {
+                WorkspaceEvent::KwtWorktreeOperationFailed {
+                    operation_id,
+                    message,
+                    ..
+                } if operation_id == authority => Some(message),
+                WorkspaceEvent::Error(message) => panic!("{message}"),
+                _ => None,
+            })
+    });
+    assert!(message.contains("Review it again"), "{message}");
+    assert_eq!(fs::read_to_string(file).unwrap(), "keep later edits\n");
+    fixture.probe(&worktree);
+    let (authority, force) = fixture.review_removal(&worktree);
+    assert!(force);
+    fixture.mutate(|| fixture.confirm_removal(&worktree, authority, true));
+    fixture.event(|event| matches!(event, WorkspaceEvent::KwtWorktreeRemoved { .. }).then_some(()));
+    assert!(!Path::new(worktree.path()).exists());
 }
 
 #[test]
