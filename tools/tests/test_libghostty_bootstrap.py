@@ -659,12 +659,6 @@ def test_universal_build_requires_both_sdk_targets(
     assert str(fallback.resolve()) in shim.read_text()
 
 
-DOWNLOAD_RESET = (
-    "./build.zig.zon:27:20: error: HTTP response read failure: ConnectionResetByPeer"
-)
-DOWNLOAD_TIMEOUT = (
-    "./build.zig.zon:15:20: error: HTTP response read failure: ConnectionTimedOut"
-)
 # Captured from Nightly run 41664857789, where the dependency host briefly
 # returned 500 for a lazy dependency.
 SERVER_ERROR = (
@@ -674,68 +668,38 @@ SERVER_ERROR = (
     'DearBindings_v0.17_ImGui_v1.92.5-docking.tar.gz",\n'
     "                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 )
-SERVICE_UNAVAILABLE = (
-    "./build.zig.zon:27:20: error: bad HTTP response code: '503 Service Unavailable'"
-)
-NOT_FOUND = "./build.zig.zon:27:20: error: bad HTTP response code: '404 Not Found'"
-TRANSIENT_FAILURES = (
-    DOWNLOAD_RESET,
-    DOWNLOAD_TIMEOUT,
-    SERVER_ERROR,
-    SERVICE_UNAVAILABLE,
+DOWNLOAD_RESET = (
+    "./build.zig.zon:27:20: error: HTTP response read failure: ConnectionResetByPeer"
 )
 COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
 
 
 @pytest.mark.parametrize(
-    ("failures", "attempts", "succeeds"),
+    ("fetch_failures", "compile_fails", "fetches", "builds"),
     [
-        ([], 1, True),
-        ([DOWNLOAD_RESET], 2, True),
-        ([DOWNLOAD_RESET, DOWNLOAD_RESET], 3, True),
-        ([DOWNLOAD_RESET] * 3, 3, False),
-        ([COMPILE_ERROR], 1, False),
-        ([DOWNLOAD_RESET, COMPILE_ERROR], 2, False),
-        ([NOT_FOUND], 1, False),
-        ([SERVER_ERROR, NOT_FOUND], 2, False),
-        (["./build.zig.zon:27:20: error: hash mismatch"], 1, False),
-        ([DOWNLOAD_RESET + "\n" + COMPILE_ERROR], 1, False),
-        ([DOWNLOAD_TIMEOUT], 2, True),
-        ([DOWNLOAD_RESET, DOWNLOAD_TIMEOUT], 3, True),
-        ([DOWNLOAD_TIMEOUT] * 3, 3, False),
-        ([DOWNLOAD_TIMEOUT + "\n" + COMPILE_ERROR], 1, False),
-        ([SERVER_ERROR], 2, True),
-        ([SERVER_ERROR, SERVICE_UNAVAILABLE], 3, True),
-        ([SERVER_ERROR] * 3, 3, False),
-        ([SERVER_ERROR + "\n" + COMPILE_ERROR], 1, False),
+        ([], False, 1, 1),
+        ([SERVER_ERROR], False, 2, 1),
+        ([DOWNLOAD_RESET, SERVER_ERROR], False, 3, 1),
+        ([SERVER_ERROR] * 3, False, 3, 0),
+        ([], True, 1, 1),
+        ([SERVER_ERROR], True, 2, 1),
     ],
     ids=[
         "success",
-        "recovers",
-        "last-attempt",
-        "exhausted",
-        "compiler",
-        "compiler-after-reset",
-        "not-found",
-        "not-found-after-server-error",
-        "hash",
-        "mixed-errors",
-        "timeout-recovers",
-        "reset-then-timeout",
-        "timeout-exhausted",
-        "timeout-and-compiler",
-        "server-error-recovers",
-        "server-errors-then-success",
-        "server-error-exhausted",
-        "server-error-and-compiler",
+        "fetch-recovers",
+        "fetch-recovers-on-last-attempt",
+        "fetch-exhausted",
+        "compile-error",
+        "compile-error-after-fetch-retry",
     ],
 )
-def test_bootstrap_retries_only_transient_dependency_failures(
+def test_bootstrap_retries_dependency_fetch_and_builds_once(
     repo: Repo,
     capfd: pytest.CaptureFixture[str],
-    failures: list[str],
-    attempts: int,
-    succeeds: bool,
+    fetch_failures: list[str],
+    compile_fails: bool,
+    fetches: int,
+    builds: int,
 ) -> None:
     source = repo.paths.source_checkout_root
     source.mkdir(parents=True)
@@ -753,14 +717,27 @@ def test_bootstrap_retries_only_transient_dependency_failures(
         f"    print({repo.metadata.required_zig_version!r})\n"
         "    sys.exit(0)\n"
         "assert sys.argv[1] == 'build'\n"
-        "assert '-Dxcframework-target=native' in sys.argv\n"
         "assert os.environ['BOOTSTRAP_FIXTURE'] == 'kept'\n"
-        "count = Path('attempts')\n"
-        "attempt = int(count.read_text()) + 1 if count.exists() else 1\n"
-        "count.write_text(str(attempt))\n"
-        f"failures = {failures!r}\n"
-        "if attempt <= len(failures):\n"
-        "    print(failures[attempt - 1], file=sys.stderr)\n"
+        "def count(name):\n"
+        "    path = Path(name)\n"
+        "    attempt = int(path.read_text()) + 1 if path.exists() else 1\n"
+        "    path.write_text(str(attempt))\n"
+        "    return attempt\n"
+        "if sys.argv[2:] == ['--fetch=all']:\n"
+        "    attempt = count('fetches')\n"
+        f"    failures = {fetch_failures!r}\n"
+        "    if attempt <= len(failures):\n"
+        "        print(failures[attempt - 1], file=sys.stderr)\n"
+        "        sys.exit(1)\n"
+        "    Path('fetched').touch()\n"
+        "    sys.exit(0)\n"
+        "assert '-Dxcframework-target=native' in sys.argv\n"
+        "count('builds')\n"
+        "if not Path('fetched').exists():\n"
+        "    print('build ran before its dependencies were fetched', file=sys.stderr)\n"
+        "    sys.exit(1)\n"
+        f"if {compile_fails!r}:\n"
+        f"    print({COMPILE_ERROR!r}, file=sys.stderr)\n"
         "    sys.exit(1)\n"
         "print('build complete')\n"
     )
@@ -796,28 +773,32 @@ def test_bootstrap_retries_only_transient_dependency_failures(
                 optimize="Debug",
             )
 
-        if succeeds:
+        if builds and not compile_fails:
             result = build()
             assert result.rebuilt_variant and result.staged_synced
             assert repo.paths.staged_artifacts.header_path.read_text() == "// header\n"
         else:
             with pytest.raises(bootstrap.BootstrapError) as raised:
                 build()
-            if failures[-1] in TRANSIENT_FAILURES:
-                assert "3 attempts" in str(raised.value)
-            else:
+            if compile_fails:
                 assert "full Xcode installation selected via `xcode-select`" in str(
                     raised.value
                 )
+            else:
+                assert "after 3 attempts" in str(raised.value)
             assert not repo.paths.cached_artifacts.manifest_path.exists()
             assert not repo.paths.staged_artifacts.root.exists()
 
-    assert (source / "attempts").read_text() == str(attempts)
+    build_count = source / "builds"
+    assert (source / "fetches").read_text() == str(fetches)
+    assert (build_count.read_text() if build_count.exists() else "0") == str(builds)
     captured = capfd.readouterr()
     output = captured.out + captured.err
-    for failure in failures:
+    for failure in fetch_failures:
         assert failure in output
-    if succeeds:
+    if compile_fails:
+        assert COMPILE_ERROR in output
+    elif builds:
         assert "build complete" in output
 
 
