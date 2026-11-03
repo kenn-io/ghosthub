@@ -53,6 +53,7 @@ fn ready_removal() -> (Workspace, Arc<ManualRefreshRuntime>, Pending) {
             tmux_attach_mode: host::KwtTmuxAttachMode::Direct,
         },
         session: None,
+        force_required: false,
         ready: true,
     };
     *workspace.scene.remote_kwt_removal.lock().unwrap() = Some(pending.clone());
@@ -71,6 +72,7 @@ fn confirm(workspace: &Workspace, pending: &Pending) -> Result<(), WorkspaceErro
         target.generation.as_deref().unwrap(),
         &target.session_name,
         pending.task.id,
+        false,
     )
 }
 

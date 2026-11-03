@@ -2396,6 +2396,7 @@ pub(crate) fn publish_captured_kwt_removal(
             worktree_path,
             authority: capture.authority,
             session_was_running,
+            force_required: false,
         },
     );
 }

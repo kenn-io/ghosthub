@@ -1014,6 +1014,7 @@ struct WorktreeRemoveTarget {
     project_name: String,
     branch: String,
     session_was_running: bool,
+    force_required: bool,
     authority: Option<u64>,
     operation_id: Option<u64>,
 }
@@ -2693,6 +2694,7 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         self.pending_worktree_navigation = None;
+        target.force_required = false;
         let result = if let Some(generation) = target.open.generation.as_deref() {
             self.workspace.request_kwt_worktree_removal(
                 &target.open.host_id,
@@ -3057,6 +3059,7 @@ impl RootView {
                         generation,
                         &target.open.session_name,
                         authority,
+                        target.force_required,
                     )
                     .map(|()| None)
             }
@@ -3538,6 +3541,7 @@ impl RootView {
                     worktree_path,
                     authority,
                     session_was_running,
+                    force_required,
                 } => {
                     if let Some(ProjectDialog::RemoveWorktree {
                         target,
@@ -3550,6 +3554,7 @@ impl RootView {
                     {
                         target.authority = Some(authority);
                         target.session_was_running = session_was_running;
+                        target.force_required = force_required;
                         *error = None;
                     }
                 }
@@ -5076,6 +5081,13 @@ impl RootView {
                             .text_color(rgb(0x8f_96_a3))
                             .child(target.open.worktree_path.clone()),
                     )
+                    .when(target.force_required, |body| {
+                        body.child(
+                            div()
+                                .text_color(rgb(0xd0_7070))
+                                .child("Force removal permanently discards all staged, unstaged, and untracked changes in this worktree."),
+                        )
+                    })
                     .child(
                         div()
                             .text_xs()
@@ -5092,6 +5104,8 @@ impl RootView {
                         "Checking…"
                     } else if review_again {
                         "Review Again"
+                    } else if target.force_required {
+                        "Force Remove Worktree"
                     } else {
                         "Remove Worktree"
                     },
@@ -7675,6 +7689,7 @@ impl RootView {
                     project_name: project.name().to_owned(),
                     branch: worktree.branch().to_owned(),
                     session_was_running: worktree.session_available(),
+                    force_required: false,
                     authority: None,
                     operation_id: None,
                 });
@@ -10567,6 +10582,7 @@ mod tests {
                 project_name: "widget".to_owned(),
                 branch: "topic".to_owned(),
                 session_was_running: false,
+                force_required: false,
                 authority: Some(9),
                 operation_id: Some(9),
             },

@@ -302,10 +302,18 @@ is kept. Cancel leaves both the checkout and session intact.
 
 ![Confirm removal of a remote worktree in the native Rust application](/docs/assets/guide-rust-remove-worktree.png)
 
-Commit or stash uncommitted changes before removing a remote worktree. If its
-session, checkout, project registration, or SSH connection changes, refresh the
-host and review the removal again. KWT also refuses removal while the workspace
-session name remains on either shared tmux server.
+For a worktree with uncommitted changes, Ghosthub shows a warning and an explicit
+**Force Remove Worktree** button. This permanently discards its staged, unstaged,
+and untracked changes. Cancel to keep the work, or commit or stash it before
+ordinary removal. The Git branch is kept after either action.
 
-Force removal, other named sockets, protected imports, and directory
+![Confirm force removal of a dirty remote worktree](/docs/assets/guide-rust-force-remove-worktree.png)
+
+If the pre-removal check finds new changes after a clean confirmation, Ghosthub
+keeps the checkout and session and offers **Review Again**. If its session, checkout,
+project registration, or SSH connection changes, refresh the host and review
+the removal again. KWT also refuses removal while the workspace session name
+remains on either shared tmux server. Failed change inspection blocks removal.
+
+Local force removal, other named sockets, protected imports, and directory
 registration in the Rust UI are still in development.

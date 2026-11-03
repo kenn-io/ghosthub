@@ -1398,6 +1398,7 @@ pub enum WorkspaceEvent {
         worktree_path: String,
         authority: u64,
         session_was_running: bool,
+        force_required: bool,
     },
     KwtWorktreeCreated {
         target: KwtWorktreeTarget,
@@ -5635,6 +5636,9 @@ impl Workspace {
     /// Ghosthub terminates a freshly confirmed exact tmux identity first; KWT then requires that
     /// workspace session to remain absent while it removes the checkout under
     /// the same lifecycle fence used by guarded open.
+    /// `force` must match the captured confirmation's `force_required` value.
+    /// Only ordinary SSH worktrees support explicit force removal. A clean
+    /// confirmation never authorizes discarding changes made afterward.
     ///
     /// # Errors
     ///
@@ -5652,6 +5656,7 @@ impl Workspace {
         generation: &str,
         session_name: &str,
         authority: u64,
+        force: bool,
     ) -> Result<(), WorkspaceError> {
         if !is_local_host_id(host_id) {
             return remote_kwt::removal::confirm(
@@ -5665,7 +5670,13 @@ impl Workspace {
                 generation,
                 session_name,
                 authority,
+                force,
             );
+        }
+        if force {
+            return Err(WorkspaceError::new(
+                "Force removal is only available for ordinary SSH worktrees.",
+            ));
         }
         if !is_canonical_kwt_generation(generation) {
             return Err(WorkspaceError::new(
