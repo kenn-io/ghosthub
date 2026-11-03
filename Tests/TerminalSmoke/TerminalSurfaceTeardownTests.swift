@@ -38,12 +38,6 @@ final class TerminalSurfaceTeardownTests: XCTestCase {
         }
     }
 
-    /// Keeps the main thread from ticking the app, so nothing drains the
-    /// app mailbox, as when the main thread is inside a surface free.
-    private func blockMainThread(seconds: Double) {
-        usleep(useconds_t(seconds * 1_000_000))
-    }
-
     /// Regression test for #269. A surface free used to join the surface's
     /// threads on the main thread while its pty reader was blocked pushing
     /// into the app mailbox that only the main thread drains. The reader
@@ -78,7 +72,10 @@ final class TerminalSurfaceTeardownTests: XCTestCase {
                 + view.title.debugDescription
         )
 
-        blockMainThread(seconds: 0.5)
+        // Keep the main thread from ticking the app right before the free,
+        // as it would be once inside it, so the reader fills the app
+        // mailbox. This runs after shutdown stops yielding to the run loop.
+        view.onSurfaceDestroyed = { _ in usleep(500_000) }
 
         // A main thread stuck in ghostty_surface_free can never report a
         // failure, so end the run instead of hanging until the CI timeout.
