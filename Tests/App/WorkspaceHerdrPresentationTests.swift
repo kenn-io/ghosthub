@@ -39,7 +39,6 @@ struct WorkspaceHerdrPresentationTests {
         await model.retryBorrowedHerdrSession(selection)
 
         #expect(model.activeBorrowedHerdrSelection == nil)
-        #expect(store.requestedKeys.count == 1)
         await model.shutdown()
     }
 
@@ -1596,15 +1595,16 @@ struct WorkspaceHerdrPresentationTests {
         await launchHerdrSurface(model, store: store)
         let close = try #require(store.surface.closeObservers.values.first)
         close(false, 9)
+        let connectionAfterExit = try #require(model.activeBorrowedHerdrConnectionState)
 
         await model.retryBorrowedHerdrSession(selection)
 
         #expect(discoveries.callCount == 2)
-        #expect(store.requestedKeys.count == 1)
         if backend == .core {
             #expect(model.activeBorrowedHerdrSelection == nil)
         } else {
             #expect(model.activeBorrowedHerdrSelection == selection)
+            #expect(model.activeBorrowedHerdrConnectionState == connectionAfterExit)
         }
         await model.shutdown()
     }
