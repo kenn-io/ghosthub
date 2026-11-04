@@ -1,4 +1,5 @@
 @preconcurrency import Dispatch
+import AppKit
 import Foundation
 import GhosthubHerdr
 import GhosthubPersistence
@@ -13,6 +14,59 @@ import Testing
 @Suite("Workspace Herdr presentation", .serialized)
 @MainActor
 struct WorkspaceHerdrPresentationTests {
+    @Test("switching core terminals releases keyboard focus before validation finishes")
+    func switchingReleasesKeyboardFocusDuringValidation() async throws {
+        var environment = try environment()
+        let sessions = ["alpha", "beta"].map {
+            HerdrSessionSummary(name: $0, isDefault: false, state: .running, backend: .core)
+        }
+        environment.snapshot.hosts[0].herdrSessions = sessions
+        let blocked = Mutex(false)
+        let probeStarted = Mutex(false)
+        let releaseProbe = AsyncGate()
+        let model = try makeHerdrModel(
+            environment, store: RecordingNativeSessionSurfaceStore(),
+            validationDiscovery: { _, _, _ in
+                if blocked.withLock({ $0 }) {
+                    probeStarted.withLock { $0 = true }
+                    await releaseProbe.wait()
+                }
+                return .available(sessions, tuiAvailable: false)
+            }
+        )
+        let first = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "alpha",
+            backend: .core
+        )
+        let second = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "beta",
+            backend: .core
+        )
+        try await model.openBorrowedHerdrSession(first)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let input = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        window.contentView = input
+        model.workspaceWindow = window
+        #expect(window.makeFirstResponder(input))
+        try await model.openBorrowedHerdrSession(first)
+        #expect(window.firstResponder === input)
+
+        blocked.withLock { $0 = true }
+        let opening = Task { try await model.openBorrowedHerdrSession(second) }
+        await waitUntilMainActor { probeStarted.withLock { $0 } }
+        #expect(window.firstResponder !== input)
+        #expect(model.activeBorrowedHerdrSelection == first)
+        releaseProbe.open()
+        try await opening.value
+        #expect(model.activeBorrowedHerdrSelection == second)
+        await model.shutdown()
+    }
+
     @Test("core terminals with TUI names keep distinct clients")
     func coreAndTUIIdentity() async throws {
         var environment = try environment()

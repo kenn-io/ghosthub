@@ -9272,6 +9272,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection.name
             )
         }
+        if activeBorrowedHerdrSelection != selection {
+            // Validation keeps the previous client alive. Release its focus
+            // before waiting so typing cannot reach the session being left.
+            workspaceWindow?.makeFirstResponder(nil)
+        }
         let validation = try await revalidatedHerdrSession(selection)
         try requireActiveScene(activityGeneration)
         guard navigationRevision == userNavigationRevision else {
