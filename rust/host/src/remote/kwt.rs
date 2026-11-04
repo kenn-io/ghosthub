@@ -388,7 +388,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         {
             return Err(RemoteTmuxError::new(
                 DiagnosticKind::MalformedOutput,
-                "KWT protected worktree authority was incomplete",
+                "Missing protected worktree details.",
             ));
         }
         self.kwt_client_plan(
@@ -485,12 +485,11 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 super::RemoteTmuxServer::Default => None,
                 super::RemoteTmuxServer::Kwt => Some("kwt"),
             },
-            None,
             cancellation,
         )
     }
 
-    /// Identify the protected client on its exact server and session.
+    /// Identify the protected client on its exact server while KWT creates its session.
     ///
     /// # Errors
     /// Returns an error for invalid authority or a failed probe.
@@ -499,10 +498,9 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         snapshot: &RemoteTmuxSnapshot,
         plan: &session::RepairOrOpenPlan,
         socket: &str,
-        name: &str,
         cancellation: &CancellationToken,
     ) -> Result<Option<session::SessionIdentity>, RemoteTmuxError> {
-        self.kwt_client_identity_on_socket(snapshot, plan, Some(socket), Some(name), cancellation)
+        self.kwt_client_identity_on_socket(snapshot, plan, Some(socket), cancellation)
     }
 
     fn kwt_client_identity_on_socket(
@@ -510,7 +508,6 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         snapshot: &RemoteTmuxSnapshot,
         plan: &session::RepairOrOpenPlan,
         socket: Option<&str>,
-        name: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<Option<session::SessionIdentity>, RemoteTmuxError> {
         crate::local::require_kwt_client_readiness_path(plan.readiness_path())
@@ -530,15 +527,11 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         }
         let pid = crate::local::parse_kwt_client_pid(&receipt.stdout)
             .map_err(|error| RemoteTmuxError::from_host(&error))?;
-        let mut args = vec![
+        let args = [
             "list-clients",
             "-F",
             "#{client_pid}|#{pid}|#{session_id}|#{session_created}",
         ];
-        let target = name.map(|name| format!("={name}"));
-        if let Some(target) = &target {
-            args.extend(["-t", target]);
-        }
         let command = self.kwt_tmux_probe(snapshot, socket, &args)?;
         let output = self.run_framed_remote_shell(
             snapshot.lease(),
@@ -546,8 +539,12 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             "GHOSTHUB_KWT_CLIENT_",
             cancellation,
         )?;
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        // KWT can start the server before creating its first session. Even an
+        // untargeted list-clients reports "no current target" during that gap.
         if output.status != 0
-            && super::is_missing_tmux_server(&String::from_utf8_lossy(&output.stderr))
+            && (super::is_missing_tmux_server(&diagnostic)
+                || diagnostic.trim() == "no current target")
         {
             return Ok(None);
         }
@@ -585,7 +582,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             .ok_or_else(|| {
                 RemoteTmuxError::new(
                     DiagnosticKind::Transport,
-                    "KWT client does not match the protected workspace session",
+                    "Protected worktree session unavailable.",
                 )
             })
     }

@@ -1,3 +1,5 @@
+use std::os::unix::fs::PermissionsExt;
+
 use super::*;
 
 #[test]
@@ -9,6 +11,43 @@ fn opens_imported_worktrees_through_protected_ssh_attachment() {
     ) else {
         return;
     };
+    // Hold creation until readiness has observed the server without its target session.
+    // Both commands still execute real tmux on the protected socket.
+    let wrapper = fixture.root.join("tmux-bin/tmux");
+    std::fs::create_dir(wrapper.parent().unwrap()).unwrap();
+    std::fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+if test -e "$HOME/delay-protected-session"; then
+    case " $* " in
+        *" new-session "*)
+            socket=$(cat "$HOME/protected-socket")
+            env -u TMUX_TMPDIR /usr/bin/tmux -L "$socket" -f /dev/null start-server \; set-option -s exit-empty off || exit
+            touch "$HOME/creating-protected-session"
+            while ! test -e "$HOME/probed-protected-session"; do sleep 0.02; done
+            rm -f "$HOME/delay-protected-session"
+            ;;
+        *" list-clients "*)
+            if test -e "$HOME/creating-protected-session"; then
+                /usr/bin/tmux "$@"
+                result=$?
+                touch "$HOME/probed-protected-session"
+                exit "$result"
+            fi
+            ;;
+    esac
+fi
+exec /usr/bin/tmux "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut draft = fixture.workspace.configured_ssh_hosts()[0].draft().clone();
+    wrapper.to_str().unwrap().clone_into(&mut draft.tmux_binary);
+    fixture
+        .workspace
+        .save_ssh_host(Some(&fixture.host_id), &draft)
+        .unwrap();
     fixture.connect();
     wait_kwt_ready(&fixture);
     let project_path = fixture.root.join("orbit 'review'");
@@ -123,8 +162,21 @@ fn opens_imported_worktrees_through_protected_ssh_attachment() {
         &format!("={name}"),
         "#{pid}:#{session_id}",
     ]);
+    let protected_tmux = |args: &[&str]| {
+        let output = Command::new("/usr/bin/tmux")
+            .env_remove("TMUX_TMPDIR")
+            .args(["-L", socket])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    std::fs::write(fixture.root.join("home/protected-socket"), socket).unwrap();
+    std::fs::write(fixture.root.join("home/delay-protected-session"), "").unwrap();
     open().unwrap();
     fixture.tmux_shell(name, "protected-open");
+    assert!(fixture.root.join("home/probed-protected-session").exists());
     assert!(!sentinel.exists(), "imported checkout layout executed");
     let presentation = |workspace: &Workspace| match workspace.snapshot().content() {
         WorkspaceContent::Terminal {
@@ -148,16 +200,6 @@ fn opens_imported_worktrees_through_protected_ssh_attachment() {
     assert_eq!(presentation(&fixture.workspace), first);
     fixture.tmux_shell(name, "protected-refreshed");
     fixture.workspace.detach();
-    let protected_tmux = |args: &[&str]| {
-        let output = Command::new("/usr/bin/tmux")
-            .env_remove("TMUX_TMPDIR")
-            .args(["-L", socket])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        String::from_utf8(output.stdout).unwrap().trim().to_owned()
-    };
     protected_tmux(&["has-session", "-t", &format!("={name}")]);
     assert_eq!(
         fixture.tmux(&[
@@ -183,8 +225,75 @@ fn opens_imported_worktrees_through_protected_ssh_attachment() {
     });
     second.close();
     protected_tmux(&["has-session", "-t", &format!("={name}")]);
-    fixture.workspace.detach();
+    let reopened = presentation(&fixture.workspace);
     let displaced = fixture.root.join("displaced");
+    std::fs::rename(row.path(), &displaced).unwrap();
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    assert!(fixture.workspace.snapshot().hosts().iter().all(|host| {
+        host.projects().iter().all(|project| {
+            project
+                .worktrees()
+                .iter()
+                .all(|worktree| worktree.path() != row.path())
+        })
+    }));
+    fixture.workspace.switch_session(&selection).unwrap();
+    assert_eq!(presentation(&fixture.workspace), reopened);
+    fixture.attach("review", "checkout-removed");
+    fixture.workspace.switch_session(&selection).unwrap();
+    assert_eq!(presentation(&fixture.workspace), reopened);
+    fixture.tmux_shell(name, "retained-without-checkout");
+    let different_generation = SessionSelection::kwt_workspace(
+        &fixture.host_id,
+        &fixture.endpoint,
+        name,
+        row.tmux_attach_mode(),
+        Some(socket.to_owned()),
+        row.path(),
+        Some("replacement-checkout".to_owned()),
+    );
+    assert!(
+        fixture
+            .workspace
+            .switch_session(&different_generation)
+            .is_err()
+    );
+    assert_eq!(presentation(&fixture.workspace), reopened);
+    std::fs::rename(&displaced, row.path()).unwrap();
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+
+    // Model registration removed outside Ghosthub. KWT's ordinary Remove Project
+    // action rejects a project while one of its protected sessions is live.
+    let config_path = fixture.root.join("home/.config/kwt/config.toml");
+    let registered_config = std::fs::read(&config_path).unwrap();
+    std::fs::write(&config_path, "projects = []\n").unwrap();
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    assert!(
+        fixture
+            .workspace
+            .snapshot()
+            .hosts()
+            .iter()
+            .find(|host| host.id() == fixture.host_id)
+            .unwrap()
+            .projects()
+            .is_empty()
+    );
+    open().unwrap();
+    assert_eq!(presentation(&fixture.workspace), reopened);
+    fixture.attach("review", "project-unregistered");
+    open().unwrap();
+    assert_eq!(presentation(&fixture.workspace), reopened);
+    fixture.tmux_shell(name, "retained-without-project");
+    fixture.workspace.detach();
+    assert!(fixture.workspace.switch_session(&selection).is_err());
+    assert!(open().is_err());
+    std::fs::write(&config_path, registered_config).unwrap();
+    fixture.connect();
+    wait_kwt_ready(&fixture);
     std::fs::rename(row.path(), &displaced).unwrap();
     open().unwrap();
     fixture.wait_for_error("worktree identity changed");

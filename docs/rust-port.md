@@ -511,8 +511,10 @@ Protected named servers use the standard tmux socket directory.
 
 The project row supports open, retained-client switching, and detach. Ordinary
 tmux inventory does not reconcile the protected server; the retained terminal
-reports its own exit. Refresh does not discard a live protected client. New
-attachment verifies provenance again. Remote PR listing/import and protected
+reports its own exit. Refresh does not discard a live protected client, even
+after checkout removal or project unregistration. Its retained row reopens that
+same terminal. New attachment still requires current inventory and verifies
+provenance again. Remote PR listing/import and protected
 Kill/removal remain separate work.
 
 ![An imported PR worktree opened over SSH](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-pr-worktree.png)

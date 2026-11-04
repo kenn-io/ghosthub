@@ -116,7 +116,24 @@ pub(super) fn open_worktree(
     mode: KwtTmuxAttachMode,
 ) -> Result<(), WorkspaceError> {
     let scene = &workspace.scene;
+    let _publication = scene
+        .runtime
+        .remote_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let _navigation = lock_live_navigation(scene)?;
+    let selection = SessionSelection::kwt_workspace(
+        host_id,
+        endpoint,
+        session_name,
+        mode,
+        socket.map(str::to_owned),
+        worktree_path,
+        generation.map(str::to_owned),
+    );
+    if reuse_protected(workspace, &selection)? {
+        return Ok(());
+    }
     let request = {
         let entries = scene
             .runtime
@@ -183,15 +200,7 @@ pub(super) fn open_worktree(
             connection_generation: entry.generation,
             host: context.host.clone(),
             snapshot: context.snapshot.clone(),
-            selection: SessionSelection::kwt_workspace(
-                host_id,
-                endpoint,
-                session_name,
-                mode,
-                socket.map(str::to_owned),
-                worktree_path,
-                generation.map(str::to_owned),
-            ),
+            selection,
             target: Target::Worktree {
                 project: project.clone(),
                 worktree: worktree.clone(),
@@ -215,6 +224,9 @@ pub(super) fn open_worktree(
     let selection = request.selection.clone();
     let navigation_generation = workspace.begin_navigation();
     workspace.settle_local_navigation_before_remote()?;
+    if mode == KwtTmuxAttachMode::Protected {
+        return schedule(scene, request, navigation_generation);
+    }
     let key = workspace.remote_presentation_key(&selection);
     if scene
         .remote_active
@@ -240,6 +252,18 @@ pub(super) fn open_protected_selection(
     workspace: &Workspace,
     selection: &SessionSelection,
 ) -> Result<(), WorkspaceError> {
+    {
+        let _publication = workspace
+            .scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _navigation = lock_live_navigation(&workspace.scene)?;
+        if reuse_protected(workspace, selection)? {
+            return Ok(());
+        }
+    }
     let snapshot = workspace.snapshot();
     let (project, worktree) = snapshot
         .hosts()
@@ -276,6 +300,69 @@ pub(super) fn open_protected_selection(
         worktree.tmux_socket_name(),
         worktree.tmux_attach_mode(),
     )
+}
+
+// Inventory is required to launch a new client, but an exact live presentation can
+// outlast its checkout or project registration. Keep connection and navigation
+// publication fenced until that presentation has been activated. The caller
+// holds remote_publication, then the scene's navigation lock.
+fn reuse_protected(
+    workspace: &Workspace,
+    selection: &SessionSelection,
+) -> Result<bool, WorkspaceError> {
+    if selection.tmux_attach_mode() != Some(KwtTmuxAttachMode::Protected) {
+        return Ok(false);
+    }
+    let scene = &workspace.scene;
+    let (active, retained) = {
+        let entries = scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(context) = entries
+            .get(selection.host_id())
+            .and_then(current_remote_context)
+        else {
+            return Ok(false);
+        };
+        let matches = |key: &RemotePresentationKey| {
+            key.host_id == selection.host_id()
+                && key.endpoint == selection.endpoint()
+                && key.endpoint == context.snapshot.endpoint()
+                && key.route_identity == context.snapshot.route_identity()
+                && key.lease_generation == context.snapshot.lease_generation()
+                && matches!(&key.session_identity,
+                    RemoteSessionIdentity::ProtectedWorktree { selection: opened, .. }
+                    if opened == selection)
+        };
+        let active = scene
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|active| matches(&active.key))
+            .map(|active| active.key.clone());
+        let retained = scene
+            .remote_retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .iter()
+            .find(|entry| matches(&entry.active.key))
+            .map(|entry| entry.active.key.clone());
+        (active, retained)
+    };
+    if active.is_none() && retained.is_none() {
+        return Ok(false);
+    }
+    workspace.begin_navigation();
+    workspace.settle_local_navigation_before_remote()?;
+    if let Some(key) = active {
+        workspace.refresh_active_remote_selection(selection, Some(&key))?;
+        return Ok(true);
+    }
+    workspace.activate_remote_retained(selection, retained.as_ref())
 }
 
 // The caller holds the navigation fence and has already checked retained clients.
@@ -653,7 +740,6 @@ fn launch(
                         .selection
                         .tmux_socket_name()
                         .expect("captured protected socket"),
-                    request.selection.session(),
                     cancellation,
                 ),
             }

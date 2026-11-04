@@ -270,7 +270,10 @@ Already imported pull-request worktrees also open from the remote project tree.
 Import the pull request with `kwt pr import` on the remote host, refresh that
 host in Ghosthub, and select the worktree. KWT opens its protected terminal
 without running the checkout's configured layout. Switching away and back
-reuses the terminal; detaching leaves the session running.
+reuses the terminal, even if the checkout is removed or its project is
+unregistered. The open terminal remains available in the session list.
+Detaching leaves the session running; opening a new client still requires the
+registered project and checkout.
 
 ![An imported pull-request worktree opened on the Studio SSH host](/docs/assets/guide-rust-remote-pr-worktree.png)
 
