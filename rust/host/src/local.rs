@@ -4825,7 +4825,7 @@ pub(crate) fn require_kwt_client_readiness_path(path: &str) -> Result<(), HostEr
     Ok(())
 }
 
-fn require_kwt_socket_name(name: &str) -> Result<(), HostError> {
+pub(crate) fn require_kwt_socket_name(name: &str) -> Result<(), HostError> {
     if name.is_empty()
         || name.len() > 128
         || name == "."

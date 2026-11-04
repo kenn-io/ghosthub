@@ -30,7 +30,10 @@ enum Target {
 }
 
 impl Request {
-    fn validate(&self, inventory: &KwtInventory) -> Result<RemoteTmuxServer, WorkspaceError> {
+    fn validate(
+        &self,
+        inventory: &KwtInventory,
+    ) -> Result<Option<RemoteTmuxServer>, WorkspaceError> {
         let socket = match &self.target {
             Target::Worktree {
                 project: expected_project,
@@ -51,12 +54,22 @@ impl Request {
                             worktree.path() == expected_worktree.path
                                 && worktree.generation() == expected_worktree.generation.as_deref()
                                 && worktree.session_name() == expected_worktree.session_name
-                                && worktree.tmux_attach_mode() == KwtTmuxAttachMode::Direct
+                                && worktree.tmux_attach_mode() == expected_worktree.tmux_attach_mode
                         })
                     })
                     .ok_or_else(|| {
                         WorkspaceError::new("The worktree identity changed; refresh and try again")
                     })?;
+                if expected_worktree.tmux_attach_mode == KwtTmuxAttachMode::Protected {
+                    if row.tmux_socket_name().is_none()
+                        || row.tmux_socket_name() != expected_worktree.tmux_socket_name.as_deref()
+                    {
+                        return Err(WorkspaceError::new(
+                            "The protected workspace endpoint changed; refresh and try again",
+                        ));
+                    }
+                    return Ok(None);
+                }
                 row.tmux_socket_name()
             }
             Target::Directory(expected) => inventory
@@ -75,8 +88,8 @@ impl Request {
                 .tmux_socket_name(),
         };
         match socket {
-            None => Ok(RemoteTmuxServer::Default),
-            Some("kwt") => Ok(RemoteTmuxServer::Kwt),
+            None => Ok(Some(RemoteTmuxServer::Default)),
+            Some("kwt") => Ok(Some(RemoteTmuxServer::Kwt)),
             Some(_) => Err(WorkspaceError::new(
                 "This workspace uses an unsupported tmux server",
             )),
@@ -157,8 +170,10 @@ pub(super) fn open_worktree(
                     && worktree.session_name == session_name
                     && worktree.tmux_socket_name.as_deref() == socket
                     && worktree.tmux_attach_mode == mode
-                    && mode == KwtTmuxAttachMode::Direct
-                    && matches!(socket, None | Some("kwt"))
+                    && match mode {
+                        KwtTmuxAttachMode::Direct => matches!(socket, None | Some("kwt")),
+                        KwtTmuxAttachMode::Protected => socket.is_some_and(|name| !name.is_empty()),
+                    }
             })
             .ok_or_else(|| {
                 WorkspaceError::new("The worktree identity changed; refresh and try again")
@@ -181,16 +196,20 @@ pub(super) fn open_worktree(
                 project: project.clone(),
                 worktree: worktree.clone(),
             },
-            prior_session: context
-                .snapshot
-                .sessions_on(if socket == Some("kwt") {
-                    RemoteTmuxServer::Kwt
-                } else {
-                    RemoteTmuxServer::Default
+            prior_session: (mode == KwtTmuxAttachMode::Direct)
+                .then(|| {
+                    context
+                        .snapshot
+                        .sessions_on(if socket == Some("kwt") {
+                            RemoteTmuxServer::Kwt
+                        } else {
+                            RemoteTmuxServer::Default
+                        })
+                        .iter()
+                        .find(|session| session.name() == session_name)
+                        .cloned()
                 })
-                .iter()
-                .find(|session| session.name() == session_name)
-                .cloned(),
+                .flatten(),
         }
     };
     let selection = request.selection.clone();
@@ -202,7 +221,12 @@ pub(super) fn open_worktree(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
-        .is_some_and(|active| key.as_ref().is_some_and(|key| active.key == *key))
+        .is_some_and(|active| {
+            key.as_ref().map_or_else(
+                || active.selection == selection.remote_client(),
+                |key| active.key == *key,
+            )
+        })
     {
         return workspace.refresh_active_remote_selection(&selection, key.as_ref());
     }
@@ -210,6 +234,48 @@ pub(super) fn open_worktree(
         return Ok(());
     }
     schedule(scene, request, navigation_generation)
+}
+
+pub(super) fn open_protected_selection(
+    workspace: &Workspace,
+    selection: &SessionSelection,
+) -> Result<(), WorkspaceError> {
+    let snapshot = workspace.snapshot();
+    let (project, worktree) = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == selection.host_id() && host.endpoint() == selection.endpoint())
+        .and_then(|host| {
+            host.projects().iter().find_map(|project| {
+                project
+                    .worktrees()
+                    .iter()
+                    .find(|worktree| {
+                        worktree.path() == selection.worktree_path().unwrap_or_default()
+                            && worktree.generation() == selection.worktree_generation()
+                            && worktree.session_name() == selection.session()
+                            && worktree.tmux_socket_name() == selection.tmux_socket_name()
+                            && Some(worktree.tmux_attach_mode()) == selection.tmux_attach_mode()
+                    })
+                    .map(|worktree| (project, worktree))
+            })
+        })
+        .ok_or_else(|| {
+            WorkspaceError::new("The protected worktree identity changed; refresh and try again")
+        })?;
+    open_worktree(
+        workspace,
+        selection.host_id(),
+        selection.endpoint(),
+        project.repository(),
+        project.path(),
+        project.registration_fingerprint(),
+        worktree.path(),
+        worktree.generation(),
+        worktree.session_name(),
+        worktree.tmux_socket_name(),
+        worktree.tmux_attach_mode(),
+    )
 }
 
 // The caller holds the navigation fence and has already checked retained clients.
@@ -384,14 +450,34 @@ fn run(
             .refresh(request.snapshot.lease(), cancellation)
             .map_err(error)?;
         let snapshot = request.snapshot.with_inventory(inventory.clone());
-        let session = snapshot
-            .sessions_on(server)
-            .iter()
-            .find(|session| {
-                session.name() == request.selection.session() && session.identity() == &identity
-            })
-            .ok_or_else(|| WorkspaceError::new("KWT client does not match the workspace session"))?
-            .clone();
+        let session = if let Some(server) = server {
+            snapshot
+                .sessions_on(server)
+                .iter()
+                .find(|session| session.name() == request.selection.session())
+                .cloned()
+                .ok_or_else(|| {
+                    WorkspaceError::new("KWT client does not match the workspace session")
+                })?
+        } else {
+            request
+                .host
+                .capture_protected_kwt_session(
+                    &request.snapshot,
+                    request
+                        .selection
+                        .tmux_socket_name()
+                        .expect("captured protected socket"),
+                    request.selection.session(),
+                    cancellation,
+                )
+                .map_err(error)?
+        };
+        if session.identity() != &identity {
+            return Err(WorkspaceError::new(
+                "KWT client does not match the workspace session",
+            ));
+        }
         let snapshot = scene::publish_remote_inventory(
             scene,
             &host_id,
@@ -409,7 +495,13 @@ fn run(
             endpoint: snapshot.endpoint().to_owned(),
             route_identity: snapshot.route_identity().to_owned(),
             lease_generation: snapshot.lease_generation(),
-            session_identity: RemoteSessionIdentity::tmux(server, identity),
+            session_identity: match server {
+                Some(server) => RemoteSessionIdentity::tmux(server, identity),
+                None => RemoteSessionIdentity::ProtectedWorktree {
+                    selection: request.selection.clone(),
+                    identity,
+                },
+            },
         };
         let selection = key.selection(SessionKind::Tmux, session.name());
         scene::publish_remote_worker(
@@ -438,18 +530,33 @@ fn run(
     }
 }
 
-fn launch(
-    scene: &Scene,
+fn client_plan(
     request: &Request,
-    server: RemoteTmuxServer,
-    navigation: u64,
+    term: AttachTerm,
     cancellation: &CancellationToken,
-) -> Result<(TerminalWorker, AttachTerm, session::SessionIdentity), WorkspaceError> {
-    let term = request
-        .host
-        .probe_terminal_term(&request.snapshot, cancellation)
-        .map_err(error)?;
-    let plan = match &request.target {
+) -> Result<session::RepairOrOpenPlan, WorkspaceError> {
+    match &request.target {
+        Target::Worktree { project, worktree }
+            if worktree.tmux_attach_mode == KwtTmuxAttachMode::Protected =>
+        {
+            request.host.kwt_protected_attach_plan(
+                &request.snapshot,
+                &host::KwtProtectedWorktreeOpen::new(
+                    &worktree.path,
+                    &project.path,
+                    &project.repository,
+                    &project.registration_fingerprint,
+                    worktree.generation.as_ref().expect("captured generation"),
+                    &worktree.session_name,
+                    worktree
+                        .tmux_socket_name
+                        .as_ref()
+                        .expect("captured protected socket"),
+                ),
+                term.as_str(),
+                cancellation,
+            )
+        }
         Target::Worktree { project, worktree } => {
             let open = host::KwtWorktreeOpen::new(
                 &worktree.path,
@@ -472,7 +579,21 @@ fn launch(
             cancellation,
         ),
     }
-    .map_err(error)?;
+    .map_err(error)
+}
+
+fn launch(
+    scene: &Scene,
+    request: &Request,
+    server: Option<RemoteTmuxServer>,
+    navigation: u64,
+    cancellation: &CancellationToken,
+) -> Result<(TerminalWorker, AttachTerm, session::SessionIdentity), WorkspaceError> {
+    let term = request
+        .host
+        .probe_terminal_term(&request.snapshot, cancellation)
+        .map_err(error)?;
+    let plan = client_plan(request, term, cancellation)?;
     let geometry = *scene
         .terminal_geometry
         .lock()
@@ -519,10 +640,24 @@ fn launch(
         &WORKTREE_CLIENT_STARTUP_BACKOFF,
         || worker.startup_status().map_err(error),
         || {
-            request
-                .host
-                .kwt_client_identity(&request.snapshot, &plan, server, cancellation)
-                .map_err(error)
+            match server {
+                Some(server) => {
+                    request
+                        .host
+                        .kwt_client_identity(&request.snapshot, &plan, server, cancellation)
+                }
+                None => request.host.kwt_protected_client_identity(
+                    &request.snapshot,
+                    &plan,
+                    request
+                        .selection
+                        .tmux_socket_name()
+                        .expect("captured protected socket"),
+                    request.selection.session(),
+                    cancellation,
+                ),
+            }
+            .map_err(error)
         },
     );
     request

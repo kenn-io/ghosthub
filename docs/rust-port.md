@@ -502,6 +502,21 @@ server is independent. The `kwt` server ignores `TMUX_TMPDIR`, as KWT does.
 
 ![A remote worktree on the standard KWT server](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-kwt-socket.png)
 
+Already-imported remote pull-request worktrees open through the pinned helper's
+`kwt pr attach` command. Each new client carries the captured repository,
+registration, path, generation, session, and protected socket. Fresh KWT inventory
+and the actual attached client's session identity must agree before publication.
+KWT owns provenance checks, the inert shell layout, and credential filtering.
+Protected named servers use the standard tmux socket directory.
+
+The project row supports open, retained-client switching, and detach. Ordinary
+tmux inventory does not reconcile the protected server; the retained terminal
+reports its own exit. Refresh does not discard a live protected client. New
+attachment verifies provenance again. Remote PR listing/import and protected
+Kill/removal remain separate work.
+
+![An imported PR worktree opened over SSH](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-pr-worktree.png)
+
 KWT keeps a new session alive through setup when tmux's `destroy-unattached`
 option is enabled, then restores the captured session policy on attachment.
 Reopening a killed default-server worktree publishes its new KWT-server socket
@@ -1815,7 +1830,9 @@ The Windows WSL slice remains independently tested throughout this work.
    Remote lifecycle controls, managed-helper installation, project registration,
    ordinary worktree opening, branch-backed creation, and confirmed ordinary
    worktree removal, including explicit force removal of dirty ordinary SSH
-   worktrees, also ship. Follow-on work adds protected imports,
+   worktrees, also ship. Already-imported protected PR worktrees open through
+   KWT's protected attachment path. Follow-on work adds remote PR listing/import,
+   protected worktree Kill/removal,
    transport recovery, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only

@@ -266,6 +266,14 @@ tmux clients available for reuse. A same-name session on the other server remain
 
 ![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
 
+Already imported pull-request worktrees also open from the remote project tree.
+Import the pull request with `kwt pr import` on the remote host, refresh that
+host in Ghosthub, and select the worktree. KWT opens its protected terminal
+without running the checkout's configured layout. Switching away and back
+reuses the terminal; detaching leaves the session running.
+
+![An imported pull-request worktree opened on the Studio SSH host](/docs/assets/guide-rust-remote-pr-worktree.png)
+
 To create a remote worktree, select **+** beside its project. Enter a new branch
 name or search and select an existing branch. If several remotes have the same
 branch name, choose the source you want. Select **Create** to create the checkout
@@ -285,7 +293,7 @@ away and return.
 
 ![A registered remote directory opened from its idle row](/docs/assets/guide-rust-remote-directory.png)
 
-Open a running worktree or directory row's **⋯** menu, select **Kill**,
+Open an ordinary running worktree or directory row's **⋯** menu, select **Kill**,
 and confirm **Kill Session** to stop its session. Its files and registration
 remain intact.
 
@@ -321,5 +329,6 @@ project registration, local host runtime, or SSH connection changes, refresh the
 the removal again. KWT also refuses removal while the workspace session name
 remains on either shared tmux server. Failed change inspection blocks removal.
 
-Other named SSH sockets, protected SSH imports, and directory registration
-in the Rust UI are still in development.
+Importing pull requests, killing or removing protected worktrees, and registering
+directories through the remote Rust UI are still in development. Arbitrary named
+SSH sockets are not supported.
