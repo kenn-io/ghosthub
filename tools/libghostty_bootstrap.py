@@ -1486,48 +1486,29 @@ def refresh_swiftpm_manifest(paths: BootstrapPaths) -> None:
     paths.package_manifest_path.touch()
 
 
-def run_zig_build(
-    command: list[str], source_root: Path, environment: dict[str, str]
+def fetch_zig_dependencies(
+    zig_path: str, source_root: Path, environment: dict[str, str]
 ) -> None:
+    # The default `--fetch=needed` skips lazy dependencies, and `zig build`
+    # would then download them itself with no retry. `--fetch=all` downloads
+    # every dependency so the build that follows needs no network access.
+    command = [zig_path, "build", "--fetch=all"]
     for attempt in range(1, 4):
-        download_interrupted = False
-        other_error = False
-        with subprocess.Popen(
-            command,
-            cwd=source_root,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        ) as process:
-            assert process.stdout is not None
-            for line in process.stdout:
-                print(line, end="", flush=True)
-                if re.search(
-                    r"(?:^|/)build\.zig\.zon:\d+:\d+: error: "
-                    r"HTTP response read failure: (?:ConnectionResetByPeer|ConnectionTimedOut)\s*$",
-                    line,
-                ):
-                    download_interrupted = True
-                elif "error:" in line:
-                    other_error = True
-            status = process.wait()
-        if status == 0:
+        if subprocess.run(command, cwd=source_root, env=environment).returncode == 0:
             return
-        if not download_interrupted or other_error:
-            raise subprocess.CalledProcessError(status, command)
-        if attempt == 3:
-            raise BootstrapError(
-                "Zig dependency downloads failed after 3 attempts because the "
-                "connection was reset or timed out. Check access to the dependency URL reported "
-                "above and rerun the build. Downloaded dependencies remain cached."
+        if attempt < 3:
+            print(
+                "Zig dependency fetch failed; "
+                f"retrying (attempt {attempt + 1}/3).",
+                flush=True,
             )
-        print(
-            "Zig dependency download interrupted; "
-            f"retrying build (attempt {attempt + 1}/3).",
-            flush=True,
-        )
-        time.sleep(5 * attempt)
+            time.sleep(5 * attempt)
+    raise BootstrapError(
+        "Zig failed to fetch Ghostty's dependencies after 3 attempts. If the "
+        "error above is a connection or server error, rerun the build later; "
+        "downloaded dependencies remain cached. For a 404 or hash mismatch, "
+        "check the dependency URL."
+    )
 
 
 def bootstrap(
@@ -1559,9 +1540,17 @@ def bootstrap(
             zig_architecture,
         )
 
+        fetch_zig_dependencies(
+            zig_path, paths.source_checkout_root, build_environment
+        )
         command = render_build_command(zig_path, xcframework_target, optimize)
         try:
-            run_zig_build(command, paths.source_checkout_root, build_environment)
+            subprocess.run(
+                command,
+                cwd=paths.source_checkout_root,
+                env=build_environment,
+                check=True,
+            )
         except subprocess.CalledProcessError as error:
             raise BootstrapError(
                 "Ghostty build failed. Common macOS setup requirements are a compatible Zig "
