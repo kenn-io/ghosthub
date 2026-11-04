@@ -1571,7 +1571,7 @@ impl<R: CommandRunner> LocalHost<R> {
         )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if is_no_server(&stderr) {
+            if is_no_server(&stderr) || stderr.trim() == "no current target" {
                 return Ok(None);
             }
             return Err(classify_command_failure(
@@ -1638,7 +1638,8 @@ impl<R: CommandRunner> LocalHost<R> {
         )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if is_no_server(&stderr) {
+            // KWT starts the server before creating its first session.
+            if is_no_server(&stderr) || stderr.trim() == "no current target" {
                 return Ok(None);
             }
             return Err(classify_command_failure(
