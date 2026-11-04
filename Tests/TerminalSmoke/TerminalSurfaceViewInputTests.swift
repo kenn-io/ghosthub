@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import GhosthubHerdr
 import GhosttyKit
 @testable import GhosthubApp
 import GhosthubTestSupport
@@ -17,6 +18,104 @@ import XCTest
 
 @MainActor
 final class TerminalSurfaceViewInputTests: XCTestCase {
+    func testHerdrCoreTerminalAttachment() async throws {
+        guard let binary = ProcessInfo.processInfo.environment["GHOSTHUB_TEST_HERDR_CORE_BINARY"]
+        else {
+            throw XCTSkip("Set GHOSTHUB_TEST_HERDR_CORE_BINARY to an upstream herdr-core binary")
+        }
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: binary))
+        // Keep Unix sockets short and every core-owned path inside this fixture.
+        let root = URL(fileURLWithPath: "/tmp/gh-core-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let wrapper = makeExecutableScript("""
+        #!/bin/sh
+        export XDG_STATE_HOME=\(shellQuotedCommandArgument(root.path + "/state"))
+        export XDG_CONFIG_HOME=\(shellQuotedCommandArgument(root.path + "/config"))
+        export XDG_RUNTIME_DIR=\(shellQuotedCommandArgument(root.path + "/run"))
+        export HC_SOCKET=\(shellQuotedCommandArgument(root.path + "/core.sock"))
+        export HC_SESSION=ghosthub-test
+        unset HC_TERMINAL_ID HC_TERMINAL_SOCKET
+        exec \(shellQuotedCommandArgument(binary)) "$@"
+        """)
+        func run(_ arguments: [String]) -> AccountCommandOutput {
+            AccountCommandRunner.runProcess(
+                executable: wrapper.path,
+                arguments: arguments,
+                timeout: 10
+            )
+        }
+        addTeardownBlock { @MainActor [self] in
+            for surface in surfaces {
+                await surface.shutdown()
+            }
+            _ = run(["server", "stop"])
+            try? FileManager.default.removeItem(at: wrapper)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let started = run([
+            "run",
+            "--bg",
+            "--name",
+            "review",
+            "--cwd",
+            root.path,
+            "/bin/sh",
+            "-c",
+            "printf 'CORE_READY\\n'; exec /bin/cat",
+        ])
+        XCTAssertEqual(started.status, 0, started.stderr)
+        let inventoryCommand = HerdrCoreInventory.command(executable: wrapper.path)
+        let listed = AccountCommandRunner.runProcess(
+            executable: "/bin/sh", arguments: ["-c", inventoryCommand], timeout: 10
+        )
+        guard case let .available(terminals, _, _) = HerdrCoreInventory.parse(
+            status: listed.status, stdout: listed.stdout, stderr: listed.stderr
+        ), let terminal = terminals.first else {
+            XCTFail("Core terminal was not discovered: \(listed.stderr) \(listed.stdout)")
+            return
+        }
+        XCTAssertEqual(terminal.title, "review")
+        let command = try HerdrAttachmentInfo(
+            sessionName: terminal.name, isDefault: false, host: .local, backend: .core
+        ).attachCommand(herdrPath: wrapper.path)
+        let view = makeSurface(app: try requireAppHandle(), configuration: .init(command: command))
+        let window = hostInWindow(view)
+        waitForViewportText("CORE_READY", in: view)
+        XCTAssertTrue(readViewportText(from: view).contains("CORE_READY"))
+        typeText("core-input\r", into: view, window: window)
+        waitForViewportText("core-input", in: view)
+        let afterInput = run(["read", terminal.name])
+        XCTAssertEqual(afterInput.status, 0, afterInput.stderr)
+        XCTAssertTrue(
+            afterInput.stdout.contains("core-input"),
+            "Core read: \(afterInput.stdout); rendered: \(readViewportText(from: view))"
+        )
+        await view.shutdown()
+        window.orderOut(nil)
+        let stillRunning = run(["ls", "--json"])
+        XCTAssertEqual(stillRunning.status, 0)
+        XCTAssertTrue(
+            stillRunning.stdout.contains(terminal.name),
+            "Closing the view must leave the program running"
+        )
+        let reopened = makeSurface(
+            app: try requireAppHandle(),
+            configuration: .init(command: command)
+        )
+        let reopenedWindow = hostInWindow(reopened)
+        waitForViewportText("core-input", in: reopened)
+        XCTAssertTrue(
+            readViewportText(from: reopened).contains("core-input"),
+            readViewportText(from: reopened)
+        )
+        await reopened.shutdown()
+        reopenedWindow.orderOut(nil)
+    }
+
     // Retained across the entire test suite so ghostty_app_free is
     // never called while deferred ghostty_surface_free tasks are
     // still pending.
@@ -532,10 +631,17 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             case "d": keyCode = 2
             case "e": keyCode = 14
             case "h": keyCode = 4
+            case "i": keyCode = 34
+            case "n": keyCode = 45
             case "o": keyCode = 31
+            case "p": keyCode = 35
+            case "r": keyCode = 15
+            case "t": keyCode = 17
+            case "u": keyCode = 32
             case "x": keyCode = 7
             case "X": keyCode = 7
             case " ": keyCode = 49
+            case "-": keyCode = 27
             case "\r": keyCode = 36
             default:
                 sendText(value, to: view)

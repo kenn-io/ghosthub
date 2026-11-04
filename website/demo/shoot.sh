@@ -196,6 +196,14 @@ capture_session_rename() {
   dismiss_sheet
 }
 
+if [[ "${GHOSTHUB_DEMO_HERDR_CORE_ONLY:-}" == "1" ]]; then
+  palette "desktop-review"
+  sleep 3
+  demo_input expect-window-title "desktop-review"
+  capture_state guide-herdr-core.png exact
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_SESSION_RENAME_ONLY:-}" == "1" ]]; then
   echo "==> guide: rename a standalone session"
   capture_session_rename

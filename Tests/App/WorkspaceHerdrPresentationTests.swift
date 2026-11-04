@@ -13,6 +13,185 @@ import Testing
 @Suite("Workspace Herdr presentation", .serialized)
 @MainActor
 struct WorkspaceHerdrPresentationTests {
+    @Test("core terminals with TUI names keep distinct clients")
+    func coreAndTUIIdentity() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrSessions = [
+            .init(name: "t7", isDefault: false, state: .running),
+            .init(name: "t7", isDefault: false, state: .running, backend: .core, title: "review"),
+        ]
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(environment, store: store)
+        let tui = WorkspaceHerdrSessionSelection(hostID: environment.hostID, name: "t7")
+        let core = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "t7",
+            backend: .core
+        )
+        try await model.openBorrowedHerdrSession(tui)
+        await launchHerdrSurface(model, store: store)
+        let first = try #require(store.requestedKeys.last)
+        try await model.openBorrowedHerdrSession(core)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedHerdrSurface()
+            return store.requestedKeys.last != first
+        }
+        let second = try #require(store.requestedKeys.last)
+        #expect(model.activeBorrowedHerdrSelection == core)
+        #expect(second != first)
+        #expect(store.removedKeys.contains(first))
+        model.closeBorrowedHerdrSession(core)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(store.removedKeys.contains(second))
+        await model.shutdown()
+    }
+
+    @Test("core lifecycle actions reject a TUI-capable host with a valid session record")
+    func coreRejectsTUILifecycle() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = true
+        environment.snapshot.hosts[0].herdrSessions = [
+            .init(name: "t7", isDefault: false, state: .running),
+            .init(name: "t7", isDefault: false, state: .running, backend: .core),
+        ]
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(environment, store: store, recordReader: { name, _, _ in
+            .success(.init(
+                name: name,
+                isDefault: false,
+                state: .running,
+                sessionDirectory: "/tmp/herdr/\(name)",
+                socketPath: "/tmp/herdr/\(name)/socket"
+            ))
+        })
+        let tui = WorkspaceHerdrSessionSelection(hostID: environment.hostID, name: "t7")
+        let core = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "t7",
+            backend: .core
+        )
+        let request = try await model.prepareHerdrSessionLifecycle(tui, action: .stop)
+        #expect(request.session == tui)
+        await #expect(throws: HerdrSessionPresentationError.unavailable) {
+            _ = try await model.prepareHerdrSessionLifecycle(core, action: .stop)
+        }
+        await #expect(throws: HerdrSessionPresentationError.unavailable) {
+            try await model.restartHerdrSession(core)
+        }
+        await model.shutdown()
+    }
+
+    @Test("TUI creation remains available when core discovery fails")
+    func createDuringCoreFailure() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrAvailable = false
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(environment, store: store, discovery: { _ in
+            .available([], failures: [.core: .commandFailed(status: 1, stderr: "core unavailable")])
+        }, validationDiscovery: { _, _, backend in
+            #expect(backend == .tui)
+            return .available([])
+        }, exactProbe: { _, _, _ in .absent })
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor { model.inventoryRefreshProgress.herdrCompleted }
+        #expect(model.snapshot.host(id: environment.hostID)?.herdrAvailable == true)
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "new-session"
+        )
+        try await model.createHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        #expect(model.activeBorrowedHerdrSelection == selection)
+        #expect(store.requestedConfigurations.last?.command?.contains("new-session") == true)
+        await model.shutdown()
+    }
+
+    @Test("manual core retry ignores a same-named TUI lifecycle operation")
+    func coreRetryDuringTUIStop() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].herdrSessions = [
+            .init(name: "t7", isDefault: false, state: .running, backend: .core),
+        ]
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let model = try makeHerdrModel(environment, store: store, coordinator: coordinator)
+        let core = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "t7",
+            backend: .core
+        )
+        try await model.openBorrowedHerdrSession(core)
+        await launchHerdrSurface(model, store: store)
+        let disconnectedKey = try #require(store.requestedKeys.last)
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 9)
+        let key = HerdrSessionLifecycleCoordinator.Key(hostID: core.hostID, sessionName: core.name)
+        let operation = try #require(coordinator.begin(.stop, key: key))
+        await model.retryBorrowedHerdrSession(core)
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            model.prepareActiveBorrowedHerdrSurface()
+            return store.requestedKeys.last != disconnectedKey && model
+                .activeBorrowedHerdrConnectionState == .connected
+        }
+        #expect(store.requestedKeys.last != disconnectedKey)
+        #expect(model.activeBorrowedHerdrConnectionState == .connected)
+        coordinator.finish(operation, outcome: .succeeded)
+        await model.shutdown()
+    }
+
+    @Test("stopping TUI does not suppress a same-named core terminal reconnect")
+    func coreReconnectDuringTUIStop() async throws {
+        var environment = try remoteEnvironment()
+        environment.snapshot.hosts[0].herdrSessions = [
+            .init(name: "t7", isDefault: false, state: .running),
+            .init(name: "t7", isDefault: false, state: .running, backend: .core),
+        ]
+        let store = RecordingNativeSessionSurfaceStore()
+        let coordinator = HerdrSessionLifecycleCoordinator()
+        let acquisitions = Mutex(0)
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            presentationSSHConnectionProvider: { _, _ in
+                acquisitions.withLock { $0 += 1 }
+                return testKwtSSHAttachment()
+            },
+            coordinator: coordinator
+        )
+        let tui = WorkspaceHerdrSessionSelection(hostID: environment.hostID, name: "t7")
+        let core = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID,
+            name: "t7",
+            backend: .core
+        )
+        try await model.openBorrowedHerdrSession(tui)
+        await launchHerdrSurface(model, store: store)
+        let key = HerdrSessionLifecycleCoordinator.Key(hostID: tui.hostID, sessionName: tui.name)
+        let operation = try #require(coordinator.begin(.stop, key: key))
+        coordinator.willStop(operation)
+        let tuiKey = try #require(store.requestedKeys.last)
+        try await model.openBorrowedHerdrSession(core)
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            model.prepareActiveBorrowedHerdrSurface()
+            return store.requestedKeys.last != tuiKey && model
+                .activeBorrowedHerdrConnectionState == .connected
+        }
+        let coreHandleID = try #require(store.requestedKeys.last?.worktreeID)
+        let close = try #require(store.surface.closeObservers[coreHandleID])
+        #expect(acquisitions.withLock { $0 } == 2)
+        close(false, 255)
+        await waitUntilMainActor(timeout: .seconds(2)) {
+            acquisitions.withLock { $0 } == 3 && model
+                .activeBorrowedHerdrConnectionState == .connected
+        }
+        #expect(acquisitions.withLock { $0 } == 3)
+        #expect(model.activeBorrowedHerdrSelection == core)
+        #expect(model.activeBorrowedHerdrConnectionState == .connected)
+        #expect(coordinator.isPending(key))
+        coordinator.finish(operation, outcome: .succeeded)
+        await model.shutdown()
+    }
+
     enum DelayedHerdrIntent: Sendable {
         case open
         case create
@@ -1352,16 +1531,24 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
-    @Test("manual retry probes the exact running session before attaching")
-    func manualRetryRequiresRunningSession() async throws {
-        let environment = try environment()
+    @Test(
+        "manual retry probes the exact running session before attaching",
+        arguments: [HerdrBackend.tui, .core]
+    )
+    func manualRetryRequiresRunningSession(backend: HerdrBackend) async throws {
+        var environment = try environment()
+        let name = backend == .core ? "t7" : "api"
+        environment.snapshot.hosts[0].herdrSessions = [
+            .init(name: name, isDefault: false, state: .running, backend: backend),
+        ]
         let store = RecordingNativeSessionSurfaceStore()
         let discoveries = HerdrDiscoveryQueue([
             .available([
                 HerdrSessionSummary(
-                    name: "api",
+                    name: name,
                     isDefault: true,
-                    state: .running
+                    state: .running,
+                    backend: backend
                 ),
             ]),
             .available([]),
@@ -1373,7 +1560,7 @@ struct WorkspaceHerdrPresentationTests {
         )
         let selection = WorkspaceHerdrSessionSelection(
             hostID: environment.hostID,
-            name: "api"
+            name: name, backend: backend
         )
         try await model.openBorrowedHerdrSession(selection)
         await launchHerdrSurface(model, store: store)
@@ -2340,6 +2527,7 @@ struct WorkspaceHerdrPresentationTests {
         _ environment: Environment,
         store: RecordingNativeSessionSurfaceStore,
         discovery: WorkspaceSceneModel.HerdrSessionDiscovery? = nil,
+        validationDiscovery: WorkspaceSceneModel.HerdrSessionValidationDiscovery? = nil,
         exactProbe: WorkspaceSceneModel.HerdrSessionExactProbe? = nil,
         sshConnectionSnapshotProvider:
         @escaping WorkspaceSceneModel.SSHConnectionSnapshotProvider = {
@@ -2357,6 +2545,9 @@ struct WorkspaceHerdrPresentationTests {
             -> Result<String, HerdrCommandError> = {
                 _ in .success("/usr/bin/herdr")
             },
+        recordReader: @escaping WorkspaceSceneModel.HerdrSessionRecordReading = { name, _, _ in
+            .failure(.sessionMissing(name))
+        },
         paneSplitCapabilityProvider: @escaping NativeHerdrSessionCoordinator
             .PaneSplitCapabilityProvider = { _, _, _, _ in .success(nil) },
         paneSplitter: HerdrPaneSplitter = HerdrPaneSplitter(),
@@ -2380,6 +2571,7 @@ struct WorkspaceHerdrPresentationTests {
                 successfulTmuxResolution("/usr/bin/tmux")
             },
             nativeHerdrPathProvider: nativeHerdrPathProvider,
+            nativeHerdrCorePathProvider: { _ in .success("/opt/test/herdr-core") },
             herdrPaneSplitCapabilityProvider: paneSplitCapabilityProvider,
             herdrPaneSplitter: paneSplitter,
             remoteTmuxPathProvider: { _, _ in
@@ -2387,6 +2579,7 @@ struct WorkspaceHerdrPresentationTests {
             },
             activeDisplayCount: activeDisplayCount,
             herdrLifecycleCoordinator: coordinator,
+            herdrSessionRecordReader: recordReader,
             herdrSSHConnectionSnapshotProvider:
             sshConnectionSnapshotProvider,
             herdrSessionDiscovery: discovery ?? { _ in
@@ -2395,6 +2588,7 @@ struct WorkspaceHerdrPresentationTests {
             presentationSSHConnectionProvider:
             presentationSSHConnectionProvider,
             presentationSSHEnvironment: presentationSSHEnvironment,
+            herdrSessionValidationDiscovery: validationDiscovery,
             herdrSessionExactProbe: exactProbe,
             createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
             tmuxReconnectIntervals: [.milliseconds(1)]

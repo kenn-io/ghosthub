@@ -5,6 +5,14 @@ import Testing
 
 @Suite("Herdr attachment commands")
 struct HerdrAttachmentInfoTests {
+    @Test("core attachment selects an address without invoking TUI session commands")
+    func coreAttachment() throws {
+        let command = try HerdrAttachmentInfo(
+            sessionName: "t7", isDefault: false, host: .local, backend: .core
+        ).attachCommand(herdrPath: "/bin/echo")
+        #expect(try output(of: command) == "attach t7\n")
+    }
+
     @Test("local attachment targets one exact session without inheriting Herdr identity")
     func localAttachment() throws {
         let info = HerdrAttachmentInfo(

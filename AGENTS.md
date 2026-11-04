@@ -8,7 +8,10 @@ Ghosthub is a **native terminal for local and remote tmux, Herdr, and Zellij
 fleets** on macOS. It gives equal status to four ways of working:
 
 - Create or attach to any tmux session on a configured host.
-- Create, attach to, stop, restart, or delete Herdr sessions on a supported host.
+- Create, attach to, stop, restart, or delete Herdr TUI sessions on a supported
+  host. On macOS, also discover and attach to live Herdr desktop/core terminals
+  on local and remote POSIX hosts; Herdr owns their creation, lifetime, spaces,
+  and tabs.
 - Create, attach to, or kill active Zellij sessions on a supported host.
 - Create tmux sessions bound to git worktrees and manage the worktree lifecycle,
   including imports from branches and GitHub pull requests.

@@ -1,6 +1,7 @@
 import Foundation
 import GhosthubHerdr
 import GhosthubTransport
+import GhosthubWorkspace
 
 struct HerdrInventoryClient: Sendable {
     typealias ConnectionArgumentsProvider = @Sendable (SSHHostInfo) -> [String]
@@ -37,20 +38,22 @@ struct HerdrInventoryClient: Sendable {
 
     func resolveExecutable(
         on host: CommandHost,
-        sshConnectionArguments: [String]? = nil
+        sshConnectionArguments: [String]? = nil,
+        backend: HerdrBackend = .tui
     ) -> Result<String, HerdrCommandError> {
         guard supportsHerdr(host) else {
             return .failure(.unsupportedPlatform)
         }
         let output = run(
-            HerdrExecutable.command(),
+            HerdrExecutable.command(backend: backend),
             on: host,
             sshConnectionArguments: sshConnectionArguments
         )
         switch HerdrExecutable.parse(
             status: output.status,
             stdout: output.stdout,
-            stderr: output.stderr
+            stderr: output.stderr,
+            backend: backend
         ) {
         case let .available(path):
             return .success(path)
@@ -73,7 +76,13 @@ struct HerdrInventoryClient: Sendable {
                         sshConnectionArguments: connection?.arguments
                     )
                 }
-                if case let .failure(.commandFailed(status, stderr)) = result,
+                let error: HerdrCommandError?
+                switch result {
+                case let .failure(failure): error = failure
+                case let .available(_, _, failures): error = failures[.core] ?? failures[.tui]
+                case .unavailable: error = nil
+                }
+                if case let .commandFailed(status, stderr) = error,
                    SSHConnectionFailure.indicatesUnusableConnection(
                        status: status,
                        output: stderr
@@ -95,10 +104,45 @@ struct HerdrInventoryClient: Sendable {
         sshConnectionArguments: [String]?
     ) -> HerdrDiscoveryResult {
         guard supportsHerdr(host) else { return .unavailable }
+        let tui = discover(on: host, sshConnectionArguments: sshConnectionArguments, backend: .tui)
+        let core = discover(
+            on: host,
+            sshConnectionArguments: sshConnectionArguments,
+            backend: .core
+        )
+        var sessions: [HerdrSessionSummary] = []
+        var available = false
+        var tuiAvailable = false
+        var failures: [HerdrBackend: HerdrCommandError] = [:]
+        for (backend, result) in [(HerdrBackend.tui, tui), (.core, core)] {
+            switch result {
+            case let .available(found, _, _):
+                available = true
+                tuiAvailable = tuiAvailable || backend == .tui
+                sessions += found
+            case let .failure(error):
+                failures[backend] = error
+            case .unavailable:
+                break
+            }
+        }
+        if available {
+            return .available(sessions, tuiAvailable: tuiAvailable, failures: failures)
+        }
+        return (failures[.core] ?? failures[.tui]).map(HerdrDiscoveryResult.failure) ?? .unavailable
+    }
+
+    func discover(
+        on host: CommandHost,
+        sshConnectionArguments: [String]?,
+        backend: HerdrBackend
+    ) -> HerdrDiscoveryResult {
+        guard supportsHerdr(host) else { return .unavailable }
         let herdrPath: String
         switch resolveExecutable(
             on: host,
-            sshConnectionArguments: sshConnectionArguments
+            sshConnectionArguments: sshConnectionArguments,
+            backend: backend
         ) {
         case let .success(path):
             herdrPath = path
@@ -109,15 +153,14 @@ struct HerdrInventoryClient: Sendable {
         }
 
         let output = run(
-            HerdrSessionList.command(herdrPath: herdrPath),
+            backend == .tui
+                ? HerdrSessionList.command(herdrPath: herdrPath)
+                : HerdrCoreInventory.command(executable: herdrPath),
             on: host,
             sshConnectionArguments: sshConnectionArguments
         )
-        return HerdrSessionList.parse(
-            status: output.status,
-            stdout: output.stdout,
-            stderr: output.stderr
-        )
+        let parse = backend == .tui ? HerdrSessionList.parse : HerdrCoreInventory.parse
+        return parse(output.status, output.stdout, output.stderr)
     }
 
     func paneSplitCapability(

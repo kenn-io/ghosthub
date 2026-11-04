@@ -15,6 +15,33 @@ import Testing
 @Suite("Workspace Herdr lifecycle", .serialized)
 @MainActor
 struct WorkspaceHerdrLifecycleTests {
+    @Test(
+        "TUI lifecycle changes preserve a core terminal with the same address",
+        arguments: [HerdrSessionDestructiveAction.stop, .delete]
+    )
+    func coreUnaffectedByTUILifecycle(action: HerdrSessionDestructiveAction) async throws {
+        var environment = try environment()
+        let state: HerdrSessionState = action == .stop ? .running : .stopped
+        let core = HerdrSessionSummary(
+            name: "t7",
+            isDefault: false,
+            state: .running,
+            backend: .core
+        )
+        environment.snapshot.hosts[0].herdrSessions = [
+            core, .init(name: "t7", isDefault: false, state: state),
+        ]
+        let client = LifecycleClientStub(records: ["t7": Self.record(name: "t7", state: state)])
+        let model = try makeHerdrModel(environment, client: client)
+        let request = try await model.prepareHerdrSessionLifecycle(
+            .init(hostID: environment.hostID, name: "t7"),
+            action: action
+        )
+        try await model.performHerdrSessionLifecycle(request)
+        #expect(model.snapshot.host(id: environment.hostID)?.herdrSessions.contains(core) == true)
+        await model.shutdown()
+    }
+
     @Test("stop detaches every scene and retains a stopped row")
     func stopAcrossScenes() async throws {
         let environment = try environment()

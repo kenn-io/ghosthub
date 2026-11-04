@@ -76,14 +76,49 @@ A new tmux session remains usable from the `tmux` CLI and other tmux clients.
 To start a remote session with a saved command, use a
 [launch profile](launch-profiles.md).
 A new Herdr session is created with Herdr's own launch path and Ghosthub
-attaches immediately. The **Herdr Sessions** group and its creation action
-appear only when the host's `herdr session list --json` capability is
-available. A name already present in either running or stopped state is
+attaches immediately. Its creation action appears only when the host's
+`herdr session list --json` capability is available. A TUI session name already
+present in either running or stopped state is
 rejected; restart a stopped session instead.
 
 A new Zellij session uses Zellij's new-session path and remains an ordinary
 Zellij session. Active and resurrectable names are both rejected. Ghosthub
 lists only active sessions and does not expose resurrection as a workflow.
+
+## Herdr desktop terminals
+
+Unreleased macOS builds can open live terminals from the newer
+[Herdr desktop app](https://github.com/herdrdev/herdr-app). This uses
+[herdr-core](https://github.com/herdrdev/herdr-core), which stores terminals
+separately from older Herdr TUI sessions. Windows and Linux builds do not yet
+include this integration.
+
+1. Install `herdr-core` on the Mac or SSH host where the terminal runs. Its
+   executable must be on that account's login-shell `PATH`. The upstream
+   installer places it in `~/.local/bin`; `hc` is an optional alias.
+2. Start a terminal in Herdr desktop, or run `herdr-core run --bg --name review`.
+3. Expand **Herdr Sessions** in Ghosthub and select the terminal. The subtitle
+   shows **Herdr core** and its address, such as `t7`. You can also find it by
+   name or address in the Command Palette.
+
+![A Herdr desktop terminal open in Ghosthub, beside older Herdr TUI sessions.](/docs/assets/guide-herdr-core.png)
+
+Ghosthub opens one terminal at a time. Herdr desktop still owns its spaces,
+tabs, and layout. Switching away or pressing ++cmd+w++ detaches and leaves the
+program running. Use Herdr desktop or its CLI to create or end core terminals;
+Ghosthub's Create, Stop, Restart, Delete, and Split actions apply only to the
+older TUI sessions.
+
+Ghosthub checks the default core on each configured host. It excludes finished
+terminals and terminals reached through core's own remote-machine connections;
+add those machines as Ghosthub SSH hosts instead. Named `HC_SESSION` instances
+and `HC_SOCKET` overrides are not selected. Like an ordinary CLI invocation,
+`herdr-core ls` can start the default core if it is not running.
+
+Agents use the same terminals through `herdr-core ls --json`,
+`herdr-core read t7`, and other upstream CLI commands. Ghosthub keeps the
+terminal address separate from its display name, so renaming a terminal does
+not change the attachment target. This integration is tested with core 0.1.17.
 
 ## Attach and detach
 

@@ -162,11 +162,11 @@ extension WorkspaceSceneModel {
         if let pending = pendingHerdrShortcutSelection {
             return .herdrSession(
                 hostID: pending.hostID,
-                name: pending.name
+                name: pending.name, backend: pending.backend
             )
         }
         if let active = activeBorrowedHerdrSelection {
-            return .herdrSession(hostID: active.hostID, name: active.name)
+            return .herdrSession(hostID: active.hostID, name: active.name, backend: active.backend)
         }
         if let active = activeBorrowedZellijSelection {
             return .zellijSession(hostID: active.hostID, name: active.name)
@@ -301,16 +301,16 @@ extension WorkspaceSceneModel {
             selectFromUser(updated)
             openBorrowedTmuxSession(.init(hostID: hostID, name: name, socketName: socketName))
             return true
-        case let .herdrSession(hostID, name):
+        case let .herdrSession(hostID, name, backend):
             guard snapshot.host(id: hostID)?.herdrSessions.contains(
-                where: { $0.name == name && $0.state == .running }
+                where: { $0.name == name && $0.backend == backend && $0.state == .running }
             ) == true else { return false }
             var updated = selection
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
             startHerdrShortcutNavigation(.init(
                 hostID: hostID,
-                name: name
+                name: name, backend: backend
             ))
             return true
         case let .zellijSession(hostID, name):

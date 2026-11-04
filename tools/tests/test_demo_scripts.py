@@ -24,6 +24,7 @@ DEMO = ROOT / "website" / "demo"
 WEBSITE_ASSET_NAMES = (
     "hero.png",
     "guide-sessions.png",
+    "guide-herdr-core.png",
     "guide-rust-remote-zellij-kill.png",
     "guide-rust-remote-project.png",
     "guide-rust-remove-project.png",
@@ -362,6 +363,29 @@ def test_demo_ssh_uses_only_scratch_configuration(tmp_path: Path) -> None:
     assert settings["stricthostkeychecking"] == "true"
     assert settings.get("proxycommand", "none") == "none"
     assert settings.get("proxyjump", "none") == "none"
+
+
+def test_demo_core_inventory_and_attachment(tmp_path: Path) -> None:
+    env = {**os.environ, "GHOSTHUB_DEMO_SCRATCH": str(tmp_path)}
+    binary = DEMO / "bin" / "herdr-core"
+
+    def run(*arguments: str, text: str = "") -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(binary), *arguments], env=env, input=text,
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+
+    assert run("ls", "--json").returncode == 64
+    (tmp_path / ".ghosthub-demo-scratch").touch()
+    assert json.loads(run("ls", "--json").stdout) == {"terminals": []}
+    (tmp_path / "herdr-core-enabled").touch()
+    terminals = json.loads(run("ls", "--json").stdout)["terminals"]
+    assert [terminal["address"] for terminal in terminals] == ["t7", "t8"]
+    attached = run("attach", terminals[0]["address"], text="hello\n")
+    assert attached.returncode == 0
+    assert "Checkout review" in attached.stdout
+    assert attached.stdout.endswith("hello\n")
+    assert run("attach", "missing").returncode == 64
 
 
 def test_demo_herdr_emits_marker_framed_realistic_inventory(

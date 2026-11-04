@@ -118,6 +118,7 @@ struct WorkspaceTmuxDescriptor: Codable, Hashable, Sendable {
 struct WorkspaceHerdrDescriptor: Codable, Hashable, Sendable {
     var hostKey: String
     var sessionName: String
+    var backend: HerdrBackend? = nil
 }
 
 struct WorkspaceZellijDescriptor: Codable, Hashable, Sendable {
@@ -275,7 +276,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
             else { return nil }
             return WorkspaceHerdrDescriptor(
                 hostKey: activeHost.configKey,
-                sessionName: active.name
+                sessionName: active.name, backend: active.backend == .core ? .core : nil
             )
         }
         let zellij = activeZellij.flatMap {
@@ -580,12 +581,12 @@ enum WorkspaceWindowRestorationResolver {
         if let herdr = state.herdr {
             let herdrSelection = WorkspaceHerdrSessionSelection(
                 hostID: host.id,
-                name: herdr.sessionName
+                name: herdr.sessionName, backend: herdr.backend ?? .tui
             )
             guard herdrFreshHostIDs.contains(host.id),
                   !pendingHerdrSessions.contains(herdrSelection),
                   host.herdrSessions.contains(where: {
-                      $0.name == herdr.sessionName
+                      $0.matches(herdrSelection)
                           && $0.state == .running
                   })
             else { return .pending(selection: selection) }

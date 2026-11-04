@@ -85,6 +85,16 @@ private actor HerdrProbeGate {
 
 @Suite("Herdr session probe broker")
 struct HerdrSessionProbeBrokerTests {
+    @Test("a core failure does not invalidate successful TUI name absence")
+    func absenceDuringCoreFailure() {
+        let error = HerdrCommandError.commandFailed(status: 1, stderr: "core unavailable")
+        let discovery = HerdrDiscoveryResult.available([], failures: [.core: error])
+        #expect(HerdrSessionProbeOutcome
+            .exact(name: "new-session", discovery: discovery) == .absent)
+        #expect(HerdrSessionProbeOutcome
+            .exact(name: "t7", backend: .core, discovery: discovery) == .failure(error))
+    }
+
     @MainActor
     @Test("concurrent consumers share one discovery and receive its result")
     func concurrentConsumers() async {

@@ -88,7 +88,8 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
               let host = snapshot.host(id: activeHerdrSession.hostID)
         else { return nil }
         return SessionTitlebarPresentation(
-            displayName: activeHerdrSession.name,
+            displayName: host.herdrSessions.first { $0.matches(activeHerdrSession) }?
+                .title ?? activeHerdrSession.name,
             hostname: hostname(for: host),
             icon: .herdrSession
         )

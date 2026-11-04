@@ -17,6 +17,12 @@ demo_scratch_guard "$scratch"
 [[ -x "$bin" ]] || { echo "error: staged app copy not found; run stage.sh" >&2; exit 1; }
 [[ -d "$scratch/home" ]] || { echo "error: run stage.sh first" >&2; exit 1; }
 
+if [[ "${GHOSTHUB_DEMO_HERDR_CORE:-}" == "1" ]]; then
+  touch "$scratch/herdr-core-enabled"
+else
+  rm -f "$scratch/herdr-core-enabled"
+fi
+
 hosts_json='[{"configKey":"gpu-01","name":"gpu-01","platform":"linux",'
 hosts_json+='"sshDestination":"ghosthub-demo-remote"}]'
 hosts_hex="$(printf '%s' "$hosts_json" | xxd -p | tr -d '\n')"

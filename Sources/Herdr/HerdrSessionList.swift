@@ -3,7 +3,11 @@ import GhosthubTransport
 import GhosthubWorkspace
 
 public enum HerdrDiscoveryResult: Equatable, Sendable {
-    case available([HerdrSessionSummary])
+    case available(
+        [HerdrSessionSummary],
+        tuiAvailable: Bool = true,
+        failures: [HerdrBackend: HerdrCommandError] = [:]
+    )
     case unavailable
     case failure(HerdrCommandError)
 }

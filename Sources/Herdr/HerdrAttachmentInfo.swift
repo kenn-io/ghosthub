@@ -1,4 +1,5 @@
 import GhosthubTransport
+import GhosthubWorkspace
 
 public enum HerdrAttachmentLaunchMode: Equatable, Sendable {
     case attachExisting
@@ -9,15 +10,18 @@ public struct HerdrAttachmentInfo: Equatable, Sendable {
     public let sessionName: String
     public let isDefault: Bool
     public let host: CommandHost
+    public let backend: HerdrBackend
 
     public init(
         sessionName: String,
         isDefault: Bool,
-        host: CommandHost
+        host: CommandHost,
+        backend: HerdrBackend = .tui
     ) {
         self.sessionName = sessionName
         self.isDefault = isDefault
         self.host = host
+        self.backend = backend
     }
 
     public func attachCommand(
@@ -65,12 +69,14 @@ public struct HerdrAttachmentInfo: Equatable, Sendable {
         herdrPath: String,
         launchMode: HerdrAttachmentLaunchMode
     ) -> String {
-        let arguments: [String] = switch launchMode {
-        case .attachExisting:
+        let arguments: [String] = switch (backend, launchMode) {
+        case (.core, _):
+            [herdrPath, "attach", sessionName]
+        case (.tui, .attachExisting):
             [herdrPath, "session", "attach", sessionName]
-        case .launchOrAttach where isDefault:
+        case (.tui, .launchOrAttach) where isDefault:
             [herdrPath]
-        case .launchOrAttach:
+        case (.tui, .launchOrAttach):
             [herdrPath, "--session", sessionName]
         }
         let invocation = arguments.map(shellQuotedCommandArgument)

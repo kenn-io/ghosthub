@@ -2091,7 +2091,7 @@ public struct RootView: View {
         case let .openHerdrSession(herdrSession):
             selectWorkspace(.herdrSession(
                 hostID: herdrSession.hostID,
-                name: herdrSession.name
+                name: herdrSession.name, backend: herdrSession.backend
             ))
             activateHerdrSession(herdrSession)
         case let .openZellijSession(zellijSession):

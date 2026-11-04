@@ -344,14 +344,14 @@ enum WorkspaceSidebarRowActionModel {
         activeTmuxSessionIsConnected: Bool = false,
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
     ) -> [WorkspaceSidebarRowAction] {
-        if case let .herdrSession(hostID, name) = row.target {
+        if case let .herdrSession(hostID, name, backend) = row.target {
             let selection = WorkspaceHerdrSessionSelection(
                 hostID: hostID,
-                name: name
+                name: name, backend: backend
             )
-            guard !pendingHerdrSessions.contains(selection),
+            guard backend == .tui, !pendingHerdrSessions.contains(selection),
                   let session = snapshot.host(id: hostID)?.herdrSessions
-                  .first(where: { $0.name == name })
+                  .first(where: { $0.matches(selection) })
             else { return [] }
             switch session.state {
             case .running:
@@ -437,7 +437,7 @@ enum WorkspaceSidebarSectionActionModel {
         case .tmuxSessions:
             true
         case .herdrSessions:
-            host.herdrAvailable
+            host.herdrAvailable || !host.herdrSessions.isEmpty
         case .zellijSessions:
             host.zellijAvailable
         case .projects:
