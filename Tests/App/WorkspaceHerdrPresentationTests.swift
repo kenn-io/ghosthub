@@ -1600,7 +1600,12 @@ struct WorkspaceHerdrPresentationTests {
         await model.retryBorrowedHerdrSession(selection)
 
         #expect(discoveries.callCount == 2)
-        #expect(store.removedKeys.count == 1)
+        #expect(store.requestedKeys.count == 1)
+        if backend == .core {
+            #expect(model.activeBorrowedHerdrSelection == nil)
+        } else {
+            #expect(model.activeBorrowedHerdrSelection == selection)
+        }
         await model.shutdown()
     }
 
