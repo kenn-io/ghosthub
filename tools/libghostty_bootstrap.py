@@ -14,11 +14,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-GHOSTHUB_BOOTSTRAP_VERSION = 28
+GHOSTHUB_BOOTSTRAP_VERSION = 29
 GHOSTHUB_GHOSTTY_BUNDLE_ID = "com.ghosthub"
 GHOSTHUB_TERM_PROGRAM = "ghosthub"
 SOURCE_FETCH_ATTEMPTS = 3
 SOURCE_FETCH_RETRY_DELAY_SECONDS = 5.0
+# Unmerged upstream fixes carried as unified diffs in Vendor/ghostty-patches.
+# Drop an entry once the pinned revision includes the fix.
+UPSTREAM_SOURCE_PATCHES = (
+    # ghostty-org/ghostty#14444: keep mailboxes drained while a surface
+    # joins its threads, so closing a busy surface cannot freeze the app.
+    "surface-teardown-drain.patch",
+)
 
 class BootstrapError(RuntimeError):
     pass
@@ -362,7 +369,8 @@ def ensure_source_checkout(
     ensure_source_checkout_layout(paths)
 
 
-def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
+def apply_ghosthub_source_patches(paths: BootstrapPaths, *, git: str = "git") -> None:
+    apply_upstream_source_patches(paths, git=git)
     patch_build_config_bundle_id(paths.source_checkout_root / "src" / "build_config.zig")
     patch_public_header(paths.source_checkout_root / "include" / "ghostty.h")
     patch_preserve_presented_frame(paths.source_checkout_root / "src" / "renderer" / "metal" / "Target.zig")
@@ -394,6 +402,32 @@ def apply_ghosthub_source_patches(paths: BootstrapPaths) -> None:
         paths.source_checkout_root / "src" / "build" / "GhosttyXCFramework.zig",
         paths.source_checkout_root / "src" / "build" / "GhosttyXcodebuild.zig",
     )
+
+
+def apply_upstream_source_patches(paths: BootstrapPaths, *, git: str = "git") -> None:
+    git_path = resolve_tool(git)
+    patch_root = paths.repo_root / "Vendor" / "ghostty-patches"
+    for name in UPSTREAM_SOURCE_PATCHES:
+        try:
+            subprocess.run(
+                [
+                    git_path,
+                    "-C",
+                    str(paths.source_checkout_root),
+                    "apply",
+                    str(patch_root / name),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as error:
+            raise BootstrapError(
+                f"Failed to apply {name} to the pinned Ghostty source. "
+                "Remove the patch if the pinned revision already includes it, "
+                "or update it for the new source layout.\n"
+                f"{describe_command_failure(error)}"
+            ) from error
 
 
 def patch_build_config_bundle_id(path: Path) -> None:
@@ -1524,7 +1558,7 @@ def bootstrap(
     rebuilt_variant = False
     if artifact_state_message(paths.cached_artifacts, metadata, xcframework_target, optimize) is not None:
         ensure_source_checkout(paths, metadata, git=git)
-        apply_ghosthub_source_patches(paths)
+        apply_ghosthub_source_patches(paths, git=git)
 
         zig_path = resolve_tool(zig)
         _ = resolve_tool(xcodebuild)

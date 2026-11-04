@@ -12,6 +12,15 @@ Upstream now normalizes static archives and applies its libSystem symbol
 overrides; Ghosthub validates the emitted archive without rebuilding it.
 Direct config-file loading also uses the upstream C API.
 
+Ghosthub also carries one unmerged upstream fix as a unified diff in this
+directory. `surface-teardown-drain.patch` is
+[ghostty-org/ghostty#14444](https://github.com/ghostty-org/ghostty/pull/14444).
+It keeps the app, renderer, and io mailboxes drained while a surface joins its
+threads. Without it, closing a surface whose child is still writing can block
+the main thread forever. The bootstrap applies listed diffs with `git apply`
+before the string patches below. Remove the diff and its
+`UPSTREAM_SOURCE_PATCHES` entry once the pinned revision includes the fix.
+
 The remaining patches provide Ghosthub's bundle and terminal identity,
 launcher environment isolation, quiet macOS login, child process status,
 output injection and child-write callbacks, clipboard request classification

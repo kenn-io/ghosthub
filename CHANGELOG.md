@@ -11,6 +11,12 @@ test, and documentation-only changes are omitted.
   license and no longer require a contributor license agreement. Third-party
   components retain their own licenses.
 
+### Fixed
+
+- Closing a terminal whose program is still writing output, such as a Herdr
+  session, no longer freezes Ghosthub. Before, the app could stop responding
+  until it was force quit.
+
 ## [0.12.0] - 2026-10-30
 
 Flag worktrees to return to later, rename running tmux sessions, and find

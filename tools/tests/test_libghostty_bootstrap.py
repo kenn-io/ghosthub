@@ -198,6 +198,63 @@ def test_artifact_state_flags_archive_missing_ghostty_api(tmp_path: Path) -> Non
     )
 
 
+_UPSTREAM_FIX_DIFF = """\
+diff --git a/Surface.zig b/Surface.zig
+--- a/Surface.zig
++++ b/Surface.zig
+@@ -1 +1,3 @@
+-pub fn deinit() void {}
++pub fn deinit() void {
++    drain();
++}
+diff --git a/drain.zig b/drain.zig
+new file mode 100644
+--- /dev/null
++++ b/drain.zig
+@@ -0,0 +1 @@
++pub fn drain() void {}
+"""
+
+
+def _write_upstream_patch_fixture(repo: Repo, name: str) -> Path:
+    """Create a one-file source checkout and vendor a diff that edits it
+    and adds a file, as upstream fixes do."""
+    source = repo.paths.source_checkout_root
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    (source / "Surface.zig").write_text("pub fn deinit() void {}\n")
+
+    patch = repo.root / "Vendor" / "ghostty-patches" / name
+    patch.parent.mkdir(parents=True, exist_ok=True)
+    patch.write_text(_UPSTREAM_FIX_DIFF)
+    return source
+
+
+def test_upstream_source_patches_apply_to_the_checkout(
+    repo: Repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _write_upstream_patch_fixture(repo, "fix.patch")
+    monkeypatch.setattr(bootstrap, "UPSTREAM_SOURCE_PATCHES", ("fix.patch",))
+
+    bootstrap.apply_upstream_source_patches(repo.paths)
+
+    assert (source / "Surface.zig").read_text() == "pub fn deinit() void {\n    drain();\n}\n"
+    assert (source / "drain.zig").read_text() == "pub fn drain() void {}\n"
+
+
+def test_upstream_source_patch_conflict_names_the_patch(
+    repo: Repo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _write_upstream_patch_fixture(repo, "fix.patch")
+    monkeypatch.setattr(bootstrap, "UPSTREAM_SOURCE_PATCHES", ("fix.patch",))
+    (source / "Surface.zig").write_text("pub fn deinit(self: *Surface) void {}\n")
+
+    with pytest.raises(bootstrap.BootstrapError, match="fix.patch"):
+        bootstrap.apply_upstream_source_patches(repo.paths)
+
+    assert not (source / "drain.zig").exists()
+
+
 def test_clipboard_write_patch_marks_both_osc52_paths(tmp_path: Path) -> None:
     surface = tmp_path / "Surface.zig"
     surface.write_text(
