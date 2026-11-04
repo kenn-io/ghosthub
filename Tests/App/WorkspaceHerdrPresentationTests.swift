@@ -84,11 +84,17 @@ struct WorkspaceHerdrPresentationTests {
     @Test("TUI creation remains available when core discovery fails")
     func createDuringCoreFailure() async throws {
         var environment = try environment()
-        environment.snapshot.hosts[0].herdrAvailable = true
+        environment.snapshot.hosts[0].herdrAvailable = false
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeHerdrModel(environment, store: store, discovery: { _ in
             .available([], failures: [.core: .commandFailed(status: 1, stderr: "core unavailable")])
+        }, validationDiscovery: { _, _, backend in
+            #expect(backend == .tui)
+            return .available([])
         }, exactProbe: { _, _, _ in .absent })
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor { model.inventoryRefreshProgress.herdrCompleted }
+        #expect(model.snapshot.host(id: environment.hostID)?.herdrAvailable == true)
         let selection = WorkspaceHerdrSessionSelection(
             hostID: environment.hostID,
             name: "new-session"
@@ -2521,6 +2527,7 @@ struct WorkspaceHerdrPresentationTests {
         _ environment: Environment,
         store: RecordingNativeSessionSurfaceStore,
         discovery: WorkspaceSceneModel.HerdrSessionDiscovery? = nil,
+        validationDiscovery: WorkspaceSceneModel.HerdrSessionValidationDiscovery? = nil,
         exactProbe: WorkspaceSceneModel.HerdrSessionExactProbe? = nil,
         sshConnectionSnapshotProvider:
         @escaping WorkspaceSceneModel.SSHConnectionSnapshotProvider = {
@@ -2581,6 +2588,7 @@ struct WorkspaceHerdrPresentationTests {
             presentationSSHConnectionProvider:
             presentationSSHConnectionProvider,
             presentationSSHEnvironment: presentationSSHEnvironment,
+            herdrSessionValidationDiscovery: validationDiscovery,
             herdrSessionExactProbe: exactProbe,
             createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
             tmuxReconnectIntervals: [.milliseconds(1)]
