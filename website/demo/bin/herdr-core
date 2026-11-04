@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Synthetic desktop terminals for the isolated website screenshot environment.
+set -euo pipefail
+
+scratch="${GHOSTHUB_DEMO_SCRATCH:?GHOSTHUB_DEMO_SCRATCH is not set}"
+[[ -f "$scratch/.ghosthub-demo-scratch" ]] || exit 64
+
+if [[ "${1:-}" == "ls" && "${2:-}" == "--json" && "$#" -eq 2 ]]; then
+  if [[ -f "$scratch/herdr-core-enabled" ]]; then
+    printf '%s\n' '{"terminals":[{"address":"t7","name":"desktop-review","state":"live"},{"address":"t8","name":"build-watch","state":"live"}]}'
+  else
+    printf '%s\n' '{"terminals":[]}'
+  fi
+  exit 0
+fi
+
+if [[ "${1:-}" == "attach" && "${2:-}" == "t7" && "$#" -eq 2 \
+  && -f "$scratch/herdr-core-enabled" ]]; then
+  printf '\033[2J\033[H'
+  printf '\033[1;36mCheckout review\033[0m\n'
+  printf 'web-app / feat/checkout\n\n'
+  printf 'Reviewed cart totals, discount codes, and order confirmation.\n\n'
+  printf '\033[32m  ✓ Cart totals include shipping and tax\n'
+  printf '  ✓ Expired discount codes show a clear message\n'
+  printf '  ✓ Confirmation includes the delivery estimate\033[0m\n\n'
+  printf 'All 28 checkout tests passed. Ready for review.\n\n'
+  while IFS= read -r line; do printf '%s\n' "$line"; done
+  exit 0
+fi
+
+echo 'faux herdr-core: unsupported command' >&2
+exit 64

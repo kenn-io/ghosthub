@@ -644,6 +644,40 @@ struct WorkspaceWindowStateTests {
         )
     }
 
+    @Test("core restoration never opens a TUI session with the same address")
+    func coreRestoration() throws {
+        let fixture = RestorationFixture.local(sessionName: "t7")
+        let hostID = fixture.selection.selectedHostID
+        var snapshot = fixture.snapshot
+        snapshot.hosts[0].herdrSessions = [.init(name: "t7", isDefault: false, state: .running)]
+        let selection = WorkspaceSelection(selectedHostID: hostID)
+        let state = WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(hostKey: "local", projectKey: nil, worktreeGeneration: nil),
+            tmux: nil,
+            herdr: .init(hostKey: "local", sessionName: "t7", backend: .core)
+        )
+        let restored = try JSONDecoder().decode(
+            WorkspaceWindowState.self,
+            from: JSONEncoder().encode(state)
+        )
+        #expect(WorkspaceWindowRestorationResolver.resolve(
+            restored, in: snapshot, herdrFreshHostIDs: [hostID]
+        ) == .pending(selection: selection))
+        snapshot.hosts[0].herdrSessions.append(.init(
+            name: "t7",
+            isDefault: false,
+            state: .running,
+            backend: .core
+        ))
+        #expect(WorkspaceWindowRestorationResolver.resolve(
+            restored, in: snapshot, herdrFreshHostIDs: [hostID]
+        ) == .ready(
+            selection: selection,
+            presentation: .herdr(.init(hostID: hostID, name: "t7", backend: .core))
+        ))
+    }
+
     @Test("Zellij restoration requires fresh exact active inventory")
     func zellijRestorationRequiresFreshExactInventory() {
         let fixture = RestorationFixture.local(sessionName: "editor")

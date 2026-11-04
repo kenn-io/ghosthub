@@ -18,7 +18,8 @@ sources:
   Discovery preserves the socket, so equal names on those servers remain
   separate targets.
 - **Herdr sessions:** running and stopped sessions returned by `herdr session list --json`
-  on the local Mac and remote POSIX hosts.
+  on the local Mac and remote POSIX hosts. The macOS app also lists live local
+  terminals returned by `herdr-core ls --json` on each of those hosts.
 - **Zellij sessions:** active sessions returned by `zellij list-sessions
   --no-formatting` on the local Mac and remote POSIX hosts. Exited,
   resurrectable sessions are filtered out.
@@ -239,6 +240,44 @@ persistent override and one-shot action are therefore unavailable for native
 Windows sessions.
 
 ## Native Herdr Attachment
+
+### Desktop core terminals
+
+The macOS app resolves `herdr-core` separately from the older `herdr` TUI in
+each host account's login environment. It uses `herdr-core ls --json` for
+inventory and `herdr-core attach <address>` for presentation. The optional
+`hc` alias is not used because other programs may own that command. This
+contract is verified with upstream core 0.1.17.
+
+Only `state: live` terminals with host-local `t…` addresses are listed.
+Finished terminals and `machine/t…` addresses are excluded; Ghosthub's own
+host routes determine where discovery and attachment run. The terminal's
+optional name or agent label is display text. Selection, reconnect, and
+restoration use the host, backend, and address, so a TUI session with the same
+name is a separate target.
+
+Host inventory lists TUI and core sessions through one SSH lease. A failed
+backend preserves the other backend's rows and supplies a host warning. Missing
+executables are silent. Successful TUI discovery enables session creation even
+when core discovery fails. Attachment and reconnect probes query only the
+selected backend, so they do not wait for the other backend to respond.
+Core attachments reuse the ordinary local/SSH client, detach, and reconnect
+paths. They never request TUI lifecycle operations or pane splits. Herdr desktop
+owns spaces and tabs; Ghosthub presents individual terminals without importing
+its layout.
+
+Before discovery and attachment, Ghosthub clears inherited TUI routing variables
+and `HC_SESSION`, `HC_SOCKET`, `HC_TERMINAL_ID`, and `HC_TERMINAL_SOCKET`.
+Discovery selects the account's default core, not the caller's named instance.
+The upstream `ls` command can start that core when it is absent; Ghosthub adds
+no core server controls or installation management.
+
+Run `make test-herdr-core HERDR_CORE_BINARY=/absolute/path/to/herdr-core` to
+verify discovery, keyboard input, detach, and reattachment through libghostty.
+The test confines core state, configuration, and sockets to a temporary fixture
+and stops that fixture's core during teardown.
+
+### TUI sessions
 
 Ghosthub resolves `herdr` in the host account's login environment and attaches
 the complete session with `herdr session attach <exact-name>`. Local sessions

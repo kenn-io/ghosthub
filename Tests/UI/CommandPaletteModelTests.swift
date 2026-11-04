@@ -6,6 +6,32 @@ import GhosthubWorkspace
 import Testing
 
 struct CommandPaletteModelTests {
+    @Test("core-only hosts expose terminal attachment without TUI lifecycle commands")
+    func coreTerminalCommands() throws {
+        let host = HostSummary.fixture(herdrSessions: [
+            .init(name: "t7", isDefault: false, state: .running, backend: .core, title: "review"),
+        ], herdrAvailable: false)
+        let selection = WorkspaceHerdrSessionSelection(hostID: host.id, name: "t7", backend: .core)
+        let commands = makeCommandPaletteCommands(
+            snapshot: .fixture(hosts: [host]), selection: .init(selectedHostID: host.id)
+        )
+        #expect(commands.contains { $0.action == .openHerdrSession(selection) })
+        #expect(!commands.contains { $0.action == .newHerdrSession(host.id) })
+        #expect(!commands.contains { $0.action == .stopHerdrSession(selection) })
+        #expect(!commands.contains { $0.action == .restartHerdrSession(selection) })
+        #expect(!commands.contains { $0.action == .deleteHerdrSession(selection) })
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [host])
+        let row = try #require(WorkspaceSidebarModel.sections(in: snapshot).first?.herdrSessionRows
+            .first)
+        #expect(row.title == "review")
+        #expect(WorkspaceSidebarRowActionModel.actions(for: row, in: snapshot).isEmpty)
+        #expect(WorkspaceSidebarSectionActionModel.isVisible(
+            .herdrSessions,
+            host: host,
+            hasProjects: false
+        ))
+    }
+
     @Test("command palette includes global actions and ordered worktrees")
     func commandPaletteIncludesGlobalActionsAndOrderedWorktrees() {
         let commands = makeCommandPaletteCommands()
@@ -430,7 +456,7 @@ struct CommandPaletteModelTests {
             id: projectID,
             hostID: hostID,
             name: "app",
-            rootPath: "/Users/wesm/code/app",
+            rootPath: "/code/app",
             platformURL: "https://github.com/acme/app",
             platformCoverage: "active"
         )
@@ -456,7 +482,7 @@ struct CommandPaletteModelTests {
         })
         #expect(selectProject.subtitle == "acme/app")
         commands.expectCommandFilter(
-            query: "/Users/wesm/code/app",
+            query: "/code/app",
             yieldsTitles: [
                 "New Worktree in app",
                 "Select Project: app",
@@ -610,10 +636,10 @@ struct CommandPaletteModelTests {
     @Test("host and tmux lifecycle actions are discoverable")
     func hostAndTmuxLifecycleActionsAreDiscoverable() throws {
         let host = HostSummary.fixture(
-            name: "DGX Spark",
+            name: "GPU Host",
             kind: .remote,
             platform: .linux,
-            sshDestination: "wesm@dgx-spark",
+            sshDestination: "dev@gpu.example.test",
             tmuxSessions: [
                 TmuxSessionSummary(
                     name: "training",
@@ -657,10 +683,10 @@ struct CommandPaletteModelTests {
         )
 
         commands.expectCommandContains(
-            title: "New tmux session on DGX Spark"
+            title: "New tmux session on GPU Host"
         )
         commands.expectCommandContains(
-            title: "Add Project on DGX Spark"
+            title: "Add Project on GPU Host"
         )
         commands.expectCommandContains(
             title: "Open tmux session: training"
@@ -771,7 +797,7 @@ struct CommandPaletteModelTests {
             name: "ARM Builder",
             kind: .remote,
             platform: .windows,
-            sshDestination: "wesm@arm-builder"
+            sshDestination: "dev@arm-builder.example.test"
         )
         let commands = makeCommandPaletteCommands(
             snapshot: WorkspaceSnapshot(

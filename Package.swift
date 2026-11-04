@@ -341,6 +341,7 @@ if hasBootstrappedLibghostty {
             name: "GhosthubTerminalSmokeTests",
             dependencies: [
                 "GhosthubApp",
+                "GhosthubHerdr",
                 "GhosthubTerminal",
                 "GhosthubTerminalSupport",
                 "GhosthubTestSupport",

@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubWorkspace
 
 public enum HerdrEnvironment {
     public static let controlVariables = [
@@ -14,6 +15,10 @@ public enum HerdrEnvironment {
         "HERDR_ACTIVE_TAB_ID",
         "HERDR_ACTIVE_PANE_ID",
         "HERDR_ACTIVE_PANE_CWD",
+        "HC_SESSION",
+        "HC_SOCKET",
+        "HC_TERMINAL_ID",
+        "HC_TERMINAL_SOCKET",
     ]
 
     public static var unsetCommand: String {
@@ -30,10 +35,12 @@ public enum HerdrExecutableResult: Equatable, Sendable {
 public enum HerdrExecutable {
     public static let marker = "GHOSTHUB_HERDR_PATH"
 
-    public static func command() -> String {
-        [
+    public static func command(backend: HerdrBackend = .tui) -> String {
+        let executable = backend == .core ? "herdr-core" : "herdr"
+        let marker = backend == .core ? "GHOSTHUB_HC_PATH" : marker
+        return [
             HerdrEnvironment.unsetCommand,
-            "ghosthub_herdr_path=$(command -v herdr) || exit 127",
+            "ghosthub_herdr_path=$(command -v \(executable)) || exit 127",
             "[ -n \"$ghosthub_herdr_path\" ] || exit 127",
             "case \"$ghosthub_herdr_path\" in /*) ;; *) exit 127 ;; esac",
             "[ -x \"$ghosthub_herdr_path\" ] || exit 127",
@@ -44,7 +51,8 @@ public enum HerdrExecutable {
     public static func parse(
         status: Int32,
         stdout: String,
-        stderr: String
+        stderr: String,
+        backend: HerdrBackend = .tui
     ) -> HerdrExecutableResult {
         if status == 127 {
             return .unavailable
@@ -57,6 +65,7 @@ public enum HerdrExecutable {
             separator: "\n",
             omittingEmptySubsequences: false
         ).map(String.init)
+        let marker = backend == .core ? "GHOSTHUB_HC_PATH" : marker
         guard let markerIndex = lines.lastIndex(of: marker),
               lines.indices.contains(markerIndex + 1) else {
             return .unavailable

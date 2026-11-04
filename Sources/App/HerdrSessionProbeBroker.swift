@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubHerdr
+import GhosthubWorkspace
 import GhosthubTransport
 
 enum HerdrSessionProbeOutcome: Equatable, Sendable {
@@ -10,13 +11,14 @@ enum HerdrSessionProbeOutcome: Equatable, Sendable {
 
     static func exact(
         name: String,
+        backend: HerdrBackend = .tui,
         discovery: HerdrDiscoveryResult
     ) -> Self {
         switch discovery {
-        case let .available(sessions):
+        case let .available(sessions, _, failures):
             sessions.contains(where: {
-                $0.name == name && $0.state == .running
-            }) ? .present : .absent
+                $0.name == name && $0.backend == backend && $0.state == .running
+            }) ? .present : failures[backend].map(Self.failure) ?? .absent
         case .unavailable:
             .unavailable
         case let .failure(error):

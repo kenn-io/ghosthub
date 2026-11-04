@@ -103,6 +103,10 @@ the latest stable release. Read about
 [stable and nightly builds](https://ghosthub.ai/docs/getting-started/#release-and-nightly-builds)
 before trying them.
 
+Unreleased macOS builds also open terminals from the newer Herdr desktop app.
+See [Herdr desktop terminals](https://ghosthub.ai/docs/sessions/#herdr-desktop-terminals)
+for setup and scope.
+
 ## Work with your agents
 
 Start a session from Ghosthub, a shell, or an agent, then open it from the

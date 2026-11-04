@@ -14,6 +14,8 @@ bound to the live session identity. Remote Herdr supports creation, attachment,
 restart, and confirmed stop/delete. Remote Zellij supports creation, attachment,
 and confirmed kills of active sessions.
 Distribution packaging remains separate parity work.
+Herdr support in the Rust port currently means the older TUI. The macOS app's
+newer `herdr-core` desktop-terminal integration remains separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
 shared product and terminal invariants remain authoritative in
 [architecture.md](architecture.md) and

@@ -17,6 +17,7 @@ mkdir -p src/assets
 assets=(
   hero.png
   guide-sessions.png
+  guide-herdr-core.png
   guide-rust-remote-zellij-kill.png
   guide-rust-remote-project.png
   guide-rust-remove-project.png

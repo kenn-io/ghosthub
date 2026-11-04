@@ -67,6 +67,8 @@ normal Ghosthub instance alone:
     GHOSTHUB_DEMO_ALWAYS_LIVE_PREVIEW_ONLY=1 ./shoot.sh /tmp/ghosthub-website-assets
     GHOSTHUB_DEMO_EXE_ACCOUNTS=1 ./run.sh
     GHOSTHUB_DEMO_EXE_ONLY=1 ./shoot.sh /tmp/ghosthub-website-assets
+    GHOSTHUB_DEMO_HERDR_CORE=1 ./run.sh
+    GHOSTHUB_DEMO_HERDR_CORE_ONLY=1 ./shoot.sh /tmp/ghosthub-website-assets
     ./teardown.sh   # always run: stops demo processes and removes scratch state
 
 Capture the Settings pages, project recovery, and launch-profile sheet from

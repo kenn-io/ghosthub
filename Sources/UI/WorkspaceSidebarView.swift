@@ -60,7 +60,7 @@ private enum WorkspaceSidebarDragItem: Equatable {
     case host(String)
     case worktree(UUID)
     case tmuxSession(hostID: UUID, name: String, socketName: String?)
-    case herdrSession(hostID: UUID, name: String)
+    case herdrSession(hostID: UUID, name: String, backend: HerdrBackend = .tui)
     case zellijSession(hostID: UUID, name: String)
 
     init?(rawValue: String) {
@@ -97,13 +97,14 @@ private enum WorkspaceSidebarDragItem: Equatable {
                 name: String(endpoint[1]),
                 socketName: endpoint[0].isEmpty ? nil : String(endpoint[0])
             )
-        case "herdr":
+        case "herdr", "herdr-core":
             guard parts.count == 3,
                   let hostID = UUID(uuidString: String(parts[1]))
             else { return nil }
             self = .herdrSession(
                 hostID: hostID,
-                name: String(parts[2])
+                name: String(parts[2]),
+                backend: kind == "herdr-core" ? .core : .tui
             )
         case "zellij":
             guard parts.count == 3,
@@ -126,8 +127,12 @@ private enum WorkspaceSidebarDragItem: Equatable {
             return "worktree:\(id.uuidString)"
         case let .tmuxSession(hostID, name, socketName):
             return "tmux:\(hostID.uuidString):\(socketName ?? ""):\(name)"
-        case let .herdrSession(hostID, name):
-            return "herdr:\(hostID.uuidString):\(name)"
+        case let .herdrSession(hostID, name, backend):
+            return WorkspaceSidebarModel.herdrSessionOrderID(
+                hostID: hostID,
+                name: name,
+                backend: backend
+            )
         case let .zellijSession(hostID, name):
             return "zellij:\(hostID.uuidString):\(name)"
         }
@@ -145,10 +150,10 @@ private enum WorkspaceSidebarDragItem: Equatable {
                 name: name,
                 socketName: socketName
             )
-        case let .herdrSession(hostID, name):
+        case let .herdrSession(hostID, name, backend):
             return WorkspaceSidebarModel.herdrSessionOrderID(
                 hostID: hostID,
-                name: name
+                name: name, backend: backend
             )
         case let .zellijSession(hostID, name):
             return WorkspaceSidebarModel.zellijSessionOrderID(
@@ -861,7 +866,11 @@ struct WorkspaceSidebarView: View {
                     name: name,
                     socketName: socketName
                 )
-            case let .herdrSession(hostID, name): .herdrSession(hostID: hostID, name: name)
+            case let .herdrSession(hostID, name, backend): .herdrSession(
+                    hostID: hostID,
+                    name: name,
+                    backend: backend
+                )
             case let .zellijSession(hostID, name): .zellijSession(hostID: hostID, name: name)
             default: nil
             }
@@ -897,12 +906,12 @@ struct WorkspaceSidebarView: View {
         _ row: WorkspaceSidebarRow,
         groupItems: [WorkspaceSidebarDragItem]
     ) -> some View {
-        guard case let .herdrSession(hostID, name) = row.target else {
+        guard case let .herdrSession(hostID, name, backend) = row.target else {
             return AnyView(sidebarButton(row))
         }
         let item = WorkspaceSidebarDragItem.herdrSession(
             hostID: hostID,
-            name: name
+            name: name, backend: backend
         )
         return AnyView(
             reorderableRow(
@@ -979,10 +988,10 @@ struct WorkspaceSidebarView: View {
             herdrActions = []
         }
         let herdrSelection: WorkspaceHerdrSessionSelection? = {
-            guard case let .herdrSession(hostID, name) = row.target else {
+            guard case let .herdrSession(hostID, name, backend) = row.target else {
                 return nil
             }
-            return WorkspaceHerdrSessionSelection(hostID: hostID, name: name)
+            return WorkspaceHerdrSessionSelection(hostID: hostID, name: name, backend: backend)
         }()
         let zellijSelection: WorkspaceZellijSessionSelection? = {
             guard case let .zellijSession(hostID, name) = row.target else {
@@ -1025,10 +1034,10 @@ struct WorkspaceSidebarView: View {
         )
         return HStack(spacing: 0) {
             Button {
-                if case let .herdrSession(hostID, name) = row.target {
+                if case let .herdrSession(hostID, name, backend) = row.target {
                     let herdrSelection = WorkspaceHerdrSessionSelection(
                         hostID: hostID,
-                        name: name
+                        name: name, backend: backend
                     )
                     selection.select(
                         row.target,
@@ -1427,10 +1436,10 @@ struct WorkspaceSidebarView: View {
         activeHerdrSession: WorkspaceHerdrSessionSelection?,
         activeZellijSession: WorkspaceZellijSessionSelection? = nil
     ) -> Bool {
-        if case let .herdrSession(hostID, name) = row.target {
+        if case let .herdrSession(hostID, name, backend) = row.target {
             return activeHerdrSession == WorkspaceHerdrSessionSelection(
                 hostID: hostID,
-                name: name
+                name: name, backend: backend
             )
         }
         if case let .tmuxSession(hostID, name, socketName) = row.target {
@@ -2418,7 +2427,7 @@ struct WorkspaceSidebarView: View {
             host.herdrSessions.map {
                 WorkspaceSidebarModel.herdrSessionOrderID(
                     hostID: host.id,
-                    name: $0.name
+                    name: $0.name, backend: $0.backend
                 )
             }
         })

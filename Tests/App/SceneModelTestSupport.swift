@@ -335,6 +335,8 @@ func makeModel(
     (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
     nativeHerdrPathProvider: (@Sendable (CommandHost)
         -> Result<String, HerdrCommandError>)? = nil,
+    nativeHerdrCorePathProvider: (@Sendable (CommandHost)
+        -> Result<String, HerdrCommandError>)? = nil,
     nativeZellijPathProvider: (@Sendable (CommandHost)
         -> Result<String, ZellijCommandError>)? = nil,
     herdrPaneSplitCapabilityProvider:
@@ -613,6 +615,7 @@ func makeModel(
         nativeZellijSurfaceStore: nativeZellijSurfaceStore,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
         nativeHerdrPathProvider: nativeHerdrPathProvider,
+        nativeHerdrCorePathProvider: nativeHerdrCorePathProvider,
         nativeZellijPathProvider: nativeZellijPathProvider,
         herdrPaneSplitCapabilityProvider: herdrPaneSplitCapabilityProvider,
         herdrPaneSplitter: herdrPaneSplitter,
@@ -666,7 +669,7 @@ func makeModel(
         presentationSSHAcquisitionCoordinator,
         presentationSSHEnvironment: presentationSSHEnvironment,
         herdrSessionValidationDiscovery:
-        herdrSessionValidationDiscovery ?? { host, _ in
+        herdrSessionValidationDiscovery ?? { host, _, _ in
             await herdrSessionDiscovery(host)
         },
         herdrSessionExactProbe: herdrSessionExactProbe ?? {

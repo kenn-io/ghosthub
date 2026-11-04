@@ -5,6 +5,13 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Added
+
+- Open terminals from the newer Herdr desktop app in Ghosthub on macOS,
+  locally or over SSH. Core terminals appear alongside older Herdr TUI
+  sessions. Closing the view leaves the program running; desktop spaces,
+  tabs, and terminal lifecycle remain in Herdr.
+
 ### Changed
 
 - Ghosthub is now licensed under Apache 2.0. Contributions use the same

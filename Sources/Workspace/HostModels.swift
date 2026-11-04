@@ -410,6 +410,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var tmuxSessions: [TmuxSessionSummary]
     public var tmuxInventoryIsAuthoritative: Bool
     public var herdrSessions: [HerdrSessionSummary]
+    /// The TUI supports session creation; core-only hosts expose existing terminals.
     public var herdrAvailable: Bool
     public var zellijSessions: [ZellijSessionSummary]
     public var zellijAvailable: Bool

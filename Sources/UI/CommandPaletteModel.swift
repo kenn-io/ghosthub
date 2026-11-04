@@ -670,18 +670,27 @@ public enum CommandPaletteModel {
             herdrSessionOrderRawValue: herdrSessionOrderRawValue
         ).flatMap { section in
             section.herdrSessionRows.flatMap { row -> [WorkspaceCommandItem] in
-                guard case let .herdrSession(hostID, name) = row.target else {
+                guard case let .herdrSession(hostID, name, backend) = row.target else {
                     return []
                 }
                 let session = WorkspaceHerdrSessionSelection(
                     hostID: hostID,
-                    name: name
+                    name: name, backend: backend
                 )
                 guard !pendingHerdrSessions.contains(session) else { return [] }
                 let keywords = [
                     "herdr", "session", name,
                     section.host.name, section.row.title,
                 ]
+                if backend == .core {
+                    return [WorkspaceCommandItem(
+                        id: "open-herdr-session-\(session.id)",
+                        title: "Open Herdr core terminal: \(row.title)",
+                        subtitle: "\(name) on \(section.host.name)",
+                        keywords: ["core", "terminal", "open", "attach", row.title] + keywords,
+                        action: .openHerdrSession(session)
+                    )]
+                }
                 switch row.herdrSessionState {
                 case .running:
                     return [

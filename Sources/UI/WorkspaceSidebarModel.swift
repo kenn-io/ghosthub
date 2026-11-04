@@ -814,7 +814,7 @@ public enum WorkspaceSidebarModel {
                     identifiedBy: {
                         herdrSessionOrderID(
                             hostID: host.id,
-                            name: $0.name
+                            name: $0.name, backend: $0.backend
                         )
                     }
                 )
@@ -862,9 +862,13 @@ public enum WorkspaceSidebarModel {
 
     static func herdrSessionOrderID(
         hostID: UUID,
-        name: String
+        name: String,
+        backend: HerdrBackend = .tui
     ) -> String {
-        "herdr:\(hostID.uuidString):\(name)"
+        if backend == .core {
+            return "herdr-core:\(hostID.uuidString):\(name)"
+        }
+        return "herdr:\(hostID.uuidString):\(name)"
     }
 
     static func zellijSessionOrderID(
@@ -891,10 +895,11 @@ public enum WorkspaceSidebarModel {
         hostID: UUID
     ) -> WorkspaceSidebarRow {
         WorkspaceSidebarRow(
-            target: .herdrSession(hostID: hostID, name: session.name),
+            target: .herdrSession(hostID: hostID, name: session.name, backend: session.backend),
             icon: .herdrSession,
-            title: session.name,
-            subtitle: session.state == .running
+            title: session.title,
+            subtitle: session.backend == .core ? "Herdr core · \(session.name)" : session
+                .state == .running
                 ? "Herdr session"
                 : "Stopped",
             herdrSessionState: session.state,
