@@ -1415,11 +1415,14 @@ fn worktree_row_open_mode(
     } else {
         WorktreeSessionPresence::Absent
     };
-    let endpoint_is_resolved = (!host.is_ssh()
-        || (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
-            && matches!(worktree.tmux_socket_name(), None | Some("kwt"))))
-        && (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
-            || worktree.tmux_socket_name().is_some());
+    let endpoint_is_resolved = match worktree.tmux_attach_mode() {
+        KwtTmuxAttachMode::Protected => worktree
+            .tmux_socket_name()
+            .is_some_and(|socket| !socket.is_empty()),
+        KwtTmuxAttachMode::Direct => {
+            !host.is_ssh() || matches!(worktree.tmux_socket_name(), None | Some("kwt"))
+        }
+    };
     if endpoint_is_resolved
         && (!host.is_ssh() || worktree.session_available() || retained || host.kwt_available())
     {
@@ -10371,9 +10374,21 @@ mod tests {
                 WorktreeOpenMode::Disabled,
             ),
             (
-                Some("kwt"),
+                Some("kwt-pr-0123456789abcdef"),
                 KwtTmuxAttachMode::Protected,
                 Some("generation"),
+                WorktreeOpenMode::RepairOrOpen,
+            ),
+            (
+                None,
+                KwtTmuxAttachMode::Protected,
+                Some("generation"),
+                WorktreeOpenMode::Disabled,
+            ),
+            (
+                Some("kwt-pr-0123456789abcdef"),
+                KwtTmuxAttachMode::Protected,
+                None,
                 WorktreeOpenMode::Disabled,
             ),
             (

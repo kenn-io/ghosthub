@@ -1,6 +1,7 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+mod protected;
 mod removal;
 
 #[test]

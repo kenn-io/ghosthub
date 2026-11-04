@@ -1571,7 +1571,7 @@ impl<R: CommandRunner> LocalHost<R> {
         )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if is_no_server(&stderr) {
+            if is_no_server(&stderr) || stderr.trim() == "no current target" {
                 return Ok(None);
             }
             return Err(classify_command_failure(
@@ -1638,7 +1638,8 @@ impl<R: CommandRunner> LocalHost<R> {
         )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if is_no_server(&stderr) {
+            // KWT starts the server before creating its first session.
+            if is_no_server(&stderr) || stderr.trim() == "no current target" {
                 return Ok(None);
             }
             return Err(classify_command_failure(
@@ -4825,7 +4826,7 @@ pub(crate) fn require_kwt_client_readiness_path(path: &str) -> Result<(), HostEr
     Ok(())
 }
 
-fn require_kwt_socket_name(name: &str) -> Result<(), HostError> {
+pub(crate) fn require_kwt_socket_name(name: &str) -> Result<(), HostError> {
     if name.is_empty()
         || name.len() > 128
         || name == "."

@@ -357,6 +357,73 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         term: &str,
         cancellation: &CancellationToken,
     ) -> Result<session::RepairOrOpenPlan, RemoteTmuxError> {
+        let args: Vec<_> = ["open", path]
+            .into_iter()
+            .chain(expected.iter().copied())
+            .collect();
+        self.kwt_client_plan(snapshot, session_name, &args, term, cancellation)
+    }
+
+    /// Build KWT's inert attachment for one exact imported workspace.
+    ///
+    /// # Errors
+    /// Returns an error for missing authority, an invalid socket, or an unavailable helper.
+    pub fn kwt_protected_attach_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        open: &crate::KwtProtectedWorktreeOpen,
+        term: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<session::RepairOrOpenPlan, RemoteTmuxError> {
+        crate::local::require_kwt_socket_name(open.tmux_socket_name())
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        require_absolute("protected workspace path", open.path())?;
+        require_absolute("protected project path", open.project_path())?;
+        if [
+            open.repository(),
+            open.registration_fingerprint(),
+            open.generation(),
+        ]
+        .contains(&"")
+        {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::MalformedOutput,
+                "Missing protected worktree details.",
+            ));
+        }
+        self.kwt_client_plan(
+            snapshot,
+            open.session_name(),
+            &[
+                "pr",
+                "attach",
+                open.path(),
+                "--project",
+                open.project_path(),
+                "--expected-repository",
+                open.repository(),
+                "--expected-registration",
+                open.registration_fingerprint(),
+                "--expected-generation",
+                open.generation(),
+                "--expected-session",
+                open.session_name(),
+                "--expected-socket",
+                open.tmux_socket_name(),
+            ],
+            term,
+            cancellation,
+        )
+    }
+
+    fn kwt_client_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        session_name: &str,
+        args: &[&str],
+        term: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<session::RepairOrOpenPlan, RemoteTmuxError> {
         let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
         let readiness = crate::local::kwt_client_readiness_path()
             .map_err(|error| RemoteTmuxError::from_host(&error))?;
@@ -365,7 +432,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             &self.config,
             &helper,
             RemoteCommandLocale::Login,
-            ["open", path].into_iter().chain(expected.iter().copied()),
+            args.iter().copied(),
         );
         if let Some(value) = command.iter_mut().find(|value| value.starts_with("TERM=")) {
             *value = format!("TERM={term}");
@@ -411,6 +478,38 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         server: super::RemoteTmuxServer,
         cancellation: &CancellationToken,
     ) -> Result<Option<session::SessionIdentity>, RemoteTmuxError> {
+        self.kwt_client_identity_on_socket(
+            snapshot,
+            plan,
+            match server {
+                super::RemoteTmuxServer::Default => None,
+                super::RemoteTmuxServer::Kwt => Some("kwt"),
+            },
+            cancellation,
+        )
+    }
+
+    /// Identify the protected client on its exact server while KWT creates its session.
+    ///
+    /// # Errors
+    /// Returns an error for invalid authority or a failed probe.
+    pub fn kwt_protected_client_identity(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        plan: &session::RepairOrOpenPlan,
+        socket: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<session::SessionIdentity>, RemoteTmuxError> {
+        self.kwt_client_identity_on_socket(snapshot, plan, Some(socket), cancellation)
+    }
+
+    fn kwt_client_identity_on_socket(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        plan: &session::RepairOrOpenPlan,
+        socket: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<session::SessionIdentity>, RemoteTmuxError> {
         crate::local::require_kwt_client_readiness_path(plan.readiness_path())
             .map_err(|error| RemoteTmuxError::from_host(&error))?;
         let receipt = self.run_framed_remote_shell(
@@ -428,37 +527,88 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         }
         let pid = crate::local::parse_kwt_client_pid(&receipt.stdout)
             .map_err(|error| RemoteTmuxError::from_host(&error))?;
-        let binary = snapshot.tmux_binary().ok_or_else(|| {
-            RemoteTmuxError::new(
-                DiagnosticKind::ExecutableNotFound,
-                "tmux is unavailable on the remote host",
-            )
-        })?;
-        let command = posix_command(&super::tmux_server_command(
-            &self.config,
-            server,
-            binary,
-            RemoteCommandLocale::StableOutput,
-            [
-                "list-clients",
-                "-F",
-                "#{client_pid}|#{pid}|#{session_id}|#{session_created}",
-            ],
-        ));
+        let args = [
+            "list-clients",
+            "-F",
+            "#{client_pid}|#{pid}|#{session_id}|#{session_created}",
+        ];
+        let command = self.kwt_tmux_probe(snapshot, socket, &args)?;
         let output = self.run_framed_remote_shell(
             snapshot.lease(),
             &command,
             "GHOSTHUB_KWT_CLIENT_",
             cancellation,
         )?;
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        // KWT can start the server before creating its first session. Even an
+        // untargeted list-clients reports "no current target" during that gap.
         if output.status != 0
-            && super::is_missing_tmux_server(&String::from_utf8_lossy(&output.stderr))
+            && (super::is_missing_tmux_server(&diagnostic)
+                || diagnostic.trim() == "no current target")
         {
             return Ok(None);
         }
         require_kwt_output(&output)?;
         crate::local::parse_kwt_client_identity(&output.stdout, pid, '|')
             .map_err(|error| RemoteTmuxError::from_host(&error))
+    }
+
+    /// Recheck the named server after KWT has attached its client.
+    ///
+    /// # Errors
+    /// Returns an error for invalid authority or a missing or malformed session.
+    pub fn capture_protected_kwt_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        socket: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<session::DiscoveredSession, RemoteTmuxError> {
+        let command = self.kwt_tmux_probe(
+            snapshot,
+            Some(socket),
+            &["list-sessions", "-F", super::INVENTORY_FORMAT],
+        )?;
+        let output = self.run_framed_remote_shell(
+            snapshot.lease(),
+            &command,
+            "GHOSTHUB_KWT_SESSION_",
+            cancellation,
+        )?;
+        require_kwt_output(&output)?;
+        super::parse_inventory_payload(&output.stdout)?
+            .into_iter()
+            .find(|session| session.name() == name)
+            .ok_or_else(|| {
+                RemoteTmuxError::new(
+                    DiagnosticKind::Transport,
+                    "Protected worktree session unavailable.",
+                )
+            })
+    }
+
+    fn kwt_tmux_probe(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        socket: Option<&str>,
+        args: &[&str],
+    ) -> Result<String, RemoteTmuxError> {
+        let binary = snapshot.tmux_binary().ok_or_else(|| {
+            RemoteTmuxError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "tmux is unavailable on the remote host",
+            )
+        })?;
+        let mut command = tmux_command(&self.config, binary, RemoteCommandLocale::StableOutput, []);
+        if let Some(socket) = socket {
+            crate::local::require_kwt_socket_name(socket)
+                .map_err(|error| RemoteTmuxError::from_host(&error))?;
+            // KWT's named servers use the account's standard socket directory.
+            command.retain(|arg| !arg.starts_with("TMUX_TMPDIR="));
+            command.extend(["-L".to_owned(), socket.to_owned()]);
+        }
+        command.extend(args.iter().map(|arg| (*arg).to_owned()));
+        Ok(posix_command(&command))
     }
 
     pub fn remove_kwt_client_readiness(

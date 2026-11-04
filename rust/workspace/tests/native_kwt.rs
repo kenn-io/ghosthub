@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use std::fs;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;
@@ -31,7 +31,7 @@ impl Fixture {
         let revision = include_str!("../../../KWT_REVISION").trim();
         let bundle = KwtBundle::new(revision, &digest[..64], Arc::<[u8]>::from(bytes)).unwrap();
         let config = LocalConfig::native(
-            "/usr/bin/tmux",
+            root.join("bin/tmux").to_str().unwrap(),
             Some(root.join("tmux").display().to_string()),
         )
         .unwrap()
@@ -133,7 +133,8 @@ impl Fixture {
             }
             assert!(
                 Instant::now() < deadline,
-                "native KWT timed out: {:?}",
+                "native KWT timed out: notice={:?}, hosts={:?}",
+                self.workspace.snapshot().notice(),
                 self.workspace.snapshot().hosts()
             );
             thread::sleep(Duration::from_millis(20));
@@ -196,6 +197,7 @@ impl Fixture {
         )
     }
 
+    #[track_caller]
     fn probe(&self, worktree: &WorktreeItem) {
         self.wait(|| {
             for event in self.workspace.drain_events().0 {
@@ -381,6 +383,30 @@ fn isolated_fixture(test_name: &str, network: bool) -> Option<Fixture> {
         let staged_helper = bin.join("kwt");
         fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
         fs::copy(&helper, &staged_helper).unwrap();
+        let tmux = bin.join("tmux");
+        fs::write(&tmux, r#"#!/bin/sh
+if test -e "$HOME/delay-protected-session"; then
+    case " $* " in
+        *" new-session "*)
+            socket=$(cat "$HOME/protected-socket")
+            env -u TMUX_TMPDIR /usr/bin/tmux -L "$socket" -f /dev/null start-server \; set-option -s exit-empty off || exit
+            touch "$HOME/creating-protected-session"
+            while ! test -e "$HOME/probed-protected-session"; do sleep 0.02; done
+            rm -f "$HOME/delay-protected-session"
+            ;;
+        *" list-clients "*)
+            if test -e "$HOME/creating-protected-session"; then
+                /usr/bin/tmux "$@"
+                result=$?
+                touch "$HOME/probed-protected-session"
+                exit "$result"
+            fi
+            ;;
+    esac
+fi
+exec /usr/bin/tmux "$@"
+"#).unwrap();
+        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
         let mut child = Command::new("bwrap");
         if !network {
             child.arg("--unshare-net");
@@ -411,6 +437,7 @@ fn isolated_fixture(test_name: &str, network: bool) -> Option<Fixture> {
             .args(["--exact", test_name, "--ignored", "--nocapture"])
             .env("GHOSTHUB_KWT_FIXTURE", &root)
             .env("GHOSTHUB_KWT_BUNDLE_TEST", staged_helper)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
             .env("HOME", root.join("home"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("KWT_HOME", root.join("kwt"))
@@ -744,8 +771,13 @@ fn pull_request_import_attaches_to_the_protected_native_socket() {
             .status
             .success()
     );
+    // KWT has resolved the absent server before new-session starts it. Hold
+    // creation there until the readiness probe observes the empty server.
+    fs::write(fixture.root.join("home/protected-socket"), socket).unwrap();
+    fs::write(fixture.root.join("home/delay-protected-session"), "").unwrap();
     fixture.open(&project, &worktree).unwrap();
     fixture.probe(&worktree);
+    assert!(fixture.root.join("home/probed-protected-session").exists());
     fixture.workspace.detach();
     output(
         Command::new("/usr/bin/tmux")
@@ -753,6 +785,11 @@ fn pull_request_import_attaches_to_the_protected_native_socket() {
             .args([
                 "-L",
                 socket,
+                "set-option",
+                "-s",
+                "exit-empty",
+                "on",
+                ";",
                 "kill-session",
                 "-t",
                 &format!("={}", worktree.session_name()),

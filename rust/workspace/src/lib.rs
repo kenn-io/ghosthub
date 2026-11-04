@@ -337,6 +337,9 @@ impl SessionSelection {
     }
 
     fn remote_client(&self) -> Self {
+        if self.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected) {
+            return self.clone();
+        }
         let mut selection = self.clone();
         selection.tmux_attach_mode = None;
         selection.worktree_path = None;
@@ -1985,6 +1988,10 @@ struct RemoteActive {
 enum RemoteSessionIdentity {
     Tmux(session::SessionIdentity),
     KwtTmux(session::SessionIdentity),
+    ProtectedWorktree {
+        selection: SessionSelection,
+        identity: session::SessionIdentity,
+    },
     Herdr {
         name: String,
         is_default: bool,
@@ -2081,6 +2088,9 @@ enum RemoteReconcile {
 
 impl RemotePresentationKey {
     fn selection(&self, kind: SessionKind, name: impl Into<String>) -> SessionSelection {
+        if let RemoteSessionIdentity::ProtectedWorktree { selection, .. } = &self.session_identity {
+            return selection.clone();
+        }
         let mut selection = SessionSelection::for_kind(&self.host_id, &self.endpoint, name, kind);
         if matches!(self.session_identity, RemoteSessionIdentity::KwtTmux(_)) {
             selection.tmux_socket_name = Some("kwt".to_owned());
@@ -2102,6 +2112,12 @@ impl RemotePresentationKey {
             return RemoteReconcile::Stale;
         };
         let (kind, name) = match &self.session_identity {
+            RemoteSessionIdentity::ProtectedWorktree { .. } => {
+                // Ordinary server inventory says nothing about this workspace-specific server.
+                // Its retained client reports exit; each new launch verifies KWT provenance.
+                self.lease_generation = lease_generation;
+                return RemoteReconcile::Unknown;
+            }
             RemoteSessionIdentity::Tmux(identity) | RemoteSessionIdentity::KwtTmux(identity) => {
                 let sessions = if matches!(self.session_identity, RemoteSessionIdentity::KwtTmux(_))
                 {
@@ -6106,6 +6122,9 @@ impl Workspace {
             ));
         }
         if self.is_remote_host(selection.host_id()) {
+            if selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected) {
+                return remote_workspace::open_protected_selection(self, selection);
+            }
             let _navigation = lock_live_navigation(&self.scene)?;
             if selection.kind() == SessionKind::Tmux {
                 runtime::require_remote_tmux_selection(&self.scene.runtime, selection)?;
