@@ -197,7 +197,7 @@ capture_session_rename() {
 }
 
 if [[ "${GHOSTHUB_DEMO_HERDR_CORE_ONLY:-}" == "1" ]]; then
-  palette "desktop-review"
+  demo_input press "web-app / desktop-review"
   sleep 3
   demo_input expect-window-title "desktop-review"
   capture_state guide-herdr-core.png exact

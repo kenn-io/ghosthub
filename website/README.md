@@ -93,6 +93,10 @@ socket directory. The demo tmux wrapper restores that directory for kwt
 commands that clear `TMUX_TMPDIR`. The controller captures its own process,
 so it needs neither Accessibility nor Screen Recording permission.
 
+The controller also accepts `next-sibling`, `previous-sibling`, and
+`close-session` to exercise the default keyboard shortcuts during session
+acceptance checks. These send key events to the staged app's own window.
+
 Before publishing, view every changed screenshot at full resolution and check
 its metadata for private data. Keep native window and tab controls visible.
 Add new filenames to `scripts/sync-assets.sh`, then commit the PNGs to the

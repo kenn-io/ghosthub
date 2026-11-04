@@ -410,7 +410,7 @@ public enum ApplicationShortcutCatalog {
         definition(.newWorktree, "New Worktree", .application, "cmd+shift+n"),
         definition(.importPullRequest, "Import Pull Request", .application, "cmd+shift+i"),
         definition(.newTmuxSession, "New tmux Session", .application, nil),
-        definition(.newHerdrSession, "New Herdr Session", .application, nil),
+        definition(.newHerdrSession, "New Herdr TUI Session", .application, nil),
         definition(.find, "Find…", .application, "cmd+f"),
         definition(.findNext, "Find Next", .application, "cmd+g", repeats: true),
         definition(

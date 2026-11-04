@@ -91,7 +91,7 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
             displayName: host.herdrSessions.first { $0.matches(activeHerdrSession) }?
                 .title ?? activeHerdrSession.name,
             hostname: hostname(for: host),
-            icon: .herdrSession
+            icon: activeHerdrSession.backend == .core ? .herdrTerminal : .herdrSession
         )
     }
 

@@ -74,10 +74,12 @@ enum WorkspaceAccessibilityModel {
             hint = "Open this directory workspace."
         case .tmuxSession:
             hint = "Attach to this tmux session."
-        case .herdrSession:
-            hint = row.herdrSessionState == .stopped
-                ? "Restart and attach to this Herdr session."
-                : "Attach to this Herdr session."
+        case let .herdrSession(_, _, backend):
+            hint = backend == .core
+                ? "Attach to this Herdr terminal."
+                : row.herdrSessionState == .stopped
+                ? "Restart and attach to this Herdr TUI session."
+                : "Attach to this Herdr TUI session."
         case .zellijSession:
             hint = "Attach to this Zellij session."
         }

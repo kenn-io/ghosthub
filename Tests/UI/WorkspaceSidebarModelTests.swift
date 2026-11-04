@@ -5,6 +5,43 @@ import Testing
 @testable import GhosthubUI
 
 struct WorkspaceSidebarModelTests {
+    @Test("Herdr terminals and TUI sessions keep separate groups and saved ordering")
+    func herdrBackendGroups() {
+        let hostID = UUID()
+        let host = HostSummary.fixture(id: hostID, herdrSessions: [
+            .init(name: "t1", isDefault: false, state: .running),
+            .init(name: "t1", isDefault: false, state: .running, backend: .core, title: "review"),
+            .init(name: "t2", isDefault: false, state: .running, backend: .core, title: "build"),
+        ], herdrAvailable: true)
+        let order = ["t2", "t1"].map {
+            WorkspaceSidebarModel.herdrSessionOrderID(hostID: hostID, name: $0, backend: .core)
+        }.joined(separator: "\n")
+        let section = WorkspaceSidebarModel.sections(
+            in: .fixture(hosts: [host]), herdrSessionOrderRawValue: order
+        )[0]
+        #expect(section.visibleGroups == [.herdrTerminals, .herdrSessions])
+        #expect(section.herdrRows(for: .core).map(\.target) == [
+            .herdrSession(hostID: hostID, name: "t2", backend: .core),
+            .herdrSession(hostID: hostID, name: "t1", backend: .core),
+        ])
+        #expect(section.herdrRows(for: .tui).map(\.target) == [
+            .herdrSession(hostID: hostID, name: "t1"),
+        ])
+        #expect(section.herdrRows(for: .core).allSatisfy { $0.icon == .herdrTerminal })
+        #expect(WorkspaceSidebarSectionActionModel.action(
+            for: .herdrTerminals, host: host,
+            onNewTmuxSession: { _ in }, onNewHerdrSession: { _ in },
+            onNewZellijSession: { _ in }, onAddProject: { _ in }
+        ) == nil)
+        var createdOnHost: UUID?
+        WorkspaceSidebarSectionActionModel.action(
+            for: .herdrSessions, host: host,
+            onNewTmuxSession: { _ in }, onNewHerdrSession: { createdOnHost = $0.id },
+            onNewZellijSession: { _ in }, onAddProject: { _ in }
+        )?.perform()
+        #expect(createdOnHost == hostID)
+    }
+
     @MainActor
     @Test("section cache refreshes only when its inputs change")
     func sectionCacheInvalidation() {
@@ -223,13 +260,13 @@ struct WorkspaceSidebarModelTests {
         #expect(section.herdrSessionRows.map(\.title)
             == ["beta", "gamma", "alpha"])
         #expect(section.herdrSessionRows.map(\.subtitle)
-            == ["Herdr session", "Stopped", "Herdr session"])
+            == ["Running", "Stopped", "Running"])
         #expect(section.herdrSessionRows[0].target == .herdrSession(
             hostID: hostID,
             name: "beta"
         ))
         #expect(section.herdrSessionRows[0].icon == .herdrSession)
-        #expect(section.herdrSessionRows[0].subtitle == "Herdr session")
+        #expect(section.herdrSessionRows[0].subtitle == "Running")
         #expect(section.herdrSessionRows[0].indentLevel == 0)
         #expect(section.visibleGroups == [
             .tmuxSessions, .herdrSessions, .projects,
@@ -463,6 +500,8 @@ struct WorkspaceSidebarModelTests {
         let sessionsKey = WorkspaceSidebarDisclosureState.sessions(hostID)
         let herdrSessionsKey = WorkspaceSidebarDisclosureState
             .herdrSessions(hostID)
+        let herdrTerminalsKey = WorkspaceSidebarDisclosureState
+            .herdrTerminals(hostID)
         let projectsKey = WorkspaceSidebarDisclosureState.projects(hostID)
         let projectKey = WorkspaceSidebarDisclosureState.project(projectID)
         var state = WorkspaceSidebarDisclosureState()
@@ -470,6 +509,12 @@ struct WorkspaceSidebarModelTests {
         #expect(state.isExpanded(hostKey))
         #expect(state.isExpanded(sessionsKey))
         #expect(state.isExpanded(herdrSessionsKey))
+        #expect(state.isExpanded(herdrTerminalsKey))
+        state.toggle(herdrTerminalsKey)
+        #expect(!state.isExpanded(herdrTerminalsKey))
+        #expect(state.isExpanded(herdrSessionsKey))
+        state.toggle(herdrTerminalsKey)
+        #expect(state.isExpanded(herdrTerminalsKey))
         #expect(!state.isExpanded(projectsKey))
         #expect(!state.isExpanded(projectKey))
 

@@ -252,7 +252,8 @@ contract is verified with upstream core 0.1.17.
 Only `state: live` terminals with host-local `t…` addresses are listed.
 Finished terminals and `machine/t…` addresses are excluded; Ghosthub's own
 host routes determine where discovery and attachment run. The terminal's
-optional name or agent label is display text. Selection, reconnect, and
+optional name, desktop location (`where`, the space and tab), or agent label is
+display text, in that order. Selection, reconnect, and
 restoration use the host, backend, and address, so a TUI session with the same
 name is a separate target.
 
@@ -264,7 +265,9 @@ selected backend, so they do not wait for the other backend to respond.
 Core attachments reuse the ordinary local/SSH client, detach, and reconnect
 paths. They never request TUI lifecycle operations or pane splits. Herdr desktop
 owns spaces and tabs; Ghosthub presents individual terminals without importing
-its layout.
+its layout. The sidebar separates **Herdr Terminals** from **Herdr TUI Sessions**.
+Only the TUI group offers creation and lifecycle actions. Sibling navigation
+stays within the selected backend's group and follows its saved row order.
 
 Before discovery and attachment, Ghosthub clears inherited TUI routing variables
 and `HC_SESSION`, `HC_SOCKET`, `HC_TERMINAL_ID`, and `HC_TERMINAL_SOCKET`.

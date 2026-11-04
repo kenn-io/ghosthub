@@ -84,7 +84,7 @@ struct WorkspaceAccessibilityModelTests {
             ),
             label: "review",
             value: "Stopped",
-            hint: "Restart and attach to this Herdr session."
+            hint: "Restart and attach to this Herdr TUI session."
         )
     }
 
