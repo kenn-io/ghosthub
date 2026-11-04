@@ -144,8 +144,9 @@ Bootstrap downloads every Ghostty dependency with `zig build --fetch=all`
 before it builds. If that download fails, bootstrap retries it twice, after 5
 and 10 seconds, reusing the packages it already downloaded. The build itself
 runs once and needs no network access, so a compiler error stops it
-immediately. After three failed downloads, check access to the dependency URL
-in the log and rerun `make build`.
+immediately. After three failed downloads, read the error in the log: rerun
+`make build` later for a connection or server error, or check the dependency
+URL for a 404 or hash mismatch.
 
 Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
 Local bootstrap checks every architecture required by the running Zig

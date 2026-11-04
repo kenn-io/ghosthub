@@ -1498,15 +1498,16 @@ def fetch_zig_dependencies(
             return
         if attempt < 3:
             print(
-                "Zig dependency download failed; "
+                "Zig dependency fetch failed; "
                 f"retrying (attempt {attempt + 1}/3).",
                 flush=True,
             )
             time.sleep(5 * attempt)
     raise BootstrapError(
-        "Zig could not download Ghostty's dependencies after 3 attempts. Check "
-        "access to the dependency URL reported above and rerun the build. "
-        "Downloaded dependencies remain cached."
+        "Zig failed to fetch Ghostty's dependencies after 3 attempts. If the "
+        "error above is a connection or server error, rerun the build later; "
+        "downloaded dependencies remain cached. For a 404 or hash mismatch, "
+        "check the dependency URL."
     )
 
 

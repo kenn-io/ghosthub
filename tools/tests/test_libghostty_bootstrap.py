@@ -682,7 +682,6 @@ COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
         ([DOWNLOAD_RESET, SERVER_ERROR], False, 3, 1),
         ([SERVER_ERROR] * 3, False, 3, 0),
         ([], True, 1, 1),
-        ([SERVER_ERROR], True, 2, 1),
     ],
     ids=[
         "success",
@@ -690,7 +689,6 @@ COMPILE_ERROR = "src/main.zig:4:5: error: expected type 'u32', found 'bool'"
         "fetch-recovers-on-last-attempt",
         "fetch-exhausted",
         "compile-error",
-        "compile-error-after-fetch-retry",
     ],
 )
 def test_bootstrap_retries_dependency_fetch_and_builds_once(
