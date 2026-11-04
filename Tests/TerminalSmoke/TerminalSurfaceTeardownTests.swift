@@ -28,13 +28,16 @@ final class TerminalSurfaceTeardownTests: XCTestCase {
         return Self.retainedRuntime!
     }
 
+    /// Suspends instead of running the run loop. This async test runs on
+    /// the main queue, and a nested run loop cannot run other main-queue
+    /// work such as app ticks.
     private func waitUntil(
-        timeout: TimeInterval = 5.0,
+        timeout: Duration = .seconds(5),
         condition: () -> Bool
-    ) {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline, !condition() {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline, !condition() {
+            try await Task.sleep(for: .milliseconds(50))
         }
     }
 
@@ -65,7 +68,7 @@ final class TerminalSurfaceTeardownTests: XCTestCase {
             window.orderOut(nil)
         }
 
-        waitUntil { view.title.hasPrefix("teardown-") }
+        try await waitUntil { view.title.hasPrefix("teardown-") }
         XCTAssertTrue(
             view.title.hasPrefix("teardown-"),
             "expected the child to be rewriting the title, got "
