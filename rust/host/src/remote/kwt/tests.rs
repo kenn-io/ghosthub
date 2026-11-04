@@ -36,15 +36,24 @@ impl CommandRunner for KwtRunner {
         } else {
             assert!(marker.starts_with("GHOSTHUB_KWT_COMMAND_"));
             self.deadlines.lock().unwrap().push(timeout);
-            if command.contains("--no-launch") {
+            if command.contains("--no-launch") || command.contains("--expected-registration") {
                 (
                     self.mutation.status,
                     self.mutation.stdout.as_slice(),
                     self.mutation.stderr.as_slice(),
                 )
             } else {
-                assert!(command.contains("branches") && command.contains("--json"));
-                (0, b"[]\n".as_slice(), b"".as_slice())
+                assert!(command.contains("--json"));
+                if command.contains("branches") {
+                    (0, b"[]\n".as_slice(), b"".as_slice())
+                } else {
+                    assert!(
+                        command.contains("pr")
+                            && command.contains("list")
+                            && command.contains("--state")
+                    );
+                    (0, b"{\"pull_requests\":[]}\n".as_slice(), b"".as_slice())
+                }
             }
         };
         Ok(CommandOutput {
@@ -165,4 +174,34 @@ fn remote_creation_preserves_structured_timeouts_without_retrying_add() {
             );
         }
     }
+}
+
+#[test]
+fn remote_pr_provider_calls_allow_fetch_time_and_preserve_uncertain_results() {
+    let (host, snapshot, runner) = fixture(CommandOutput {
+        status: 1,
+        stdout: br#"{"error":{"code":"inventory_timeout","message":"import uncertain","retryable":true}}"#.to_vec(),
+        stderr: Vec::new(),
+    });
+    let cancellation = CancellationToken::new();
+    host.list_kwt_pull_requests(&snapshot, "/code/widget", &cancellation)
+        .unwrap();
+    let error = host
+        .import_kwt_pull_request(
+            &snapshot,
+            &crate::KwtPullRequestImportRequest::new(
+                "/code/widget",
+                "github.com/acme/widget",
+                "registration",
+                "17",
+            ),
+            &cancellation,
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), DiagnosticKind::Timeout);
+    assert_eq!(
+        *runner.deadlines.lock().unwrap(),
+        [Duration::from_mins(5), Duration::from_mins(5)],
+        "never replay the import"
+    );
 }

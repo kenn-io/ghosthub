@@ -146,7 +146,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           KWT_GITHUB_TOKEN: ${{ github.token }}
-        run: make -C .. rust-test-kwt-pr-live KWT_BINARY_PATH=.build/kwt/kwt
+        run: make -C .. rust-test-kwt-pr-live rust-test-ssh-pr-live KWT_BINARY_PATH=.build/kwt/kwt
 
       - name: Test and lint on Windows
         if: runner.os == 'Windows'

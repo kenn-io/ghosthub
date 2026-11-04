@@ -7,19 +7,30 @@ use crate::{KwtBranchItem, KwtWorktreeOperation, KwtWorktreeTarget};
 #[derive(Clone)]
 pub(super) struct Request {
     project: host::KwtProject,
-    create: Option<(host::KwtWorktreeCreate, u64)>,
+    operation: KwtWorktreeOperation,
 }
 
 impl Request {
     pub(super) fn failure(&self, task: &Task, message: String) -> WorkspaceEvent {
         WorkspaceEvent::KwtWorktreeOperationFailed {
-            operation_id: self
-                .create
-                .as_ref()
-                .map_or(task.id, |(_, navigation)| *navigation),
+            operation_id: self.operation_id(task.id),
             project_path: self.project.path().to_owned(),
             worktree_path: None,
             message,
+        }
+    }
+
+    fn operation_id(&self, listing_id: u64) -> u64 {
+        match self.operation {
+            KwtWorktreeOperation::Create {
+                navigation_generation,
+                ..
+            }
+            | KwtWorktreeOperation::ImportPullRequest {
+                navigation_generation,
+                ..
+            } => navigation_generation,
+            _ => listing_id,
         }
     }
 
@@ -38,7 +49,7 @@ impl Request {
             })
             .ok_or_else(|| {
                 WorkspaceError::new(
-                    "The selected project changed; refresh it before creating a worktree",
+                    "The selected project changed; refresh it before changing worktrees",
                 )
             })
     }
@@ -54,30 +65,15 @@ pub(crate) fn start_worktree(
     registration: &str,
     operation: KwtWorktreeOperation,
 ) -> Result<u64, WorkspaceError> {
-    let create = match operation {
-        KwtWorktreeOperation::Branches => None,
-        KwtWorktreeOperation::Create {
-            branch,
-            source,
-            creates_branch,
-            navigation_generation,
-        } => Some((
-            host::KwtWorktreeCreate::new(
-                project_path,
-                repository,
-                registration,
-                branch,
-                source,
-                creates_branch,
-            ),
-            navigation_generation,
-        )),
-        _ => {
-            return Err(WorkspaceError::new(
-                "This worktree operation is not available over SSH",
-            ));
-        }
-    };
+    if matches!(operation, KwtWorktreeOperation::Remove { .. }) {
+        return Err(WorkspaceError::new(
+            "Use the removal confirmation for this worktree",
+        ));
+    }
+    let mutation = matches!(
+        operation,
+        KwtWorktreeOperation::Create { .. } | KwtWorktreeOperation::ImportPullRequest { .. }
+    );
     let task = {
         let publication = scene
             .runtime
@@ -126,26 +122,20 @@ pub(crate) fn start_worktree(
             .remote_hosts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let operation = entries
+        let reservation = entries
             .get_mut(host_id)
             .unwrap()
             .kwt
             .operation
             .as_mut()
             .unwrap();
-        operation.mutation = create.is_some();
-        operation.listing = create.is_none();
-        task.worktree = Some(Request { project, create });
+        reservation.mutation = mutation;
+        reservation.listing = !mutation;
+        task.worktree = Some(Request { project, operation });
         update_host(scene, host_id, |host| host.kwt_state = KwtState::Mutating);
         task
     };
-    let operation = task
-        .worktree
-        .as_ref()
-        .unwrap()
-        .create
-        .as_ref()
-        .map_or(task.id, |(_, navigation)| *navigation);
+    let operation = task.worktree.as_ref().unwrap().operation_id(task.id);
     schedule(scene, &task);
     Ok(operation)
 }
@@ -210,7 +200,7 @@ fn execute(
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
     let project = request.project_in(&baseline)?;
     require_current()?;
-    let Some((create, navigation_generation)) = &request.create else {
+    if matches!(request.operation, KwtWorktreeOperation::Branches) {
         let branches = task
             .host
             .list_kwt_branches(&task.snapshot, request.project.path(), &task.cancellation)
@@ -226,7 +216,55 @@ fn execute(
                 })
                 .collect(),
         });
+    }
+    if matches!(request.operation, KwtWorktreeOperation::PullRequests) {
+        let pull_requests = task
+            .host
+            .list_kwt_pull_requests(&task.snapshot, request.project.path(), &task.cancellation)
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        require_current()?;
+        return Ok(WorkspaceEvent::KwtPullRequestsLoaded {
+            operation_id: task.id,
+            project_path: request.project.path().to_owned(),
+            pull_requests: pull_requests
+                .iter()
+                .map(crate::KwtPullRequestItem::from_host)
+                .collect(),
+        });
+    }
+    if let KwtWorktreeOperation::ImportPullRequest {
+        selector,
+        navigation_generation,
+    } = &request.operation
+    {
+        return import_pull_request(scene, task, request, selector, *navigation_generation);
+    }
+    create_worktree(scene, task, request, project)
+}
+
+fn create_worktree(
+    scene: &Arc<Scene>,
+    task: &Task,
+    request: &Request,
+    project: &host::KwtProjectInventory,
+) -> Result<WorkspaceEvent, WorkspaceError> {
+    let KwtWorktreeOperation::Create {
+        branch,
+        source,
+        creates_branch,
+        navigation_generation,
+    } = &request.operation
+    else {
+        unreachable!("removal uses its confirmation path")
     };
+    let create = host::KwtWorktreeCreate::new(
+        request.project.path(),
+        request.project.repository(),
+        request.project.registration_fingerprint(),
+        branch,
+        source.clone(),
+        *creates_branch,
+    );
     let baseline: Vec<_> = project
         .worktrees()
         .iter()
@@ -234,7 +272,7 @@ fn execute(
         .collect();
     let result = task
         .host
-        .create_kwt_worktree(&task.snapshot, create, &task.cancellation);
+        .create_kwt_worktree(&task.snapshot, &create, &task.cancellation);
     if let Err(error) = &result
         && error.kind() != DiagnosticKind::Timeout
     {
@@ -290,5 +328,98 @@ fn execute(
     Ok(WorkspaceEvent::KwtWorktreeCreated {
         target,
         navigation_generation: *navigation_generation,
+    })
+}
+
+fn import_pull_request(
+    scene: &Arc<Scene>,
+    task: &Task,
+    request: &Request,
+    selector: &str,
+    navigation_generation: u64,
+) -> Result<WorkspaceEvent, WorkspaceError> {
+    let project = &request.project;
+    let imported = task.host.import_kwt_pull_request(
+        &task.snapshot,
+        &host::KwtPullRequestImportRequest::new(
+            project.path(),
+            project.repository(),
+            project.registration_fingerprint(),
+            selector,
+        ),
+        &task.cancellation,
+    );
+    if let Err(error) = &imported
+        && !matches!(
+            error.kind(),
+            DiagnosticKind::Timeout | DiagnosticKind::MalformedOutput
+        )
+    {
+        return Err(WorkspaceError::new(error.to_string()));
+    }
+    // A timed-out mutation may have committed. Refresh once, never replay it.
+    let inventory = task.host.discover_kwt(&task.snapshot, &task.cancellation)
+        .map_err(|error| WorkspaceError::new(format!(
+            "Pull-request import may have completed, but inventory could not be read. Refresh the host before trying again: {error}"
+        )))?;
+    let target = imported.as_ref().ok().and_then(|imported| {
+        let workspace = imported.workspace();
+        let same_repository = |identity: &str| {
+            identity == project.repository()
+                || (project.repository().starts_with("github.com/")
+                    && identity.eq_ignore_ascii_case(project.repository()))
+        };
+        if !same_repository(imported.project_identity())
+            || imported.project_path() != project.path()
+            || !same_repository(workspace.repository())
+            || workspace.generation().is_none()
+        {
+            return None;
+        }
+        request
+            .project_in(&inventory)
+            .ok()?
+            .worktrees()
+            .iter()
+            .find(|worktree| {
+                worktree.path() == workspace.path()
+                    && worktree.generation() == workspace.generation()
+                    && worktree.session_name() == workspace.session_name()
+                    && worktree.tmux_socket_name() == workspace.tmux_socket_name()
+                    && worktree.tmux_attach_mode() == workspace.tmux_attach_mode()
+            })
+            .map(|worktree| KwtWorktreeTarget {
+                host_id: task.host_id.clone(),
+                endpoint: task.snapshot.endpoint().to_owned(),
+                repository: project.repository().to_owned(),
+                project_path: project.path().to_owned(),
+                registration_fingerprint: project.registration_fingerprint().to_owned(),
+                worktree_path: worktree.path().to_owned(),
+                generation: worktree.generation().map(str::to_owned),
+                session_name: worktree.session_name().to_owned(),
+                tmux_socket_name: worktree.tmux_socket_name().map(str::to_owned),
+                tmux_attach_mode: worktree.tmux_attach_mode(),
+            })
+    });
+    if !publish(scene, task, |state, host| {
+        scene::apply_kwt_inventory(host, &inventory);
+        host.kwt_state = KwtState::Mutating;
+        state.inventory = Some(inventory);
+    }) {
+        return Err(WorkspaceError::new(
+            "SSH connection changed during import; refresh the host",
+        ));
+    }
+    if let Err(error) = imported {
+        return Err(WorkspaceError::new(format!(
+            "Pull-request import may have completed. Inventory has been refreshed; check the project before trying again. {error}"
+        )));
+    }
+    let target = target.ok_or_else(|| WorkspaceError::new(
+        "The imported pull request changed before inventory could confirm it. Refresh and choose it again."
+    ))?;
+    Ok(WorkspaceEvent::KwtWorktreeCreated {
+        target,
+        navigation_generation,
     })
 }

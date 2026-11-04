@@ -275,6 +275,13 @@ make rust-test-ssh-live HERDR_BINARY_PATH=/absolute/path/to/herdr \
     ZELLIJ_BINARY_PATH=/absolute/path/to/zellij
 ```
 
+`make rust-test-ssh-pr-live` additionally requires `KWT_GITHUB_TOKEN` and
+outbound GitHub access. It lists and imports a public fixture PR over SSH,
+checks remote authentication failures and stale registrations, and opens the
+result through protected attachment. This opt-in test shares networking for
+HTTPS and uses a fresh loopback SSH port; its account, Git, process, and socket
+state remain disposable. The token is staged only in the fixture remote account.
+
 These tests run the application composition root with its bundled controller
 against a disposable OpenSSH server. Private process and network namespaces,
 generated keys, a fixture account, and disposable home and KWT roots keep the
@@ -475,7 +482,7 @@ branch. The searchable branch list preserves KWT's exact source reference when
 multiple remotes have the same branch name. **Create** uses the pinned helper's
 guarded, non-launching operation, refreshes inventory, and opens the resulting
 worktree through the ordinary remote workspace path. Later navigation prevents
-automatic selection of that result. Remote pull-request imports remain unavailable.
+automatic selection of that result.
 
 The branch listing and creation share the host's KWT operation reservation.
 Cancel releases the listing immediately; closing its owning scene cancels a
@@ -502,6 +509,17 @@ server is independent. The `kwt` server ignores `TMUX_TMPDIR`, as KWT does.
 
 ![A remote worktree on the standard KWT server](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-kwt-socket.png)
 
+Select **Pull Request** in the same dialog to list open PRs, select one, or enter
+its number or URL. The pinned remote KWT helper uses that account's
+`KWT_GITHUB_TOKEN` or `gh auth login`; Ghosthub does not forward local GitHub
+credentials. Provider reads and imports have cancellable five-minute deadlines,
+while ordinary inventory reads retain their short deadline. An uncertain import
+refreshes inventory without replaying the mutation. Only a response matching
+fresh project registration, checkout generation, session, and protected socket
+can open, and newer navigation still takes precedence.
+
+![Import a PR on the Studio SSH host](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-pr-import.png)
+
 Already-imported remote pull-request worktrees open through the pinned helper's
 `kwt pr attach` command. Each new client carries the captured repository,
 registration, path, generation, session, and protected socket. Fresh KWT inventory
@@ -514,8 +532,7 @@ tmux inventory does not reconcile the protected server; the retained terminal
 reports its own exit. Refresh does not discard a live protected client, even
 after checkout removal or project unregistration. Its retained row reopens that
 same terminal. New attachment still requires current inventory and verifies
-provenance again. Remote PR listing/import and protected
-Kill/removal remain separate work.
+provenance again. Protected Kill/removal remains separate work.
 
 ![An imported PR worktree opened over SSH](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-pr-worktree.png)
 
@@ -1832,9 +1849,8 @@ The Windows WSL slice remains independently tested throughout this work.
    Remote lifecycle controls, managed-helper installation, project registration,
    ordinary worktree opening, branch-backed creation, and confirmed ordinary
    worktree removal, including explicit force removal of dirty ordinary SSH
-   worktrees, also ship. Already-imported protected PR worktrees open through
-   KWT's protected attachment path. Follow-on work adds remote PR listing/import,
-   protected worktree Kill/removal,
+   worktrees, also ship. Remote PR listing/import opens results through
+   KWT's protected attachment path. Follow-on work adds protected worktree Kill/removal,
    transport recovery, and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
