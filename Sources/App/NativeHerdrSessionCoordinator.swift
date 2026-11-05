@@ -97,6 +97,7 @@ final class NativeHerdrSessionCoordinator {
         UUID: BorrowedHerdrAttachmentClosure
     ] = [:]
     private var launchedHandles: Set<UUID> = []
+    private var keyboardSuspendedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
     private var provisioningHandles: Set<UUID> = []
     private var provisioningTasks: [UUID: Task<Void, Never>] = [:]
@@ -375,6 +376,7 @@ final class NativeHerdrSessionCoordinator {
         Task { try? await attachment?.sshConnection?.release() }
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
+        keyboardSuspendedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
     }
@@ -404,6 +406,21 @@ final class NativeHerdrSessionCoordinator {
             launchMode: attachment.launchMode,
             sshConnectionSnapshot: attachment.sshConnectionSnapshot
         )
+    }
+
+    func setKeyboardInteractionSuspended(_ suspended: Bool, handle: BorrowedHerdrSessionHandle) {
+        if suspended {
+            keyboardSuspendedHandles.insert(handle.id)
+        } else {
+            keyboardSuspendedHandles.remove(handle.id)
+        }
+        let view = terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))
+            as? TerminalSurfaceView
+        view?.isKeyboardInteractionSuspended = suspended
+    }
+
+    func requestKeyboardFocus(handle: BorrowedHerdrSessionHandle) {
+        terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?.requestKeyboardFocus()
     }
 
     func surface(handle: BorrowedHerdrSessionHandle) -> TerminalSurfaceView? {
@@ -444,6 +461,8 @@ final class NativeHerdrSessionCoordinator {
             return nil
         }
         surface.terminalFindController = .unavailable
+        (surface as? TerminalSurfaceView)?.isKeyboardInteractionSuspended =
+            keyboardSuspendedHandles.contains(handle.id)
         if let error = surface.launchError {
             failSurfaceLaunch(
                 handle,

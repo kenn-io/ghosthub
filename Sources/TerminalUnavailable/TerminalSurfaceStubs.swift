@@ -87,6 +87,7 @@ public final class TerminalSurfaceView: ObservableObject {
     }
 
     public var suppressAutoFocus: Bool = false
+    public var isKeyboardInteractionSuspended = false
     public var onFocusChange: ((Bool) -> Void)?
     public var onPrimaryInteraction: (() -> Void)?
     public var onCloseRequest: (() -> Void)?

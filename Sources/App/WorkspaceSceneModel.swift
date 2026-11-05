@@ -336,6 +336,7 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBorrowedHerdrSelection:
         WorkspaceHerdrSessionSelection?
     private var activeBorrowedHerdrHandle: BorrowedHerdrSessionHandle?
+    private var herdrPresentationValidationID: UUID?
     var pendingHerdrShortcutSelection: WorkspaceHerdrSessionSelection?
     var herdrShortcutNavigationTask: Task<Void, Never>?
     var herdrShortcutNavigationID: UUID?
@@ -9272,9 +9273,31 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection.name
             )
         }
+        let validationID = UUID()
+        herdrPresentationValidationID = validationID
+        let previousHandle = activeBorrowedHerdrHandle
+        if activeBorrowedHerdrSelection != selection {
+            if let previousHandle {
+                nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(
+                    true, handle: previousHandle
+                )
+            }
+            workspaceWindow?.makeFirstResponder(nil)
+        }
+        defer {
+            if herdrPresentationValidationID == validationID {
+                herdrPresentationValidationID = nil
+                if let previousHandle {
+                    nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(
+                        false, handle: previousHandle
+                    )
+                }
+            }
+        }
         let validation = try await revalidatedHerdrSession(selection)
         try requireActiveScene(activityGeneration)
-        guard navigationRevision == userNavigationRevision else {
+        guard navigationRevision == userNavigationRevision,
+              herdrPresentationValidationID == validationID else {
             throw CancellationError()
         }
         guard validation.session?.state == .running else {
@@ -9288,11 +9311,15 @@ final class WorkspaceSceneModel: ObservableObject {
         if failedHerdrLaunchIntent?.selection == selection {
             failedHerdrLaunchIntent = nil
         }
-        _ = presentHerdrSession(
+        let handle = presentHerdrSession(
             selection,
             launchMode: .attachExisting,
             validation: validation
         )
+        if let handle, handle == previousHandle {
+            nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(false, handle: handle)
+            nativeHerdrSessionCoordinator.requestKeyboardFocus(handle: handle)
+        }
     }
 
     func createHerdrSession(
