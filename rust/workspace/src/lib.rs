@@ -8009,15 +8009,25 @@ impl Workspace {
                 &request.snapshot,
             )?;
         }
-        request
-            .host
-            .kill_live_session(
+        let result = if request.selection.tmux_attach_mode() == Some(KwtTmuxAttachMode::Protected) {
+            request.host.kill_protected_kwt_session(
+                &request.snapshot,
+                request
+                    .selection
+                    .tmux_socket_name()
+                    .expect("captured protected socket"),
+                &request.session,
+                &CancellationToken::new(),
+            )
+        } else {
+            request.host.kill_live_session(
                 &request.snapshot,
                 request.selection.remote_tmux_server()?,
                 &request.session,
                 &CancellationToken::new(),
             )
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        };
+        result.map_err(|error| WorkspaceError::new(error.to_string()))?;
         self.finish_remote_tmux_kill(request);
         self.refresh_after_remote_tmux_kill(request, |host, snapshot, cancellation| {
             host.refresh(snapshot.lease(), cancellation)
@@ -8068,14 +8078,23 @@ impl Workspace {
             key.host_id == request.host_id
                 && key.endpoint == request.snapshot.endpoint()
                 && key.route_identity == request.snapshot.route_identity()
-                && key.session_identity
-                    == RemoteSessionIdentity::tmux(
-                        request
-                            .selection
-                            .remote_tmux_server()
-                            .expect("validated remote tmux selection"),
-                        request.session.identity().clone(),
-                    )
+                && if let RemoteSessionIdentity::ProtectedWorktree {
+                    selection,
+                    identity,
+                } = &key.session_identity
+                {
+                    request.selection.tmux_attach_mode() == Some(KwtTmuxAttachMode::Protected)
+                        && selection.tmux_socket_name() == request.selection.tmux_socket_name()
+                        && identity == request.session.identity()
+                } else {
+                    request.selection.remote_tmux_server().is_ok_and(|server| {
+                        key.session_identity
+                            == RemoteSessionIdentity::tmux(
+                                server,
+                                request.session.identity().clone(),
+                            )
+                    })
+                }
         };
         drop_matching_kill_confirmations(
             &self.scene.runtime,

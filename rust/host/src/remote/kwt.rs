@@ -662,7 +662,21 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             })
     }
 
-    fn kwt_tmux_probe(
+    /// Kill the confirmed session identity on its exact protected socket.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid socket, stale lease, or changed session identity.
+    pub fn kill_protected_kwt_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        socket: &str,
+        session: &session::DiscoveredSession,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        self.kill_tmux_session(snapshot, Some(socket), session, cancellation)
+    }
+
+    pub(super) fn kwt_tmux_probe(
         &self,
         snapshot: &RemoteTmuxSnapshot,
         socket: Option<&str>,

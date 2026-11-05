@@ -276,12 +276,21 @@ the error stays in this dialog; existing projects remain available.
 
 Already imported pull-request worktrees also open from the remote project tree.
 KWT opens its protected terminal without running the checkout's configured layout.
-Switching away and back reuses the terminal, even if the checkout is removed or its project is
-unregistered. The open terminal remains available in the session list.
+Switching away and back reuses the terminal, even if the checkout is removed
+or its project is unregistered. The open terminal remains available in the session list.
 Detaching leaves the session running; opening a new client still requires the
 registered project and checkout.
 
 ![An imported pull-request worktree opened on the Studio SSH host](/docs/assets/guide-rust-remote-pr-worktree.png)
+
+To stop an open protected PR terminal, choose **Kill** from its row's **⋯** menu,
+then confirm **Kill Session**. You can also kill a retained terminal after switching
+away, including from its fallback session row if the project was unregistered.
+Ghosthub closes matching terminals in every window and leaves the checkout
+intact. Cancel leaves the session running. If the session was replaced or the
+SSH connection changed, refresh the host and review a new confirmation.
+
+![Confirm killing a protected PR session over SSH](/docs/assets/guide-rust-protected-kill.png)
 
 To create a remote worktree, select **+** beside its project. Enter a new branch
 name or search and select an existing branch. If several remotes have the same

@@ -217,6 +217,7 @@ impl Fixture {
         self.tmux_shell(name, marker);
     }
 
+    #[track_caller]
     fn tmux_shell(&self, name: &str, marker: &str) {
         self.wait(|snapshot| matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == name));
         self.wait(|_| self.terminal_text().contains("$ "));

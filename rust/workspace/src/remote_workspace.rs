@@ -11,6 +11,75 @@ use crate::{
 };
 use host::RemoteTmuxServer;
 
+pub(crate) fn capture_kill(
+    scene: &Scene,
+    selection: &SessionSelection,
+) -> Result<crate::RemoteTmuxAttachRequest, WorkspaceError> {
+    runtime::require_host_session_actions(&scene.runtime, selection)?;
+    let entries = scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entries
+        .get(selection.host_id())
+        .ok_or_else(|| WorkspaceError::new("SSH host is no longer configured"))?;
+    let context = current_remote_context(entry)
+        .ok_or_else(|| WorkspaceError::new("Connect this SSH host before killing a session"))?;
+    // The client owns this endpoint even if its checkout or registration has
+    // disappeared. Never authorize an arbitrary named socket from a selection.
+    let identity = |active: &crate::RemoteActive| {
+        let key = &active.key;
+        if key.host_id != selection.host_id()
+            || key.endpoint != selection.endpoint()
+            || key.endpoint != context.snapshot.endpoint()
+            || key.route_identity != context.snapshot.route_identity()
+            || key.lease_generation != context.snapshot.lease_generation()
+        {
+            return None;
+        }
+        match &key.session_identity {
+            RemoteSessionIdentity::ProtectedWorktree {
+                selection: opened,
+                identity,
+            } if opened.session() == selection.session()
+                && opened.tmux_socket_name() == selection.tmux_socket_name()
+                && opened.tmux_socket_name().is_some() =>
+            {
+                Some(identity.clone())
+            }
+            _ => None,
+        }
+    };
+    let active_identity = scene
+        .remote_active
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(identity);
+    let session_identity = active_identity
+        .or_else(|| {
+            scene
+                .remote_retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entries
+                .iter()
+                .find_map(|entry| identity(&entry.active))
+        })
+        .ok_or_else(|| {
+            WorkspaceError::new("Open this protected worktree before killing its session")
+        })?;
+    Ok(crate::RemoteTmuxAttachRequest {
+        host_id: selection.host_id().to_owned(),
+        connection_generation: entry.generation,
+        selection: selection.clone(),
+        host: context.host.clone(),
+        snapshot: context.snapshot.clone(),
+        session: session::DiscoveredSession::new(selection.session(), session_identity, 0),
+    })
+}
+
 struct Request {
     host_id: String,
     connection_generation: u64,
