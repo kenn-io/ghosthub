@@ -671,7 +671,7 @@ struct TmuxBinaryResolverTests {
           printf 'tmux 3.6a\n'
           exit 0
         fi
-        if [ "\(defaultAvailable)" = true ] && [ "$2" = default ]; then
+        if [ "\(defaultAvailable)" = true ] && [ "$2" = default ] && [ "$3" = list-sessions ]; then
           printf 'GHOSTHUB_TMUX_SESSION\t\t1\t101\t$1\t1000\t80\t24\ton\t\tdesk\n'
           exit 0
         fi

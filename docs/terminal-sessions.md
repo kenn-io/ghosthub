@@ -1011,6 +1011,42 @@ in-flight probe; a probe cancelled after its host command launched drains
 within the probe's ten-second timeout and its result is discarded. This state
 is not saved to the database.
 
+### Agent attention
+
+A blue dot on a tmux session's sidebar row, and on the native window tab whose
+active session it is, means a coding agent in that session needs the user:
+
+| Agent state | Dot |
+| --- | --- |
+| Waiting for permission approval | Shown until the agent moves on |
+| Asking the user a question | Shown until the agent moves on |
+| Finished its turn | Shown until the user views the session |
+| Working, or no hook state | Hidden |
+
+Agent hooks installed by kwt record the state. Settings → Hosts → **Agent
+Hooks** runs the host's managed kwt (`kwt agent-hook status --json` and
+`kwt agent-hook install --json`), which edits the user settings of each
+supported agent whose configuration directory exists on that host. Codex asks
+the user to trust new hooks once through `/hooks`.
+
+Each hook event writes the tmux pane option `@ghosthub_agent` as
+`<state> <unix-seconds> <agent>`, where state is `working`, `approval`,
+`input`, or `done`. Session start and end clear the option. Hooks outside tmux,
+and subagent events, do nothing. A failing hook never blocks the agent.
+
+POSIX discovery reads the option in the same command as `list-sessions` with
+`list-panes -a -f '#{@ghosthub_agent}'` and attaches each pane to its session by
+socket and session ID, so the dot updates on the inventory poll (about every
+thirty seconds). A failed read leaves sessions without agent state. Native
+Windows discovery does not read agent state.
+
+A session shows approval first, then input, then a finished turn. A finished
+turn is acknowledged when its session is the connected active presentation in
+the key window; the acknowledgement records the newest `done` stamp under the
+session's server PID, session ID, and creation time, so a replacement session
+with the same name starts unacknowledged. Acknowledgements persist in
+UserDefaults and keep the 512 most recent sessions.
+
 Pull-request imports are the one alternate-socket case. Kwt returns the named
 socket reserved for the workspace-specific server, and Ghosthub carries that
 identity with the worktree selection. Import does not start tmux or execute a

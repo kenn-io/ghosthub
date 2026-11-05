@@ -201,6 +201,7 @@ struct WorkspaceSidebarView: View {
     let activeTmuxSessionIsConnected: Bool
     let connectedTmuxSessionIDs: Set<String>
     let workingTmuxSessionIDs: Set<String>
+    let agentAttentionByEndpoint: [String: AgentAttention]
     let tmuxWindowCountsBySessionID: [String: Int]
     let previewableTmuxSessionIDs: Set<String>
     let sessionPreviewMode: SessionPreviewMode
@@ -282,6 +283,7 @@ struct WorkspaceSidebarView: View {
         activeTmuxSessionIsConnected: Bool = false,
         connectedTmuxSessionIDs: Set<String> = [],
         workingTmuxSessionIDs: Set<String> = [],
+        agentAttentionByEndpoint: [String: AgentAttention] = [:],
         tmuxWindowCountsBySessionID: [String: Int] = [:],
         previewableTmuxSessionIDs: Set<String> = [],
         sessionPreviewMode: SessionPreviewMode = .off,
@@ -375,6 +377,7 @@ struct WorkspaceSidebarView: View {
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
         self.connectedTmuxSessionIDs = connectedTmuxSessionIDs
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
+        self.agentAttentionByEndpoint = agentAttentionByEndpoint
         self.tmuxWindowCountsBySessionID = tmuxWindowCountsBySessionID
         self.previewableTmuxSessionIDs = previewableTmuxSessionIDs
         self.sessionPreviewMode = sessionPreviewMode
@@ -1030,6 +1033,13 @@ struct WorkspaceSidebarView: View {
         let isTmuxSessionWorking = tmuxSession.map {
             workingTmuxSessionIDs.contains($0.id)
         } ?? false
+        let agentAttention = tmuxSession.flatMap {
+            agentAttentionByEndpoint[AgentAttentionStore.endpointKey(
+                hostID: $0.hostID,
+                name: $0.name,
+                socketName: $0.socketName
+            )]
+        }
         let usesDirectKillAction: Bool
         if case .tmuxSession = row.target {
             usesDirectKillAction = true
@@ -1143,6 +1153,11 @@ struct WorkspaceSidebarView: View {
                             ? WorktreeFlagPresentation.flagColor
                             : (isSelected ? .primary : .secondary))
                         .frame(width: 18)
+                        .overlay(alignment: .leading) {
+                            if let agentAttention {
+                                agentAttentionIndicator(agentAttention)
+                            }
+                        }
                     if let status = row.worktreeStatus {
                         worktreeRowContent(
                             row.title,
@@ -1216,6 +1231,7 @@ struct WorkspaceSidebarView: View {
                     for: row,
                     isSelected: isSelected,
                     hasRecentTmuxOutput: isTmuxSessionWorking,
+                    agentAttention: agentAttention,
                     isWorktreeFlagged: isWorktreeFlagged
                 )
             )
@@ -2567,6 +2583,19 @@ struct WorkspaceSidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Unread-style dot drawn in the row's leading indent so it stays
+    /// distinct from the trailing recent-output dot.
+    private func agentAttentionIndicator(
+        _ attention: AgentAttention
+    ) -> some View {
+        Circle()
+            .fill(Color.blue)
+            .frame(width: 7, height: 7)
+            .offset(x: -8)
+            .help(attention.label)
+            .accessibilityHidden(true)
     }
 
     private var tmuxSessionActivityIndicator: some View {

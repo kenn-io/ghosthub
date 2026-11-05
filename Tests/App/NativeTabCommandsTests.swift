@@ -148,6 +148,33 @@ struct NativeTabCommandsTests {
         #expect(badgeText(in: group.windows[2]) == "⌘3")
     }
 
+    @Test("a tab whose session needs attention shows a dot beside its shortcut")
+    func attentionDot() throws {
+        let windows = (0 ..< 10).map { _ in NSWindow() }
+        windows[0].addTabbedWindow(windows[1], ordered: .above)
+        let controllers = windows.prefix(2).map { window in
+            let controller = NativeTabBadgeController()
+            controller.install(on: window)
+            return controller
+        }
+        let group = try #require(windows[0].tabGroup)
+
+        controllers[1].setAttention("Claude finished")
+
+        #expect(badgeText(in: group.windows[0]) == "⌘1")
+        #expect(badgeText(in: windows[1]) == "● ⌘2")
+        #expect(windows[1].tab.accessoryView?.toolTip == "Claude finished")
+
+        controllers[1].setAttention(nil)
+        #expect(badgeText(in: windows[1]) == "⌘2")
+
+        // A tab past the numbered shortcuts still shows the dot alone.
+        NativeTabCommands.setAttention("Codex needs approval", for: windows[8])
+        defer { NativeTabCommands.setAttention(nil, for: windows[8]) }
+        NativeTabCommands.refreshBadges(in: windows)
+        #expect(badgeText(in: windows[8]) == "●")
+    }
+
     @Test("native tab commands use fixed bracket shortcuts")
     func bracketShortcuts() {
         let root = NSMenu()

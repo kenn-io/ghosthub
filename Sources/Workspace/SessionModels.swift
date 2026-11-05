@@ -92,6 +92,8 @@ public struct TmuxSessionSummary: Codable, Equatable, Sendable {
     public var createdAt: String?
     public var activeWindowSize: TmuxGridSize?
     public var previewClientSize: TmuxGridSize?
+    /// Panes whose agent hook recorded a state, from discovery.
+    public var agentPanes: [TmuxPaneAgentState]
 
     public init(
         name: String, socketName: String? = nil, managed: Bool,
@@ -101,8 +103,10 @@ public struct TmuxSessionSummary: Codable, Equatable, Sendable {
         sessionID: String? = nil,
         createdAt: String? = nil,
         activeWindowSize: TmuxGridSize? = nil,
-        previewClientSize: TmuxGridSize? = nil
+        previewClientSize: TmuxGridSize? = nil,
+        agentPanes: [TmuxPaneAgentState] = []
     ) {
+        self.agentPanes = agentPanes
         self.name = name
         self.socketName = socketName
         self.managed = managed

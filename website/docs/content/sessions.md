@@ -290,6 +290,29 @@ you have not opened, and terminal text never leaves the host: the probe
 returns only a checksum and size counters. On native Windows hosts, activity
 indicators require psmux 3.3.4 or newer.
 
+## Agents waiting for you
+
+**Unreleased.** A blue dot appears on a tmux session's sidebar row when a
+coding agent running in it needs you: it is waiting for permission, it asked
+you a question, or it finished its turn. The native tab whose current session
+needs you shows the same dot beside its shortcut. Hover the dot to see which
+agent and why.
+
+A finished turn clears once you view that session in the front window.
+Permission requests and questions stay marked until the agent continues.
+
+To turn this on for a host:
+
+1. Open **Settings → Hosts** and select the local Mac or a remote host.
+2. Under **Agent Hooks**, click **Install Hooks**.
+3. In Codex, open `/hooks` once to trust the new hooks.
+
+Ghosthub installs hooks for each supported agent already set up on that host,
+including Claude Code, Codex, Gemini CLI, and Cursor. The dot follows the
+sidebar's inventory refresh, so it can take up to about thirty seconds to
+appear. Native Windows hosts and Herdr and Zellij sessions do not show agent
+dots yet.
+
 ## Reopen an exited standalone session
 
 If a standalone session exits while its presentation is still open, Ghosthub

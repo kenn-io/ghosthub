@@ -169,8 +169,11 @@ final class WorkspaceSceneModel: ObservableObject {
             sidebarSnapshotRevision &+= 1
             publishProtectedTmuxEndpoints()
             reconcileInventoryHosts()
+            acknowledgeVisibleAgentTurns()
         }
     }
+    /// Remembers finished agent turns the user has seen; replaceable in tests.
+    var agentAttentionStore: AgentAttentionStore = .shared
     let sidebarSectionCache = WorkspaceSidebarSectionCache()
     private(set) var sidebarSnapshotRevision: UInt64 = 0
     private var tmuxDiscoveryEnabled = false
@@ -300,6 +303,7 @@ final class WorkspaceSceneModel: ObservableObject {
         [UUID: ConnectionState] = [:] {
         didSet {
             refreshConnectedBorrowedTmuxSessionIDs()
+            acknowledgeVisibleAgentTurns()
         }
     }
     private(set) var connectedBorrowedTmuxSessionIDs:
@@ -325,7 +329,9 @@ final class WorkspaceSceneModel: ObservableObject {
         exhaustedCreatedTmuxSessionHandles.count
     }
     @Published private(set) var activeBorrowedTmuxSelection:
-        WorkspaceTmuxSessionSelection?
+        WorkspaceTmuxSessionSelection? {
+        didSet { acknowledgeVisibleAgentTurns() }
+    }
     private var activeBorrowedTmuxHandle: BorrowedTmuxSessionHandle?
     private(set) var activeBorrowedTmuxLaunchMode:
         TmuxAttachmentLaunchMode?
@@ -796,6 +802,7 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxSessionPreviewCoordinator.sceneWindowFocusDidChange(
                 isKey: isFocusedWindow
             )
+            acknowledgeVisibleAgentTurns()
             guard isFocusedWindow else { return }
             syncTerminalConfig()
         }
@@ -1002,6 +1009,21 @@ final class WorkspaceSceneModel: ObservableObject {
     var defaultIdleThresholdSeconds: Int {
         workspaceConfiguration.notifications.idleThresholdSeconds
     }
+    /// A finished agent turn counts as seen once its session is the
+    /// connected presentation of the key window.
+    func acknowledgeVisibleAgentTurns() {
+        guard isFocusedWindow,
+              activeBorrowedTmuxSessionIsConnected,
+              let selection = activeBorrowedTmuxSelection,
+              let host = snapshot.host(id: selection.hostID),
+              let session = host.tmuxSessions.first(where: {
+                  $0.name == selection.name
+                      && $0.socketName == selection.socketName
+              })
+        else { return }
+        agentAttentionStore.acknowledge(session, hostID: host.id)
+    }
+
     var workingTmuxSessionIDs: Set<String> {
         tmuxSessionActivityController?.workingSessionIDs ?? []
     }
@@ -7241,6 +7263,48 @@ final class WorkspaceSceneModel: ObservableObject {
             refreshKwtInventory()
             return .success(())
         case let .failure(error):
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
+    /// Reads or installs kwt agent hooks on this Mac (nil) or a POSIX SSH
+    /// host, provisioning the managed kwt there first.
+    func agentHooks(
+        _ action: KwtAgentHookClient.Action,
+        on host: SSHHost?
+    ) async -> Result<[AgentHookSetupStatus], HostProbeError> {
+        let target: CommandHost
+        if let host {
+            let destination = host.sshDestination.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard host.platform != .windows,
+                  let sshHost = CommandHostResolver.parseSSHDestination(destination)
+            else {
+                return .failure(.message("Enter a valid SSH destination."))
+            }
+            target = .ssh(SSHHostInfo(
+                user: sshHost.user,
+                hostname: sshHost.hostname,
+                port: sshHost.port,
+                platform: .posix,
+                compression: host.compression
+            ))
+        } else {
+            target = .local
+        }
+        do {
+            if var host {
+                host.sshDestination = host.sshDestination.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                try await ensureRemoteKwtForOperation(
+                    on: host,
+                    hostID: snapshot.hosts.first { $0.configKey == host.configKey }?.id
+                )
+            }
+            return try await .success(KwtAgentHookClient().run(action, on: target))
+        } catch {
             return .failure(.message(error.localizedDescription))
         }
     }

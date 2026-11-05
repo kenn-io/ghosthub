@@ -38,9 +38,13 @@ enum WorkspaceAccessibilityModel {
         for row: WorkspaceSidebarRow,
         isSelected: Bool,
         hasRecentTmuxOutput: Bool = false,
+        agentAttention: AgentAttention? = nil,
         isWorktreeFlagged: Bool = false
     ) -> WorkspaceAccessibilityDescriptor {
         var values: [String] = []
+        if let agentAttention {
+            values.append(agentAttention.label)
+        }
         if isWorktreeFlagged {
             values.append("Flagged")
             if row.icon == .primaryWorktree {
