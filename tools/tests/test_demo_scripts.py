@@ -40,6 +40,7 @@ WEBSITE_ASSET_NAMES = (
     "guide-rust-remote-pr-import.png",
     "guide-rust-remote-pr-worktree.png",
     "guide-rust-protected-kill.png",
+    "guide-rust-remove-protected-worktree.png",
     "guide-find.png",
     "guide-session-previews.png",
     "guide-session-activity.png",

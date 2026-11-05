@@ -33,6 +33,15 @@ impl CommandRunner for KwtRunner {
             )
         } else if marker.starts_with("GHOSTHUB_KWT_READY_") {
             (0, b"".as_slice(), b"".as_slice())
+        } else if marker.starts_with("GHOSTHUB_KWT_SESSION_") {
+            assert!(command.contains("-L") && command.contains("kwt-pr-fixture"));
+            assert!(command.contains("list-sessions"));
+            assert!(!command.contains("TMUX_TMPDIR="));
+            (
+                self.mutation.status,
+                self.mutation.stdout.as_slice(),
+                self.mutation.stderr.as_slice(),
+            )
         } else {
             assert!(marker.starts_with("GHOSTHUB_KWT_COMMAND_"));
             self.deadlines.lock().unwrap().push(timeout);
@@ -129,6 +138,50 @@ fn creation() -> KwtWorktreeCreate {
         None,
         true,
     )
+}
+
+#[test]
+fn protected_session_probe_distinguishes_absence_from_failure() {
+    for (status, stdout, stderr, expected_error) in [
+        (
+            1,
+            "",
+            "no server running on /tmp/tmux/kwt-pr-fixture\n",
+            None,
+        ),
+        (0, "77|$1|1700|0|5|other\n", "", None),
+        (
+            1,
+            "",
+            "error connecting to /tmp/tmux/kwt-pr-fixture (Permission denied)\n",
+            Some(DiagnosticKind::Transport),
+        ),
+        (
+            0,
+            "unreadable inventory\n",
+            "",
+            Some(DiagnosticKind::MalformedOutput),
+        ),
+    ] {
+        let (mut host, mut snapshot, _) = fixture(CommandOutput {
+            status,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        });
+        host.config.socket_directory = Some("/tmp/ordinary-tmux".to_owned());
+        snapshot.tmux_binary = Some("/usr/bin/tmux".to_owned());
+        let result = host.find_protected_kwt_session(
+            &snapshot,
+            "kwt-pr-fixture",
+            "review",
+            &CancellationToken::new(),
+        );
+        if let Some(kind) = expected_error {
+            assert_eq!(result.unwrap_err().kind(), kind);
+        } else {
+            assert!(result.unwrap().is_none());
+        }
+    }
 }
 
 #[test]

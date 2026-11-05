@@ -284,7 +284,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         }
     }
 
-    /// Remove a confirmed ordinary worktree only while its exact session is absent.
+    /// Remove a confirmed worktree only while its exact session is absent.
     ///
     /// # Errors
     /// Returns an error when the generation or endpoint changes, or KWT refuses removal.
@@ -312,7 +312,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         if let Some(socket) = worktree.tmux_socket_name() {
             args.extend(["--if-session-socket-name", socket]);
         }
-        // KWT verifies absence on both shared servers before deleting the checkout.
+        // KWT checks both shared servers as well as the protected endpoint.
         if let Some(directory) = self.config.socket_directory() {
             args.extend(["--if-session-socket-directory", directory]);
         }
@@ -639,6 +639,26 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         name: &str,
         cancellation: &CancellationToken,
     ) -> Result<session::DiscoveredSession, RemoteTmuxError> {
+        self.find_protected_kwt_session(snapshot, socket, name, cancellation)?
+            .ok_or_else(|| {
+                RemoteTmuxError::new(
+                    DiagnosticKind::Transport,
+                    "Protected worktree session unavailable.",
+                )
+            })
+    }
+
+    /// Read the exact protected endpoint, including an idle checkout's absent session.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid socket, stale lease, or failed inventory probe.
+    pub fn find_protected_kwt_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        socket: &str,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<session::DiscoveredSession>, RemoteTmuxError> {
         let command = self.kwt_tmux_probe(
             snapshot,
             Some(socket),
@@ -650,16 +670,15 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             "GHOSTHUB_KWT_SESSION_",
             cancellation,
         )?;
+        if output.status != 0
+            && super::is_missing_tmux_server(&String::from_utf8_lossy(&output.stderr))
+        {
+            return Ok(None);
+        }
         require_kwt_output(&output)?;
-        super::parse_inventory_payload(&output.stdout)?
+        Ok(super::parse_inventory_payload(&output.stdout)?
             .into_iter()
-            .find(|session| session.name() == name)
-            .ok_or_else(|| {
-                RemoteTmuxError::new(
-                    DiagnosticKind::Transport,
-                    "Protected worktree session unavailable.",
-                )
-            })
+            .find(|session| session.name() == name))
     }
 
     /// Kill the confirmed session identity on its exact protected socket.
@@ -945,14 +964,21 @@ fn require_kwt_output(output: &CommandOutput) -> Result<(), RemoteTmuxError> {
 }
 
 fn removal_generation(worktree: &crate::KwtWorktree) -> Result<&str, RemoteTmuxError> {
-    if worktree.is_main()
-        || worktree.tmux_attach_mode() != crate::KwtTmuxAttachMode::Direct
-        || !matches!(worktree.tmux_socket_name(), None | Some("kwt"))
-    {
+    let supported = match worktree.tmux_attach_mode() {
+        crate::KwtTmuxAttachMode::Direct => {
+            matches!(worktree.tmux_socket_name(), None | Some("kwt"))
+        }
+        crate::KwtTmuxAttachMode::Protected => worktree.tmux_socket_name().is_some(),
+    };
+    if worktree.is_main() || !supported {
         return Err(RemoteTmuxError::new(
             DiagnosticKind::UnsupportedEnvironment,
             "This worktree cannot be removed through SSH.",
         ));
+    }
+    if let Some(socket) = worktree.tmux_socket_name() {
+        crate::local::require_kwt_socket_name(socket)
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
     }
     worktree.generation().ok_or_else(|| {
         RemoteTmuxError::new(

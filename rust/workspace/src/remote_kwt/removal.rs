@@ -44,12 +44,20 @@ pub(crate) fn request(
     scene: &Arc<Scene>,
     target: KwtWorktreeTarget,
 ) -> Result<u64, WorkspaceError> {
+    let supported = match target.tmux_attach_mode {
+        host::KwtTmuxAttachMode::Direct => {
+            matches!(target.tmux_socket_name.as_deref(), None | Some("kwt"))
+        }
+        host::KwtTmuxAttachMode::Protected => target
+            .tmux_socket_name
+            .as_deref()
+            .is_some_and(|name| !name.is_empty()),
+    };
     if target
         .generation
         .as_deref()
         .is_none_or(|value| !crate::is_canonical_kwt_generation(value))
-        || target.tmux_attach_mode != host::KwtTmuxAttachMode::Direct
-        || !matches!(target.tmux_socket_name.as_deref(), None | Some("kwt"))
+        || !supported
     {
         return Err(WorkspaceError::new(
             "Refresh the host before removing this worktree.",
@@ -154,27 +162,44 @@ fn capture(scene: &Arc<Scene>, mut pending: Pending) {
                 &pending.task.cancellation,
             )
             .map_err(|e| WorkspaceError::new(e.to_string()))?;
-        let fresh = pending
-            .task
-            .host
-            .refresh(pending.task.snapshot.lease(), &pending.task.cancellation)
-            .map_err(|e| WorkspaceError::new(e.to_string()))?;
-        pending.task.snapshot = pending.task.snapshot.with_inventory(fresh);
-        let server = pending.selection().remote_tmux_server()?;
-        let diagnostic = match server {
-            host::RemoteTmuxServer::Default => pending.task.snapshot.tmux_diagnostic(),
-            host::RemoteTmuxServer::Kwt => pending.task.snapshot.kwt_tmux_diagnostic(),
+        pending.session = if pending.target.tmux_attach_mode == host::KwtTmuxAttachMode::Protected {
+            pending
+                .task
+                .host
+                .find_protected_kwt_session(
+                    &pending.task.snapshot,
+                    pending
+                        .target
+                        .tmux_socket_name
+                        .as_deref()
+                        .expect("protected socket"),
+                    &pending.target.session_name,
+                    &pending.task.cancellation,
+                )
+                .map_err(|e| WorkspaceError::new(e.to_string()))?
+        } else {
+            let fresh = pending
+                .task
+                .host
+                .refresh(pending.task.snapshot.lease(), &pending.task.cancellation)
+                .map_err(|e| WorkspaceError::new(e.to_string()))?;
+            pending.task.snapshot = pending.task.snapshot.with_inventory(fresh);
+            let server = pending.selection().remote_tmux_server()?;
+            let diagnostic = match server {
+                host::RemoteTmuxServer::Default => pending.task.snapshot.tmux_diagnostic(),
+                host::RemoteTmuxServer::Kwt => pending.task.snapshot.kwt_tmux_diagnostic(),
+            };
+            if let Some(diagnostic) = diagnostic {
+                return Err(WorkspaceError::new(diagnostic.to_string()));
+            }
+            pending
+                .task
+                .snapshot
+                .sessions_on(server)
+                .iter()
+                .find(|s| s.name() == pending.target.session_name)
+                .cloned()
         };
-        if let Some(diagnostic) = diagnostic {
-            return Err(WorkspaceError::new(diagnostic.to_string()));
-        }
-        pending.session = pending
-            .task
-            .snapshot
-            .sessions_on(server)
-            .iter()
-            .find(|s| s.name() == pending.target.session_name)
-            .cloned();
         pending.ready = true;
         require_current(scene, &pending.task)?;
         let _publication = scene
@@ -420,14 +445,26 @@ fn remove(
         scene: Arc::clone(scene),
     };
     if let Some(session) = &pending.session {
-        task.host
-            .kill_live_session(
+        if pending.target.tmux_attach_mode == host::KwtTmuxAttachMode::Protected {
+            task.host.kill_protected_kwt_session(
+                &pending.task.snapshot,
+                pending
+                    .target
+                    .tmux_socket_name
+                    .as_deref()
+                    .expect("protected socket"),
+                session,
+                &task.cancellation,
+            )
+        } else {
+            task.host.kill_live_session(
                 &pending.task.snapshot,
                 pending.selection().remote_tmux_server()?,
                 session,
                 &task.cancellation,
             )
-            .map_err(|e| WorkspaceError::new(e.to_string()))?;
+        }
+        .map_err(|e| WorkspaceError::new(e.to_string()))?;
         let request = RemoteTmuxAttachRequest {
             host_id: task.host_id.clone(),
             connection_generation: task.generation,
