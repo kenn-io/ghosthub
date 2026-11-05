@@ -279,10 +279,11 @@ make rust-test-ssh-live HERDR_BINARY_PATH=/absolute/path/to/herdr \
 
 `make rust-test-ssh-pr-live` additionally requires `KWT_GITHUB_TOKEN` and
 outbound GitHub access. It lists and imports a public fixture PR over SSH,
-checks remote authentication failures and stale registrations, and opens the
-result through protected attachment. This opt-in test shares networking for
-HTTPS and uses a fresh loopback SSH port; its account, Git, process, and socket
-state remain disposable. The token is staged only in the fixture remote account.
+checks remote authentication failures and Ghosthub's stale-registration guard,
+and opens the result through protected attachment. This opt-in test shares
+networking for HTTPS and uses a fresh loopback SSH port; its account, Git,
+process, and socket state remain disposable. The token is staged only in the
+fixture remote account.
 
 These tests run the application composition root with its bundled controller
 against a disposable OpenSSH server. Private process and network namespaces,
@@ -514,11 +515,14 @@ server is independent. The `kwt` server ignores `TMUX_TMPDIR`, as KWT does.
 Select **Pull Request** in the same dialog to list open PRs, select one, or enter
 its number or URL. The pinned remote KWT helper uses that account's
 `KWT_GITHUB_TOKEN` or `gh auth login`; Ghosthub does not forward local GitHub
-credentials. Provider reads and imports have cancellable five-minute deadlines,
-while ordinary inventory reads retain their short deadline. An uncertain import
-refreshes inventory without replaying the mutation. Only a response matching
-fresh project registration, checkout generation, session, and protected socket
-can open, and newer navigation still takes precedence.
+credentials. Provider reads and imports have five-minute deadlines, while
+ordinary inventory reads retain their short deadline. Closing the dialog
+cancels listings. Imports cannot be cancelled from the dialog; closing the scene
+cancels its active work. Reconnect fences the import result and refreshes
+inventory after it settles. An uncertain import refreshes inventory without
+replaying the mutation. Only a response matching fresh project registration,
+checkout generation, session, and protected socket can open, and newer
+navigation still takes precedence.
 
 ![Import a PR on the Studio SSH host](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-pr-import.png)
 

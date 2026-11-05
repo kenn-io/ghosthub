@@ -167,7 +167,10 @@ trap 'if [ "$?" -ne 0 ]; then
 fi' EXIT
 attempt=0
 until test -s "$root/sshd.pid"; do
-    kill -0 "$sshd_pid"
+    if ! kill -0 "$sshd_pid" 2>/dev/null; then
+        printf 'Fixture SSH server failed to start on 127.0.0.1:%s; see sshd output below.\n' "$port" >&2
+        exit 1
+    fi
     attempt=$((attempt + 1))
     test "$attempt" -lt 100
     sleep 0.02

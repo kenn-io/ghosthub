@@ -4,6 +4,9 @@ use super::{
 };
 use crate::{KwtBranchItem, KwtWorktreeOperation, KwtWorktreeTarget};
 
+#[cfg(all(test, unix))]
+mod tests;
+
 #[derive(Clone)]
 pub(super) struct Request {
     project: host::KwtProject,
@@ -30,7 +33,9 @@ impl Request {
                 navigation_generation,
                 ..
             } => navigation_generation,
-            _ => listing_id,
+            KwtWorktreeOperation::Branches
+            | KwtWorktreeOperation::PullRequests
+            | KwtWorktreeOperation::Remove { .. } => listing_id,
         }
     }
 
@@ -168,9 +173,6 @@ pub(crate) fn cancel_listing(scene: &Arc<Scene>, id: u64) -> bool {
 
 pub(super) fn run(scene: &Arc<Scene>, task: &Task, request: &Request) {
     let result = execute(scene, task, request);
-    if let Err(error) = &result {
-        fail(scene, task, error);
-    }
     // The UI may immediately open the result or submit the next operation.
     finish(scene, task);
     scene::push_lossless_event(
@@ -194,52 +196,82 @@ fn execute(
         }
     };
     require_current()?;
-    let baseline = task
-        .host
-        .discover_kwt(&task.snapshot, &task.cancellation)
-        .map_err(|error| WorkspaceError::new(error.to_string()))?;
+    let baseline =
+        inventory(scene, task).map_err(|error| WorkspaceError::new(error.to_string()))?;
     let project = request.project_in(&baseline)?;
     require_current()?;
-    if matches!(request.operation, KwtWorktreeOperation::Branches) {
-        let branches = task
-            .host
-            .list_kwt_branches(&task.snapshot, request.project.path(), &task.cancellation)
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        require_current()?;
-        return Ok(WorkspaceEvent::KwtBranchesLoaded {
-            operation_id: task.id,
-            project_path: request.project.path().to_owned(),
-            branches: branches
-                .iter()
-                .map(|branch| {
-                    KwtBranchItem::new(branch.name(), branch.source(), branch.is_remote())
-                })
-                .collect(),
-        });
+    match &request.operation {
+        KwtWorktreeOperation::Branches => {
+            let branches = task
+                .host
+                .list_kwt_branches(&task.snapshot, request.project.path(), &task.cancellation)
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            require_current()?;
+            Ok(WorkspaceEvent::KwtBranchesLoaded {
+                operation_id: task.id,
+                project_path: request.project.path().to_owned(),
+                branches: branches
+                    .iter()
+                    .map(|branch| {
+                        KwtBranchItem::new(branch.name(), branch.source(), branch.is_remote())
+                    })
+                    .collect(),
+            })
+        }
+        KwtWorktreeOperation::PullRequests => {
+            let pull_requests = task
+                .host
+                .list_kwt_pull_requests(&task.snapshot, request.project.path(), &task.cancellation)
+                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            require_current()?;
+            Ok(WorkspaceEvent::KwtPullRequestsLoaded {
+                operation_id: task.id,
+                project_path: request.project.path().to_owned(),
+                pull_requests: pull_requests
+                    .iter()
+                    .map(crate::KwtPullRequestItem::from_host)
+                    .collect(),
+            })
+        }
+        KwtWorktreeOperation::ImportPullRequest {
+            selector,
+            navigation_generation,
+        } => import_pull_request(scene, task, request, selector, *navigation_generation),
+        KwtWorktreeOperation::Create {
+            branch,
+            source,
+            creates_branch,
+            navigation_generation,
+        } => {
+            let create = host::KwtWorktreeCreate::new(
+                request.project.path(),
+                request.project.repository(),
+                request.project.registration_fingerprint(),
+                branch,
+                source.clone(),
+                *creates_branch,
+            );
+            create_worktree(
+                scene,
+                task,
+                request,
+                project,
+                &create,
+                *navigation_generation,
+            )
+        }
+        KwtWorktreeOperation::Remove { .. } => Err(WorkspaceError::new(
+            "Use the removal confirmation for this worktree",
+        )),
     }
-    if matches!(request.operation, KwtWorktreeOperation::PullRequests) {
-        let pull_requests = task
-            .host
-            .list_kwt_pull_requests(&task.snapshot, request.project.path(), &task.cancellation)
-            .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        require_current()?;
-        return Ok(WorkspaceEvent::KwtPullRequestsLoaded {
-            operation_id: task.id,
-            project_path: request.project.path().to_owned(),
-            pull_requests: pull_requests
-                .iter()
-                .map(crate::KwtPullRequestItem::from_host)
-                .collect(),
-        });
-    }
-    if let KwtWorktreeOperation::ImportPullRequest {
-        selector,
-        navigation_generation,
-    } = &request.operation
-    {
-        return import_pull_request(scene, task, request, selector, *navigation_generation);
-    }
-    create_worktree(scene, task, request, project)
+}
+
+// Only failed inventory reads affect the host's project availability. Provider
+// errors and rejected mutations are reported by their owning dialog.
+fn inventory(scene: &Scene, task: &Task) -> Result<host::KwtInventory, host::RemoteTmuxError> {
+    task.host
+        .discover_kwt(&task.snapshot, &task.cancellation)
+        .inspect_err(|error| fail(scene, task, error))
 }
 
 fn create_worktree(
@@ -247,24 +279,9 @@ fn create_worktree(
     task: &Task,
     request: &Request,
     project: &host::KwtProjectInventory,
+    create: &host::KwtWorktreeCreate,
+    navigation_generation: u64,
 ) -> Result<WorkspaceEvent, WorkspaceError> {
-    let KwtWorktreeOperation::Create {
-        branch,
-        source,
-        creates_branch,
-        navigation_generation,
-    } = &request.operation
-    else {
-        unreachable!("removal uses its confirmation path")
-    };
-    let create = host::KwtWorktreeCreate::new(
-        request.project.path(),
-        request.project.repository(),
-        request.project.registration_fingerprint(),
-        branch,
-        source.clone(),
-        *creates_branch,
-    );
     let baseline: Vec<_> = project
         .worktrees()
         .iter()
@@ -272,25 +289,22 @@ fn create_worktree(
         .collect();
     let result = task
         .host
-        .create_kwt_worktree(&task.snapshot, &create, &task.cancellation);
+        .create_kwt_worktree(&task.snapshot, create, &task.cancellation);
     if let Err(error) = &result
         && error.kind() != DiagnosticKind::Timeout
     {
         return Err(WorkspaceError::new(error.to_string()));
     }
-    let inventory = task
-        .host
-        .discover_kwt(&task.snapshot, &task.cancellation)
-        .map_err(|error| {
-            WorkspaceError::new(format!(
-                "Worktree creation {}. Refresh the host before trying again: {error}",
-                if result.is_ok() {
-                    "completed, but inventory could not be read"
-                } else {
-                    "timed out and may have completed"
-                }
-            ))
-        })?;
+    let inventory = inventory(scene, task).map_err(|error| {
+        WorkspaceError::new(format!(
+            "Worktree creation {}. Refresh the host before trying again: {error}",
+            if result.is_ok() {
+                "completed, but inventory could not be read"
+            } else {
+                "timed out and may have completed"
+            }
+        ))
+    })?;
     let target = request
         .project_in(&inventory)?
         .worktrees()
@@ -327,7 +341,7 @@ fn create_worktree(
     })?;
     Ok(WorkspaceEvent::KwtWorktreeCreated {
         target,
-        navigation_generation: *navigation_generation,
+        navigation_generation,
     })
 }
 
@@ -358,10 +372,12 @@ fn import_pull_request(
         return Err(WorkspaceError::new(error.to_string()));
     }
     // A timed-out mutation may have committed. Refresh once, never replay it.
-    let inventory = task.host.discover_kwt(&task.snapshot, &task.cancellation)
-        .map_err(|error| WorkspaceError::new(format!(
-            "Pull-request import may have completed, but inventory could not be read. Refresh the host before trying again: {error}"
-        )))?;
+    let inventory = inventory(scene, task).map_err(|error| {
+        WorkspaceError::new(format!(
+            "Pull-request import {}, but inventory could not be read. Refresh the host before trying again: {error}",
+            if imported.is_ok() { "completed" } else { "may have completed" }
+        ))
+    })?;
     let target = imported.as_ref().ok().and_then(|imported| {
         let workspace = imported.workspace();
         let same_repository = |identity: &str| {

@@ -933,6 +933,12 @@ pub struct KwtSshLeaseClient {
 }
 
 impl KwtSshLeaseClient {
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_with_command(program: &str, arguments: Vec<OsString>) -> Self {
+        Self::with_command(CommandPrefix::new(program, arguments))
+    }
+
     #[must_use]
     pub fn new(executable: KwtSshExecutable) -> Self {
         Self {

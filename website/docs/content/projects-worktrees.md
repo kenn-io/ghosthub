@@ -269,13 +269,14 @@ tmux clients available for reuse. A same-name session on the other server remain
 To import a pull request, select **+** beside the remote project, then
 **Pull Request**. Search the open PRs and choose one, or enter its number or URL.
 Select **Import** to create its checkout and open the terminal. GitHub access
-uses `gh auth login` or `KWT_GITHUB_TOKEN` on the remote host.
+uses `gh auth login` or `KWT_GITHUB_TOKEN` on the remote host. If listing fails,
+the error stays in this dialog; existing projects remain available.
 
 ![Import a pull request into a remote Rust project](/docs/assets/guide-rust-remote-pr-import.png)
 
 Already imported pull-request worktrees also open from the remote project tree.
-KWT opens its protected terminal without running the checkout's configured layout. Switching away and back
-reuses the terminal, even if the checkout is removed or its project is
+KWT opens its protected terminal without running the checkout's configured layout.
+Switching away and back reuses the terminal, even if the checkout is removed or its project is
 unregistered. The open terminal remains available in the session list.
 Detaching leaves the session running; opening a new client still requires the
 registered project and checkout.

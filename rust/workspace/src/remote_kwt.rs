@@ -318,7 +318,9 @@ fn schedule(scene: &Arc<Scene>, task: &Task) {
         "ghosthub-remote-kwt",
         Box::new(move || run(&task_scene, &background)),
     ) {
-        fail(scene, task, &error);
+        if task.worktree.is_none() {
+            fail(scene, task, &error);
+        }
         finish(scene, task);
         mutation_event(scene, task, Err(WorkspaceError::new(error.to_string())));
         if let Some(request) = &task.worktree {

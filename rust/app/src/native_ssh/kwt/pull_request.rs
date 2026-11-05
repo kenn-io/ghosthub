@@ -53,7 +53,7 @@ fn imports_pull_requests_over_ssh() {
         .find(|host| host.id() == fixture.host_id)
         .unwrap()
         .projects()[0];
-    // Listing failures belong to this dialog; they must not disconnect the host.
+    // Listing failures belong to this dialog, leaving host project actions usable.
     let profile = fixture.root.join("home/.profile");
     let authenticated_profile = std::fs::read(&profile).unwrap();
     std::fs::write(&profile, "").unwrap();
@@ -70,17 +70,19 @@ fn imports_pull_requests_over_ssh() {
     assert!(matches!(wait_worktree_event(&fixture, unavailable),
         WorkspaceEvent::KwtWorktreeOperationFailed { message, .. } if message.contains("GitHub authentication")
     ));
-    assert_eq!(
-        fixture
-            .workspace
-            .snapshot()
-            .hosts()
-            .iter()
-            .find(|host| host.id() == fixture.host_id)
-            .unwrap()
-            .connection(),
-        HostConnectionState::Ready
+    let snapshot = fixture.workspace.snapshot();
+    let host = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap();
+    assert_eq!(host.connection(), HostConnectionState::Ready);
+    assert!(
+        host.kwt_diagnostic().is_none(),
+        "{:?}",
+        host.kwt_diagnostic()
     );
+    assert!(host.can_remove_kwt_project());
     std::fs::write(&profile, authenticated_profile).unwrap();
     let listing = fixture
         .workspace
