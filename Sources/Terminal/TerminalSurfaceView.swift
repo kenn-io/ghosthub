@@ -133,6 +133,15 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     /// Set by the pane view when the split controller says this
     /// leaf is no longer focused.
     public var suppressAutoFocus: Bool = false
+    public var isKeyboardInteractionSuspended = false {
+        didSet {
+            guard isKeyboardInteractionSuspended else { return }
+            if window?.firstResponder === self {
+                window?.makeFirstResponder(nil)
+            }
+            focusDidChange(false)
+        }
+    }
     public private(set) var isParkedForPreview = false
     private var previewRenderingSuspended = false
 
@@ -227,11 +236,11 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     private var surfaceCloseObservers: [UUID: (Bool) -> Void] = [:]
 
     override public var acceptsFirstResponder: Bool {
-        !isParkedForPreview
+        !isParkedForPreview && !isKeyboardInteractionSuspended
     }
 
     override public var canBecomeKeyView: Bool {
-        !isParkedForPreview
+        acceptsFirstResponder
     }
 
     override public func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -482,7 +491,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     }
 
     public func focusDidChange(_ newFocused: Bool) {
-        let newFocused = newFocused && !isParkedForPreview
+        let newFocused = newFocused && !isParkedForPreview && !isKeyboardInteractionSuspended
         guard let surface else { return }
         let stateChanged = focused != newFocused
         guard stateChanged || !hasSyncedFocusState else { return }
@@ -1179,7 +1188,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     // MARK: - NSView Overrides
 
     override public func becomeFirstResponder() -> Bool {
-        guard !isParkedForPreview else { return false }
+        guard acceptsFirstResponder else { return false }
         let result = super.becomeFirstResponder()
         if result, window?.isKeyWindow == true {
             focusDidChange(true)
@@ -1345,7 +1354,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     // MARK: - Keyboard Events
 
     override public func keyDown(with event: NSEvent) {
-        guard !isParkedForPreview else { return }
+        guard acceptsFirstResponder else { return }
         if !hasEffectiveKeyboardFocus,
            !isCompetingFirstResponder(window?.firstResponder) {
             ensureFirstResponder()
@@ -1442,7 +1451,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     override public func performKeyEquivalent(
         with event: NSEvent
     ) -> Bool {
-        guard !isParkedForPreview else { return false }
+        guard acceptsFirstResponder else { return false }
         guard event.type == .keyDown else { return false }
         if !hasEffectiveKeyboardFocus,
            !isCompetingFirstResponder(window?.firstResponder) {
@@ -1756,7 +1765,7 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     }
 
     func ensureFirstResponder() {
-        guard !isParkedForPreview else { return }
+        guard acceptsFirstResponder else { return }
         guard let window, window.isKeyWindow else { return }
         if window.firstResponder === self {
             if !focused {
@@ -2077,7 +2086,7 @@ extension TerminalSurfaceView {
     }
 
     package var hasEffectiveKeyboardFocus: Bool {
-        guard !isParkedForPreview,
+        guard acceptsFirstResponder,
               let window, window.isKeyWindow,
               window.attachedSheet == nil
         else { return false }
