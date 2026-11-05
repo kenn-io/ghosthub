@@ -257,6 +257,12 @@ display text, in that order. Selection, reconnect, and
 restoration use the host, backend, and address, so a TUI session with the same
 name is a separate target.
 
+Each desktop terminal pane has its own core address and sidebar row. Split
+panes in the same desktop tab share the same `where` value, so their displayed
+titles can match; the address beneath each title distinguishes them. Attaching
+opens only the selected terminal, with no split geometry or desktop tab
+grouping. See the [user guide's split limitation](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
+
 Host inventory lists TUI and core sessions through one SSH lease. A failed
 backend preserves the other backend's rows and supplies a host warning. Missing
 executables are silent. Successful TUI discovery enables session creation even

@@ -103,7 +103,8 @@ the latest stable release. Read about
 [stable and nightly builds](https://ghosthub.ai/docs/getting-started/#release-and-nightly-builds)
 before trying them.
 
-Unreleased macOS builds also open terminals from the newer Herdr desktop app.
+Unreleased macOS builds also open individual terminals from the newer Herdr
+desktop app. Its [split layout stays in Herdr desktop](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
 See [Herdr desktop terminals](https://ghosthub.ai/docs/sessions/#herdr-desktop-terminals)
 for setup and scope.
 

@@ -64,6 +64,10 @@ numbered sibling navigation instead.
 New tmux Session, New Herdr TUI Session, and New Zellij Session remain available
 in menus and the Command Palette but are unbound by default.
 
+Herdr desktop terminals do not support Ghosthub's Split actions. See
+[Herdr desktop splits](sessions.md#herdr-desktop-splits) for how existing panes
+appear and how to switch between them.
+
 Standard macOS commands are fixed rather than configurable in Ghosthub. These
 include Settings (++cmd+comma++), New Window (++cmd+n++), New Tab (++cmd+t++),
 Close (++cmd+w++), Close Window (++shift+cmd+w++), Quit (++cmd+q++), and the
