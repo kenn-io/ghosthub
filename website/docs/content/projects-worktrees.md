@@ -321,12 +321,18 @@ Idle worktrees also open with tmux's `destroy-unattached` option enabled.
 KWT keeps the new session alive during setup, then restores the session's
 captured policy when its first client attaches.
 
-To remove an ordinary remote worktree, open its **⋯** menu and choose
+To remove a remote worktree, open its **⋯** menu and choose
 **Remove Worktree**. Review the worktree and host, then select **Remove
 Worktree** to end its confirmed session and delete the checkout. The Git branch
 is kept. Cancel leaves both the checkout and session intact.
 
 ![Confirm removal of a remote worktree in the native Rust application](/docs/assets/guide-rust-remove-worktree.png)
+
+Imported PR worktrees offer the same action, whether or not their terminal is
+open. Ghosthub checks their protected socket and captures the session identity
+for confirmation.
+
+![Confirm removing an imported PR worktree over SSH](/docs/assets/guide-rust-remove-protected-worktree.png)
 
 For a worktree with uncommitted changes, Ghosthub shows a warning and an explicit
 **Force Remove Worktree** button. This permanently discards its staged, unstaged,
@@ -347,6 +353,5 @@ project registration, local host runtime, or SSH connection changes, refresh the
 the removal again. KWT also refuses removal while the workspace session name
 remains on either shared tmux server. Failed change inspection blocks removal.
 
-Killing or removing protected worktrees and registering directories through the
-remote Rust UI are still in development. Arbitrary named SSH sockets are not
-supported.
+Registering directories through the remote Rust UI is still in development.
+Arbitrary named SSH sockets are not supported.

@@ -1,5 +1,7 @@
 use super::*;
 
+mod protected;
+
 struct Target {
     project: workspace::ProjectItem,
     worktree: workspace::WorktreeItem,

@@ -543,10 +543,22 @@ its row menu. Ghosthub reads its current identity on the exact socket before
 showing **Kill Session**, then checks that identity again inside tmux when the
 user confirms. A replacement session or changed SSH connection invalidates the
 confirmation. Success closes matching clients in every window; the checkout and
-sessions on other sockets remain intact. Protected checkout removal remains
-separate work.
+sessions on other sockets remain intact.
 
 ![Confirm killing a protected PR session over SSH](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-protected-kill.png)
+
+Registered protected checkouts also offer **Remove Worktree**, including when
+no terminal is open. Confirmation captures the session on the protected socket
+and inspects checkout changes. Removal checks the project, checkout generation,
+connection, and session identity again before killing that session and asking
+KWT to remove the checkout. Dirty checkouts require explicit force confirmation.
+KWT checks session absence on the protected endpoint and both shared servers;
+a new session or an unexpected protected-server topology prevents deletion.
+Success removes the row and matching presentations across scenes while keeping
+the Git branch. The live SSH gate covers Cancel, force review, new and replacement
+sessions, idle removal, and preservation of unrelated sessions.
+
+![Confirm removing a protected PR worktree over SSH](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remove-protected-worktree.png)
 
 ![An imported PR worktree opened over SSH](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-pr-worktree.png)
 
@@ -1864,8 +1876,8 @@ The Windows WSL slice remains independently tested throughout this work.
    ordinary worktree opening, branch-backed creation, and confirmed ordinary
    worktree removal, including explicit force removal of dirty ordinary SSH
    worktrees, also ship. Remote PR listing/import opens results through
-   KWT's protected attachment path. Follow-on work adds protected worktree Kill/removal,
-   transport recovery, and remote Windows.
+   KWT's protected attachment path. Protected worktrees support confirmed Kill
+   and removal. Follow-on work adds transport recovery and remote Windows.
 5. Persistence and restoration add the coalescing writer, host settings,
    attach-only descriptors, bounded pending restoration, and inventory-only
    cold-start reconciliation.

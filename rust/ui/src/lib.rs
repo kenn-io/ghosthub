@@ -7653,11 +7653,14 @@ impl RootView {
                 let is_retained = retained
                     .iter()
                     .any(|retained| kwt_selection_matches_presentation(&selection, retained));
-                let endpoint_is_resolved = (!host.is_ssh()
-                    || (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
-                        && matches!(worktree.tmux_socket_name(), None | Some("kwt"))))
-                    && (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
-                        || worktree.tmux_socket_name().is_some());
+                let endpoint_is_resolved = match worktree.tmux_attach_mode() {
+                    KwtTmuxAttachMode::Direct => {
+                        !host.is_ssh() || matches!(worktree.tmux_socket_name(), None | Some("kwt"))
+                    }
+                    KwtTmuxAttachMode::Protected => worktree
+                        .tmux_socket_name()
+                        .is_some_and(|name| !name.is_empty()),
+                };
                 let open_mode = worktree_row_open_mode(host, worktree, is_active || is_retained);
                 let can_open = open_mode != WorktreeOpenMode::Disabled;
                 let can_kill = can_kill_worktree(host, worktree, is_active || is_retained);

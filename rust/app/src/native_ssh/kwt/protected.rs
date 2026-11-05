@@ -612,7 +612,9 @@ fn protected_kill_rejects_a_reused_name_before_confirmation() {
     fixture.workspace.close();
 }
 
-fn imported_worktree(fixture: &Fixture) -> (workspace::ProjectItem, workspace::WorktreeItem) {
+pub(super) fn imported_worktree(
+    fixture: &Fixture,
+) -> (workspace::ProjectItem, workspace::WorktreeItem) {
     fixture.connect();
     wait_kwt_ready(fixture);
     let project_path = fixture.root.join("orbit 'review'");
