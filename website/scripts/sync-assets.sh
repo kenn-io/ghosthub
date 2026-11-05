@@ -36,6 +36,7 @@ assets=(
   guide-find.png
   guide-session-previews.png
   guide-session-activity.png
+  guide-agent-attention.png
   guide-session-rename.png
   guide-hosts.png
   guide-keyboard.png

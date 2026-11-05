@@ -1036,8 +1036,9 @@ and subagent events, do nothing. A failing hook never blocks the agent.
 
 POSIX discovery reads the option in the same command as `list-sessions` with
 `list-panes -a -f '#{@kwt_agent}'` and attaches each pane to its session by
-socket and session ID, so the dot updates on the inventory poll (about every
-thirty seconds). A failed read leaves sessions without agent state. Native
+socket and session ID. The dot therefore follows tmux inventory refresh: when
+the app becomes active and every thirty seconds while it stays active. A
+failed read leaves sessions without agent state. Native
 Windows discovery does not read agent state.
 
 A session shows approval first, then input, then a finished turn. A finished

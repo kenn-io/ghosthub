@@ -196,6 +196,30 @@ capture_session_rename() {
   dismiss_sheet
 }
 
+capture_agent_attention() {
+  # Write the state kwt's agent hooks record on the demo socket only: one
+  # session waits for approval, another finished an unviewed turn. Inventory
+  # refreshes when the app becomes active and every thirty seconds while it
+  # stays active, so write the state before the palette activates the demo.
+  local socket="$scratch/tmux/tmux-$(id -u)/default"
+  local now
+  now="$(date +%s)"
+  tmux -S "$socket" set-option -p -t '=release-watch:' @kwt_agent "approval $now claude"
+  tmux -S "$socket" set-option -p -t '=test-matrix:' @kwt_agent "done $now codex"
+  palette "add-session-filters"
+  sleep 35
+  capture_state guide-agent-attention.png
+  tmux -S "$socket" set-option -p -u -t '=release-watch:' @kwt_agent
+  tmux -S "$socket" set-option -p -u -t '=test-matrix:' @kwt_agent
+}
+
+if [[ "${GHOSTHUB_DEMO_AGENT_ATTENTION_ONLY:-}" == "1" ]]; then
+  echo "==> guide: agent attention dots"
+  capture_agent_attention
+  echo "captured agent attention website asset -> $out_dir"
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_HERDR_CORE_ONLY:-}" == "1" ]]; then
   demo_input press "web-app / desktop-review"
   sleep 3
@@ -626,5 +650,8 @@ tmux -S "$demo_tmux_socket" send-keys -t '=scratch:' \
   'clear; for f in vault index threads search; do printf "compacting %s… done\n" "$f"; done; seq 1 40 | sed "s/^/segment /"' Enter
 sleep 24
 capture_state guide-session-activity.png
+
+echo "==> guide: agent attention dots"
+capture_agent_attention
 
 echo "captured website asset set -> $out_dir"

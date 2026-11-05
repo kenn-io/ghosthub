@@ -298,6 +298,8 @@ you a question, or it finished its turn. The native tab whose current session
 needs you shows the same dot beside its shortcut. Hover the dot to see which
 agent and why.
 
+![Ghosthub sidebar with blue dots beside two tmux sessions whose agents need attention while another session is selected](/docs/assets/guide-agent-attention.png)
+
 A finished turn clears once you view that session in the front window.
 Permission requests and questions stay marked until the agent continues.
 
@@ -308,9 +310,9 @@ To turn this on for a host:
 3. In Codex, open `/hooks` once to trust the new hooks.
 
 Ghosthub installs hooks for each supported agent already set up on that host,
-including Claude Code, Codex, Gemini CLI, and Cursor. The dot follows the
-sidebar's inventory refresh, so it can take up to about thirty seconds to
-appear. Native Windows hosts and Herdr and Zellij sessions do not show agent
+including Claude Code, Codex, Gemini CLI, and Cursor. Dots refresh when you
+switch to Ghosthub and about every thirty seconds while it stays in front.
+Native Windows hosts and Herdr and Zellij sessions do not show agent
 dots yet.
 
 ## Reopen an exited standalone session
