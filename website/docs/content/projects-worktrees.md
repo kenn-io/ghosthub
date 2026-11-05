@@ -288,7 +288,7 @@ then confirm **Kill Session**. You can also kill a retained terminal after switc
 away, including from its fallback session row if the project was unregistered.
 Ghosthub closes matching terminals in every window and leaves the checkout
 intact. Cancel leaves the session running. If the session was replaced or the
-SSH connection changed, refresh the host and review a new confirmation.
+SSH connection changed, choose Kill again and review the new confirmation.
 
 ![Confirm killing a protected PR session over SSH](/docs/assets/guide-rust-protected-kill.png)
 

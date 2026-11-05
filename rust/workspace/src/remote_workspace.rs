@@ -11,6 +11,46 @@ use crate::{
 };
 use host::RemoteTmuxServer;
 
+#[derive(Eq, Hash, PartialEq)]
+pub(crate) struct KillKey {
+    host_id: String,
+    endpoint: String,
+    route_identity: String,
+    socket: String,
+    session: String,
+}
+
+impl KillKey {
+    fn new(selection: &SessionSelection, snapshot: &RemoteTmuxSnapshot) -> Self {
+        Self {
+            host_id: selection.host_id().to_owned(),
+            endpoint: snapshot.endpoint().to_owned(),
+            route_identity: snapshot.route_identity().to_owned(),
+            socket: selection
+                .tmux_socket_name()
+                .expect("protected socket")
+                .to_owned(),
+            session: selection.session().to_owned(),
+        }
+    }
+}
+
+// The session operation lane keeps this advance ordered with queued opens.
+pub(crate) fn record_kill(runtime: &runtime::Runtime, request: &crate::RemoteTmuxAttachRequest) {
+    if request.selection.tmux_attach_mode() == Some(KwtTmuxAttachMode::Protected) {
+        let mut revisions = runtime
+            .protected_tmux_kills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let revision = revisions
+            .entry(KillKey::new(&request.selection, &request.snapshot))
+            .or_default();
+        *revision = revision
+            .checked_add(1)
+            .expect("protected Kill revision exhausted");
+    }
+}
+
 pub(crate) fn capture_kill(
     scene: &Scene,
     selection: &SessionSelection,
@@ -88,6 +128,7 @@ struct Request {
     selection: SessionSelection,
     target: Target,
     prior_session: Option<session::DiscoveredSession>,
+    kill_revision: Option<(KillKey, u64)>,
 }
 
 enum Target {
@@ -264,12 +305,25 @@ pub(super) fn open_worktree(
             .ok_or_else(|| {
                 WorkspaceError::new("The worktree identity changed; refresh and try again")
             })?;
+        let kill_revision = (mode == KwtTmuxAttachMode::Protected).then(|| {
+            let key = KillKey::new(&selection, &context.snapshot);
+            let revision = scene
+                .runtime
+                .protected_tmux_kills
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&key)
+                .copied()
+                .unwrap_or_default();
+            (key, revision)
+        });
         Request {
             host_id: host_id.to_owned(),
             connection_generation: entry.generation,
             host: context.host.clone(),
             snapshot: context.snapshot.clone(),
             selection,
+            kill_revision,
             target: Target::Worktree {
                 project: project.clone(),
                 worktree: worktree.clone(),
@@ -487,6 +541,7 @@ pub(super) fn open_directory(
             host: context.host.clone(),
             snapshot: context.snapshot.clone(),
             selection: selection.clone(),
+            kill_revision: None,
             target: Target::Directory(directory.clone()),
             prior_session: context
                 .snapshot
@@ -558,6 +613,21 @@ fn run(
         request.snapshot = snapshot;
         if !scene::remote_attachment_is_current(scene, &host_id, navigation, cancellation) {
             return Ok(());
+        }
+        if let Some((key, revision)) = &request.kill_revision
+            && scene
+                .runtime
+                .protected_tmux_kills
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(key)
+                .copied()
+                .unwrap_or_default()
+                != *revision
+        {
+            return Err(WorkspaceError::new(
+                "The protected session was killed after this request; open it again to restart",
+            ));
         }
         let kwt_inventory = crate::remote_kwt::reserve_workspace(
             scene,

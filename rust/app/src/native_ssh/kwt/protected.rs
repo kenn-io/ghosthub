@@ -376,6 +376,94 @@ fn kills_protected_sessions_without_touching_other_servers() {
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn protected_kill_invalidates_an_open_queued_in_another_scene() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::protected::protected_kill_invalidates_an_open_queued_in_another_scene",
+    ) else {
+        return;
+    };
+    // Pause the real Kill command after it owns the session operation lane.
+    let wrapper = fixture.root.join("tmux-kill-gate");
+    std::fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+case "$*" in
+    *"kill-session "*)
+        touch "$HOME/kill-started"
+        while ! test -e "$HOME/release-kill"; do sleep 0.02; done
+        ;;
+esac
+exec /usr/bin/tmux "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut draft = fixture.workspace.configured_ssh_hosts()[0].draft().clone();
+    wrapper.to_str().unwrap().clone_into(&mut draft.tmux_binary);
+    fixture
+        .workspace
+        .save_ssh_host(Some(&fixture.host_id), &draft)
+        .unwrap();
+    let (_, row) = imported_worktree(&fixture);
+    let socket = row.tmux_socket_name().unwrap();
+    let name = row.session_name();
+    let selection = SessionSelection::kwt_workspace(
+        &fixture.host_id,
+        &fixture.endpoint,
+        name,
+        row.tmux_attach_mode(),
+        Some(socket.to_owned()),
+        row.path(),
+        row.generation().map(str::to_owned),
+    );
+    fixture.workspace.switch_session(&selection).unwrap();
+    fixture.tmux_shell(name, "before-queued-open");
+    fixture.workspace.request_session_kill(&selection).unwrap();
+    fixture.wait(|_| fixture.workspace.session_kill_confirmation().is_some());
+    fixture.workspace.confirm_session_kill().unwrap();
+    fixture.wait(|_| fixture.root.join("home/kill-started").exists());
+
+    let other = fixture.open_scene();
+    other.workspace.switch_session(&selection).unwrap();
+    std::fs::write(fixture.root.join("home/release-kill"), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let mut rejected = false;
+        for event in other.workspace.drain_events().0 {
+            if let WorkspaceEvent::Error(message) = event {
+                assert!(
+                    message.contains("session was killed after this request"),
+                    "{message}"
+                );
+                rejected = true;
+            }
+        }
+        assert!(
+            other.workspace.snapshot().active_selection().is_none(),
+            "queued open recreated the killed session"
+        );
+        if rejected {
+            break;
+        }
+        assert!(Instant::now() < deadline, "queued open did not settle");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let gone = Command::new("/usr/bin/tmux")
+        .env_remove("TMUX_TMPDIR")
+        .args(["-L", socket, "has-session", "-t", &format!("={name}")])
+        .output()
+        .unwrap();
+    assert!(!gone.status.success(), "queued open recreated the session");
+
+    // A new user request after Kill is allowed to create the session again.
+    other.workspace.switch_session(&selection).unwrap();
+    other.tmux_shell(name, "explicit-open-after-kill");
+    fixture.workspace.close();
+    other.workspace.close();
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 fn protected_kill_rejects_a_replaced_session() {
     let Some(fixture) =
         Fixture::isolated("native_ssh::kwt::protected::protected_kill_rejects_a_replaced_session")

@@ -4128,6 +4128,7 @@ impl Workspace {
                     discovery_cancel: Mutex::new(None),
                     event_drain: Mutex::new(()),
                     zellij_kills: Mutex::new(ZellijKillState::default()),
+                    protected_tmux_kills: Mutex::new(HashMap::new()),
                     pump_started: AtomicBool::new(false),
                     pump_scheduling: Mutex::new(()),
                     herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
@@ -4319,6 +4320,7 @@ impl Workspace {
                 discovery_cancel: Mutex::new(None),
                 event_drain: Mutex::new(()),
                 zellij_kills: Mutex::new(ZellijKillState::default()),
+                protected_tmux_kills: Mutex::new(HashMap::new()),
                 pump_started: AtomicBool::new(false),
                 pump_scheduling: Mutex::new(()),
                 herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
@@ -4378,6 +4380,7 @@ impl Workspace {
                     discovery_cancel: Mutex::new(None),
                     event_drain: Mutex::new(()),
                     zellij_kills: Mutex::new(ZellijKillState::default()),
+                    protected_tmux_kills: Mutex::new(HashMap::new()),
                     pump_started: AtomicBool::new(false),
                     pump_scheduling: Mutex::new(()),
                     herdr_lifecycle: Mutex::new(HerdrLifecycleState::default()),
@@ -8074,6 +8077,7 @@ impl Workspace {
     }
 
     fn finish_remote_tmux_kill(&self, request: &RemoteTmuxAttachRequest) {
+        remote_workspace::record_kill(&self.scene.runtime, request);
         let matches_key = |key: &RemotePresentationKey| {
             key.host_id == request.host_id
                 && key.endpoint == request.snapshot.endpoint()

@@ -71,8 +71,10 @@ pub(crate) struct Runtime {
     /// inbox read, the pump is structurally the only internal consumer of
     /// worker events.
     pub(crate) event_drain: Mutex<()>,
-    /// Latched once the background event pump is scheduled.
     pub(crate) zellij_kills: Mutex<ZellijKillState>,
+    /// Successful protected kills invalidate earlier opens for the same endpoint.
+    pub(crate) protected_tmux_kills: Mutex<HashMap<crate::remote_workspace::KillKey, u64>>,
+    /// Latched once the background event pump is scheduled.
     pub(crate) pump_started: AtomicBool,
     /// Serializes pump scheduling so `pump_started` is truthful (see
     /// `start_event_pump`).
