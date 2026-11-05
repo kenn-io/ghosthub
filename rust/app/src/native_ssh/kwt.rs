@@ -2,6 +2,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 mod protected;
+mod pull_request;
 mod removal;
 
 #[test]
@@ -292,6 +293,7 @@ fn wait_worktree_event(fixture: &Fixture, operation: u64) -> WorkspaceEvent {
         for event in fixture.workspace.drain_events().0 {
             match &event {
                 WorkspaceEvent::KwtBranchesLoaded { operation_id, .. }
+                | WorkspaceEvent::KwtPullRequestsLoaded { operation_id, .. }
                 | WorkspaceEvent::KwtWorktreeRemoved { operation_id, .. }
                 | WorkspaceEvent::KwtWorktreeOperationFailed { operation_id, .. }
                     if *operation_id == operation =>

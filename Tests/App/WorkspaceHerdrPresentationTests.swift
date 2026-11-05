@@ -67,6 +67,35 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("reconnecting an ended core terminal retires its stale presentation")
+    func reconnectingEndedCoreTerminalClosesPresentation() async throws {
+        var environment = try environment()
+        let session = HerdrSessionSummary(
+            name: "t7", isDefault: false, state: .running, backend: .core
+        )
+        environment.snapshot.hosts[0].herdrSessions = [session]
+        let inventory = Mutex<HerdrDiscoveryResult>(.available([session], tuiAvailable: false))
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeHerdrModel(
+            environment, store: store,
+            validationDiscovery: { _, _, _ in inventory.withLock { $0 } }
+        )
+        let selection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID, name: "t7", backend: .core
+        )
+        try await model.openBorrowedHerdrSession(selection)
+        await launchHerdrSurface(model, store: store)
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 0)
+        #expect(model.activeBorrowedHerdrSelection == selection)
+
+        inventory.withLock { $0 = .available([], tuiAvailable: false) }
+        await model.retryBorrowedHerdrSession(selection)
+
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        await model.shutdown()
+    }
+
     @Test("core terminals with TUI names keep distinct clients")
     func coreAndTUIIdentity() async throws {
         var environment = try environment()
@@ -1620,11 +1649,17 @@ struct WorkspaceHerdrPresentationTests {
         await launchHerdrSurface(model, store: store)
         let close = try #require(store.surface.closeObservers.values.first)
         close(false, 9)
+        let connectionAfterExit = try #require(model.activeBorrowedHerdrConnectionState)
 
         await model.retryBorrowedHerdrSession(selection)
 
         #expect(discoveries.callCount == 2)
-        #expect(store.removedKeys.count == 1)
+        if backend == .core {
+            #expect(model.activeBorrowedHerdrSelection == nil)
+        } else {
+            #expect(model.activeBorrowedHerdrSelection == selection)
+            #expect(model.activeBorrowedHerdrConnectionState == connectionAfterExit)
+        }
         await model.shutdown()
     }
 

@@ -4796,7 +4796,6 @@ impl RootView {
                 )
             }
             ProjectDialog::NewWorktree {
-                host_id,
                 project_name,
                 branch,
                 mode,
@@ -4845,35 +4844,23 @@ impl RootView {
                                 this.switch_new_worktree_mode(NewWorktreeMode::Branch, cx);
                             })),
                     )
-                    .when(
-                        self.workspace
-                            .snapshot()
-                            .hosts()
-                            .iter()
-                            .any(|host| host.id() == host_id && !host.is_ssh()),
-                        |tabs| {
-                            tabs.child(
-                                div()
-                                    .id("new-worktree-pr-mode")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_sm()
-                                    .cursor_pointer()
-                                    .bg(rgb(if *mode == NewWorktreeMode::PullRequest {
-                                        0x25_3549
-                                    } else {
-                                        0x13_161c
-                                    }))
-                                    .text_xs()
-                                    .child("Pull Request")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.switch_new_worktree_mode(
-                                            NewWorktreeMode::PullRequest,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                        },
+                    .child(
+                        div()
+                            .id("new-worktree-pr-mode")
+                            .px_3()
+                            .py_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .bg(rgb(if *mode == NewWorktreeMode::PullRequest {
+                                0x25_3549
+                            } else {
+                                0x13_161c
+                            }))
+                            .text_xs()
+                            .child("Pull Request")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.switch_new_worktree_mode(NewWorktreeMode::PullRequest, cx);
+                            })),
                     );
                 let mut body = div().m_4().flex().flex_col().gap_2().child(tabs).child(
                     div()

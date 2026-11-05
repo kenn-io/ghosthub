@@ -266,10 +266,15 @@ tmux clients available for reuse. A same-name session on the other server remain
 
 ![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
 
+To import a pull request, select **+** beside the remote project, then
+**Pull Request**. Search the open PRs and choose one, or enter its number or URL.
+Select **Import** to create its checkout and open the terminal. GitHub access
+uses `gh auth login` or `KWT_GITHUB_TOKEN` on the remote host.
+
+![Import a pull request into a remote Rust project](/docs/assets/guide-rust-remote-pr-import.png)
+
 Already imported pull-request worktrees also open from the remote project tree.
-Import the pull request with `kwt pr import` on the remote host, refresh that
-host in Ghosthub, and select the worktree. KWT opens its protected terminal
-without running the checkout's configured layout. Switching away and back
+KWT opens its protected terminal without running the checkout's configured layout. Switching away and back
 reuses the terminal, even if the checkout is removed or its project is
 unregistered. The open terminal remains available in the session list.
 Detaching leaves the session running; opening a new client still requires the
@@ -332,6 +337,6 @@ project registration, local host runtime, or SSH connection changes, refresh the
 the removal again. KWT also refuses removal while the workspace session name
 remains on either shared tmux server. Failed change inspection blocks removal.
 
-Importing pull requests, killing or removing protected worktrees, and registering
-directories through the remote Rust UI are still in development. Arbitrary named
-SSH sockets are not supported.
+Killing or removing protected worktrees and registering directories through the
+remote Rust UI are still in development. Arbitrary named SSH sockets are not
+supported.

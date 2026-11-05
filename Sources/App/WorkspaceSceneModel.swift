@@ -9985,6 +9985,9 @@ final class WorkspaceSceneModel: ObservableObject {
         guard probe.outcome == .present else {
             switch probe.outcome {
             case .absent, .unavailable:
+                if selection.backend == .core, probe.outcome == .absent {
+                    closeBorrowedHerdrSession(selection)
+                }
                 refreshHerdrInventory(hostID: selection.hostID)
             case .failure(.cancelled):
                 break

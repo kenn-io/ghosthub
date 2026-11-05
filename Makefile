@@ -147,6 +147,8 @@ help:
 		'      Run the isolated WSL2 terminal and workspace acceptance suites.' \
 		'  make rust-test-ssh-controller-live GHOSTHUB_KWT_CONTROLLER_BUNDLE_TEST=/absolute/path/to/kwt.exe' \
 		'      Validate the pinned native KWT SSH route contract without connecting.' \
+		'  make rust-test-ssh-pr-live' \
+		'      Test GitHub imports over isolated SSH; requires KWT_GITHUB_TOKEN.' \
 		'  make rust-test-ssh-live' \
 		'      Exercise native Linux SSH attachment with a disposable OpenSSH server.' \
 		'  make rust-deny' \
@@ -724,7 +726,14 @@ rust-test-ssh-live: ensure-kwt ensure-kwt-variants
 		{ echo "Set HERDR_BINARY_PATH to a Linux Herdr executable" >&2; exit 1; }
 	@test -n "$(ZELLIJ_BINARY_PATH)" -a -x "$(ZELLIJ_BINARY_PATH)" || \
 		{ echo "Set ZELLIJ_BINARY_PATH to a Linux Zellij executable" >&2; exit 1; }
-	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib native_ssh:: -- --ignored
+	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib native_ssh:: -- --ignored --skip imports_pull_requests_over_ssh
+
+.PHONY: rust-test-ssh-pr-live
+rust-test-ssh-pr-live: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
+rust-test-ssh-pr-live: export GHOSTHUB_KWT_VARIANTS_DIR ?= $(shell realpath -m -- "$(KWT_VARIANTS_DIR)")
+rust-test-ssh-pr-live: ensure-kwt ensure-kwt-variants
+	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib \
+		native_ssh::kwt::pull_request::imports_pull_requests_over_ssh -- --ignored --exact --nocapture
 
 rust-lint:
 	@cd "$(RUST_DIR)" && $(CARGO) check --workspace --all-targets --locked
