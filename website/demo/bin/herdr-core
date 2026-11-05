@@ -7,7 +7,7 @@ scratch="${GHOSTHUB_DEMO_SCRATCH:?GHOSTHUB_DEMO_SCRATCH is not set}"
 
 if [[ "${1:-}" == "ls" && "${2:-}" == "--json" && "$#" -eq 2 ]]; then
   if [[ -f "$scratch/herdr-core-enabled" ]]; then
-    printf '%s\n' '{"terminals":[{"address":"t7","name":"desktop-review","state":"live"},{"address":"t8","name":"build-watch","state":"live"}]}'
+    printf '%s\n' '{"terminals":[{"address":"t7","agent":"Claude","where":"web-app / desktop-review","state":"live"},{"address":"t8","name":"build-watch","state":"live"}]}'
   else
     printf '%s\n' '{"terminals":[]}'
   fi

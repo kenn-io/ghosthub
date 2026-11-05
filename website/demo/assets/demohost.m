@@ -814,6 +814,27 @@ static void DemoCapture(NSString *path, BOOL matrix, BOOL exactWindow) {
                             : @"Find result did not match the requested state"];
             });
       });
+    } else if ([action isEqualToString:@"next-sibling"] ||
+               [action isEqualToString:@"previous-sibling"] ||
+               [action isEqualToString:@"close-session"]) {
+      BOOL close = [action isEqualToString:@"close-session"];
+      BOOL previous = [action isEqualToString:@"previous-sibling"];
+      NSEventModifierFlags modifiers = close ? NSEventModifierFlagCommand
+                                            : NSEventModifierFlagControl;
+      if (previous) modifiers |= NSEventModifierFlagShift;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+      [NSApp activateIgnoringOtherApps:YES];
+#pragma clang diagnostic pop
+      [DemoRootWindow() makeKeyAndOrderFront:nil];
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                     dispatch_get_main_queue(), ^{
+        BOOL sent = DemoSendKey(close ? @"w" : previous ? @"\x19" : @"\t",
+                               close ? 13 : 48, modifiers);
+        [self acknowledge:requestID
+                  success:sent
+                  message:sent ? @"shortcut sent" : @"shortcut has no window"];
+      });
     } else if ([action isEqualToString:@"text"]) {
       BOOL inserted = DemoInsertText(text);
       [self acknowledge:requestID

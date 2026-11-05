@@ -78,9 +78,9 @@ public enum KeyboardNavigationModel {
                     return targets
                 }
             }
-        case .herdrSession:
+        case let .herdrSession(_, _, backend):
             for section in sections {
-                let running = section.herdrSessionRows.filter {
+                let running = section.herdrRows(for: backend).filter {
                     $0.herdrSessionState == .running
                 }
                 if let targets = matchingTargets(

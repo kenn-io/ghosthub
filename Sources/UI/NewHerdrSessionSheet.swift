@@ -27,10 +27,10 @@ enum HerdrSessionName {
     ) -> String {
         let name = normalized(value)
         if name.isEmpty {
-            return "Name the Herdr session you want to create."
+            return "Name the Herdr TUI session you want to create."
         }
         if existingNames.contains(name) {
-            return "A Herdr session named “\(name)” already exists on this host. Restart it instead."
+            return "A Herdr TUI session named “\(name)” already exists on this host. Restart it instead."
         }
         if !isValid(name) {
             return "Use 1–64 ASCII letters, numbers, periods, underscores, or hyphens."
@@ -84,7 +84,7 @@ struct NewHerdrSessionSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("New Herdr session")
+                Text("New Herdr TUI session")
                     .font(.headline)
                 Spacer()
                 NativePopupMenuButton(

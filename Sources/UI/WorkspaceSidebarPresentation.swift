@@ -416,6 +416,7 @@ struct WorkspaceWorktreeDisclosurePresentation: Equatable {
 enum WorkspaceSidebarInventorySection: Hashable {
     case tmuxSessions
     case herdrSessions
+    case herdrTerminals
     case zellijSessions
     case projects
 }
@@ -437,7 +438,9 @@ enum WorkspaceSidebarSectionActionModel {
         case .tmuxSessions:
             true
         case .herdrSessions:
-            host.herdrAvailable || !host.herdrSessions.isEmpty
+            host.herdrAvailable || host.herdrSessions.contains { $0.backend == .tui }
+        case .herdrTerminals:
+            host.herdrSessions.contains { $0.backend == .core }
         case .zellijSessions:
             host.zellijAvailable
         case .projects:
@@ -469,10 +472,12 @@ enum WorkspaceSidebarSectionActionModel {
                 accessibilityIdentifier:
                 "sidebar-section-action-herdr-\(host.id.uuidString)",
                 accessibilityLabel:
-                "New Herdr session on \(host.sidebarTitle)",
-                help: "New Herdr session…",
+                "New Herdr TUI session on \(host.sidebarTitle)",
+                help: "New Herdr TUI session…",
                 perform: { onNewHerdrSession(host) }
             )
+        case .herdrTerminals:
+            return nil
         case .zellijSessions:
             guard host.zellijAvailable else { return nil }
             return WorkspaceSidebarSectionAction(

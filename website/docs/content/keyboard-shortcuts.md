@@ -27,7 +27,8 @@ Sibling navigation is local to what you are currently using:
 - A directory workspace cycles through directory workspaces on the same host.
 - A standalone tmux session cycles through visible standalone tmux sessions on
   the same host.
-- A Herdr session cycles through running Herdr sessions on the same host.
+- A Herdr desktop terminal cycles through **Herdr Terminals** on the same host.
+- A Herdr TUI session cycles through running **Herdr TUI Sessions** on the same host.
 - A Zellij session cycles through active Zellij sessions on the same host.
 
 The order matches the sidebar, including custom ordering and visibility
@@ -51,8 +52,8 @@ numbered sibling navigation instead.
 | Hide or show the sidebar | ++cmd+b++ |
 | Create a worktree | ++shift+cmd+n++ |
 | Import a pull request | ++shift+cmd+i++ |
-| Split the active tmux or Herdr pane right | ++cmd+d++ |
-| Split the active tmux or Herdr pane down | ++shift+cmd+d++ |
+| Split the active tmux or Herdr TUI pane right | ++cmd+d++ |
+| Split the active tmux or Herdr TUI pane down | ++shift+cmd+d++ |
 | Reload configuration | ++shift+cmd+comma++ |
 | Open application log | ++option+cmd+l++ |
 | Find in the active terminal | ++cmd+f++ |
@@ -60,7 +61,7 @@ numbered sibling navigation instead.
 | Find previous, toward newer history | ++shift+cmd+g++ |
 | Hide the Find bar | ++shift+cmd+f++ |
 
-New tmux Session, New Herdr Session, and New Zellij Session remain available
+New tmux Session, New Herdr TUI Session, and New Zellij Session remain available
 in menus and the Command Palette but are unbound by default.
 
 Standard macOS commands are fixed rather than configurable in Ghosthub. These

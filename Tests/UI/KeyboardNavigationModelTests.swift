@@ -61,6 +61,8 @@ struct KeyboardNavigationModelTests {
                     .init(name: "running-a", isDefault: false, state: .running),
                     .init(name: "stopped", isDefault: false, state: .stopped),
                     .init(name: "running-z", isDefault: false, state: .running),
+                    .init(name: "t1", isDefault: false, state: .running, backend: .core),
+                    .init(name: "t2", isDefault: false, state: .running, backend: .core),
                 ],
                 zellijSessions: [
                     .init(name: "zellij-a"),
@@ -95,6 +97,12 @@ struct KeyboardNavigationModelTests {
         #expect(KeyboardNavigationModel.siblingTargets(
             for: .herdrSession(hostID: hostID, name: "stopped"), in: context
         ).isEmpty)
+        #expect(KeyboardNavigationModel.siblingTargets(
+            for: .herdrSession(hostID: hostID, name: "t1", backend: .core), in: context
+        ) == [
+            .herdrSession(hostID: hostID, name: "t1", backend: .core),
+            .herdrSession(hostID: hostID, name: "t2", backend: .core),
+        ])
         #expect(KeyboardNavigationModel.siblingTargets(
             for: .zellijSession(hostID: hostID, name: "zellij-a"), in: context
         ) == [

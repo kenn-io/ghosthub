@@ -2,7 +2,7 @@ import Foundation
 @testable import GhosthubUI
 import Testing
 
-@Suite("New Herdr session validation")
+@Suite("New Herdr TUI session validation")
 struct NewHerdrSessionSheetTests {
     @Test(
         "names follow Herdr's portable session contract",
@@ -26,6 +26,6 @@ struct NewHerdrSessionSheetTests {
         #expect(HerdrSessionName.validationMessage(
             " review ",
             existingNames: ["review"]
-        ) == "A Herdr session named “review” already exists on this host. Restart it instead.")
+        ) == "A Herdr TUI session named “review” already exists on this host. Restart it instead.")
     }
 }

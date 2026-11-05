@@ -8,9 +8,10 @@ test, and documentation-only changes are omitted.
 ### Added
 
 - Open terminals from the newer Herdr desktop app in Ghosthub on macOS,
-  locally or over SSH. Core terminals appear alongside older Herdr TUI
-  sessions. Closing the view leaves the program running; desktop spaces,
-  tabs, and terminal lifecycle remain in Herdr.
+  locally or over SSH. Find them by their desktop space and tab names under
+  **Herdr Terminals**, separate from **Herdr TUI Sessions**. Closing the view
+  leaves the program running; desktop spaces, tabs, and terminal lifecycle
+  remain in Herdr.
 
 ### Changed
 

@@ -5,6 +5,26 @@ import Testing
 
 @Suite("Herdr core inventory")
 struct HerdrCoreInventoryTests {
+    @Test("desktop space and tab names identify terminals without changing their address")
+    func desktopTerminalNames() {
+        for location in ["Checkout review / desktop-review", "Checkout review / ready"] {
+            let result = HerdrCoreInventory.parse(status: 0, stdout: """
+            GHOSTHUB_HC_JSON
+            {"terminals":[
+              {"address":"t1","agent":"sh","where":"\(location)","state":"live"},
+              {"address":"t2","name":"build-watch","agent":"sh","where":"\(location)","state":"live"},
+              {"address":"t3","agent":"Codex","where":"  ","state":"live"}
+            ]}
+            """, stderr: "")
+            guard case let .available(sessions, _, _) = result else {
+                Issue.record("Expected desktop terminals, received \(result)")
+                return
+            }
+            #expect(sessions.map(\.name) == ["t1", "t2", "t3"])
+            #expect(sessions.map(\.title) == [location, "build-watch", "Codex"])
+        }
+    }
+
     @Test("live local terminal addresses survive display name changes")
     func localTerminals() {
         let result = HerdrCoreInventory.parse(status: 0, stdout: """

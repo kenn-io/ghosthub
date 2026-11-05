@@ -606,6 +606,22 @@ struct WorkspaceSidebarView: View {
                     }
                 }
                 if WorkspaceSidebarSectionActionModel.isVisible(
+                    .herdrTerminals,
+                    host: section.host,
+                    hasProjects: !section.projects.isEmpty
+                ) {
+                    let terminalsKey = WorkspaceSidebarDisclosureState
+                        .herdrTerminals(section.host.id)
+                    sidebarGroupLabel("Herdr Terminals", disclosureKey: terminalsKey)
+                    if isExpanded(terminalsKey) {
+                        let rows = section.herdrRows(for: .core)
+                        let groupItems = sidebarDragItems(rows)
+                        ForEach(rows) { row in
+                            herdrSessionButton(row, groupItems: groupItems)
+                        }
+                    }
+                }
+                if WorkspaceSidebarSectionActionModel.isVisible(
                     .herdrSessions,
                     host: section.host,
                     hasProjects: !section.projects.isEmpty
@@ -613,7 +629,7 @@ struct WorkspaceSidebarView: View {
                     let herdrSessionsKey = WorkspaceSidebarDisclosureState
                         .herdrSessions(section.host.id)
                     sidebarGroupLabel(
-                        "Herdr Sessions",
+                        "Herdr TUI Sessions",
                         disclosureKey: herdrSessionsKey,
                         action: sectionAction(
                             for: .herdrSessions,
@@ -621,8 +637,9 @@ struct WorkspaceSidebarView: View {
                         )
                     )
                     if isExpanded(herdrSessionsKey) {
-                        let groupItems = sidebarDragItems(section.herdrSessionRows)
-                        ForEach(section.herdrSessionRows) { row in
+                        let rows = section.herdrRows(for: .tui)
+                        let groupItems = sidebarDragItems(rows)
+                        ForEach(rows) { row in
                             herdrSessionButton(
                                 row,
                                 groupItems: groupItems

@@ -188,7 +188,7 @@ public enum CommandPaletteModel {
             WorkspaceCommandItem(
                 id: "split-right",
                 title: "Split Right",
-                subtitle: "Split the active tmux or Herdr pane to the right.",
+                subtitle: "Split the active tmux or Herdr TUI pane to the right.",
                 shortcutAction: .splitRight,
                 shortcut: shortcuts[.splitRight],
                 action: .applicationShortcut(.splitRight)
@@ -196,7 +196,7 @@ public enum CommandPaletteModel {
             WorkspaceCommandItem(
                 id: "split-down",
                 title: "Split Down",
-                subtitle: "Split the active tmux or Herdr pane downward.",
+                subtitle: "Split the active tmux or Herdr TUI pane downward.",
                 shortcutAction: .splitDown,
                 shortcut: shortcuts[.splitDown],
                 action: .applicationShortcut(.splitDown)
@@ -433,7 +433,7 @@ public enum CommandPaletteModel {
             if host.herdrAvailable {
                 commands.append(WorkspaceCommandItem(
                     id: "new-herdr-session-\(host.id.uuidString)",
-                    title: "New Herdr session on \(host.name)",
+                    title: "New Herdr TUI session on \(host.name)",
                     subtitle: "Create and attach on \(host.commandPaletteSubtitle)",
                     keywords: [
                         "new", "create", "herdr", "session",
@@ -685,7 +685,7 @@ public enum CommandPaletteModel {
                 if backend == .core {
                     return [WorkspaceCommandItem(
                         id: "open-herdr-session-\(session.id)",
-                        title: "Open Herdr core terminal: \(row.title)",
+                        title: "Open Herdr terminal: \(row.title)",
                         subtitle: "\(name) on \(section.host.name)",
                         keywords: ["core", "terminal", "open", "attach", row.title] + keywords,
                         action: .openHerdrSession(session)
@@ -696,14 +696,14 @@ public enum CommandPaletteModel {
                     return [
                         WorkspaceCommandItem(
                             id: "open-herdr-session-\(session.id)",
-                            title: "Open Herdr session: \(name)",
+                            title: "Open Herdr TUI session: \(name)",
                             subtitle: "Attach on \(section.host.name).",
                             keywords: ["open", "attach"] + keywords,
                             action: .openHerdrSession(session)
                         ),
                         WorkspaceCommandItem(
                             id: "stop-herdr-session-\(session.id)",
-                            title: "Stop Herdr session: \(name)",
+                            title: "Stop Herdr TUI session: \(name)",
                             subtitle: "Stop every process on \(section.host.name).",
                             keywords: ["stop", "terminate"] + keywords,
                             action: .stopHerdrSession(session)
@@ -712,7 +712,7 @@ public enum CommandPaletteModel {
                 case .stopped:
                     var commands = [WorkspaceCommandItem(
                         id: "restart-herdr-session-\(session.id)",
-                        title: "Restart Herdr session: \(name)",
+                        title: "Restart Herdr TUI session: \(name)",
                         subtitle: "Restore its saved shape and attach on \(section.host.name).",
                         keywords: ["restart", "start", "attach"] + keywords,
                         action: .restartHerdrSession(session)
@@ -720,7 +720,7 @@ public enum CommandPaletteModel {
                     if row.herdrSessionIsDefault != true {
                         commands.append(WorkspaceCommandItem(
                             id: "delete-herdr-session-\(session.id)",
-                            title: "Delete Herdr session: \(name)",
+                            title: "Delete Herdr TUI session: \(name)",
                             subtitle: "Permanently remove its saved state on \(section.host.name).",
                             keywords: ["delete", "remove"] + keywords,
                             action: .deleteHerdrSession(session)

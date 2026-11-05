@@ -315,6 +315,7 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
     case directoryWorkspace
     case tmuxSession
     case herdrSession
+    case herdrTerminal
     case zellijSession
 
     public var systemImageName: String {
@@ -337,6 +338,8 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
             return "terminal"
         case .herdrSession:
             return "rectangle.3.group"
+        case .herdrTerminal:
+            return "terminal"
         case .zellijSession:
             return "rectangle.split.3x1"
         }
@@ -346,6 +349,7 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
 public enum WorkspaceSidebarGroup: Equatable, Sendable {
     case tmuxSessions
     case herdrSessions
+    case herdrTerminals
     case zellijSessions
     case projects
 }
@@ -402,6 +406,13 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
     public var herdrSessionRows: [WorkspaceSidebarRow]
     public var zellijSessionRows: [WorkspaceSidebarRow]
 
+    public func herdrRows(for backend: HerdrBackend) -> [WorkspaceSidebarRow] {
+        herdrSessionRows.filter {
+            guard case let .herdrSession(_, _, rowBackend) = $0.target else { return false }
+            return rowBackend == backend
+        }
+    }
+
     public var id: UUID { host.id }
     public var isEmpty: Bool {
         projects.isEmpty
@@ -416,7 +427,10 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
         if !tmuxSessionRows.isEmpty {
             groups.append(.tmuxSessions)
         }
-        if !herdrSessionRows.isEmpty {
+        if !herdrRows(for: .core).isEmpty {
+            groups.append(.herdrTerminals)
+        }
+        if !herdrRows(for: .tui).isEmpty {
             groups.append(.herdrSessions)
         }
         if !zellijSessionRows.isEmpty {
@@ -896,11 +910,11 @@ public enum WorkspaceSidebarModel {
     ) -> WorkspaceSidebarRow {
         WorkspaceSidebarRow(
             target: .herdrSession(hostID: hostID, name: session.name, backend: session.backend),
-            icon: .herdrSession,
+            icon: session.backend == .core ? .herdrTerminal : .herdrSession,
             title: session.title,
-            subtitle: session.backend == .core ? "Herdr core · \(session.name)" : session
+            subtitle: session.backend == .core ? session.name : session
                 .state == .running
-                ? "Herdr session"
+                ? "Running"
                 : "Stopped",
             herdrSessionState: session.state,
             herdrSessionIsDefault: session.isDefault

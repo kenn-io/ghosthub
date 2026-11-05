@@ -37,7 +37,7 @@ reconnect is always a fresh attachment.
 The sidebar is a host-wide session navigator. Its **Projects** group shows
 repository hierarchies followed by flat registered-directory rows. It also
 shows directly discovered tmux sessions, running or stopped Herdr TUI sessions,
-live Herdr core terminals,
+live Herdr core terminals in **Herdr Terminals**, separately from **Herdr TUI Sessions**,
 and active Zellij sessions on each host, including sessions that were not
 created by Ghosthub or kwt. The four inventories are independent; kwt worktrees and directory workspaces
 remain tmux-backed. Users may hide matching standalone tmux sessions

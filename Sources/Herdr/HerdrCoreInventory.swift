@@ -43,7 +43,7 @@ public enum HerdrCoreInventory {
                   addresses.insert(terminal.address).inserted else {
                 return .failure(.malformedJSON)
             }
-            let title = [terminal.name, terminal.agent, terminal.address]
+            let title = [terminal.name, terminal.where, terminal.agent, terminal.address]
                 .compactMap { $0 }
                 .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             sessions.append(HerdrSessionSummary(
@@ -65,6 +65,7 @@ public enum HerdrCoreInventory {
         var address: String
         var name: String?
         var agent: String?
+        var `where`: String?
         var state: String
     }
 }

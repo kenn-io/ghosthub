@@ -25,10 +25,13 @@ struct CommandPaletteModelTests {
             .first)
         #expect(row.title == "review")
         #expect(WorkspaceSidebarRowActionModel.actions(for: row, in: snapshot).isEmpty)
-        #expect(WorkspaceSidebarSectionActionModel.isVisible(
+        #expect(!WorkspaceSidebarSectionActionModel.isVisible(
             .herdrSessions,
             host: host,
             hasProjects: false
+        ))
+        #expect(WorkspaceSidebarSectionActionModel.isVisible(
+            .herdrTerminals, host: host, hasProjects: false
         ))
     }
 
@@ -719,7 +722,7 @@ struct CommandPaletteModelTests {
         )
     }
 
-    @Test("running Herdr sessions expose searchable open and stop commands")
+    @Test("running Herdr TUI sessions expose searchable open and stop commands")
     func runningHerdrSessionCommands() throws {
         let host = HostSummary.fixture(
             name: "Build Box",
@@ -736,14 +739,14 @@ struct CommandPaletteModelTests {
         )
 
         let open = try #require(commands.first {
-            $0.title == "Open Herdr session: api"
+            $0.title == "Open Herdr TUI session: api"
         })
         #expect(open.action == .openHerdrSession(
             WorkspaceHerdrSessionSelection(hostID: host.id, name: "api")
         ))
         #expect(open.keywords.contains("Build Box"))
         let stop = try #require(commands.first {
-            $0.title == "Stop Herdr session: api"
+            $0.title == "Stop Herdr TUI session: api"
         })
         #expect(CommandPaletteModel.filteredCommands(
             commands,
