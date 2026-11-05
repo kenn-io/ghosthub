@@ -674,13 +674,31 @@ pub(super) fn imported_worktree(
     .unwrap();
     fixture.connect();
     wait_kwt_ready(fixture);
+    // SSH Ready can precede KWT refresh; wait for the newly seeded inventory.
+    fixture.wait(|snapshot| {
+        snapshot
+            .hosts()
+            .iter()
+            .filter(|host| host.id() == fixture.host_id)
+            .flat_map(workspace::HostItem::projects)
+            .filter(|project| project.path() == path)
+            .flat_map(workspace::ProjectItem::worktrees)
+            .any(|row| {
+                row.branch() == "pr-17"
+                    && row.tmux_attach_mode() == host::KwtTmuxAttachMode::Protected
+                    && row.tmux_socket_name().is_some()
+            })
+    });
     let snapshot = fixture.workspace.snapshot();
-    let project = &snapshot
+    let project = snapshot
         .hosts()
         .iter()
         .find(|h| h.id() == fixture.host_id)
         .unwrap()
-        .projects()[0];
+        .projects()
+        .iter()
+        .find(|project| project.path() == path)
+        .unwrap();
     let row = project
         .worktrees()
         .iter()
