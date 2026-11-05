@@ -28,9 +28,26 @@ if [ "${GHOSTHUB_SSH_FIXTURE:-}" = "" ]; then
     printf 'ghosthub::20000:0:99999:7:::\nsshd:!:20000:0:99999:7:::\n' > "$fixture/shadow"
     : > "$fixture/ssh_system_config"
 
+    # The opt-in GitHub contract test needs outbound HTTPS. All account, Git,
+    # process, and socket state remains private; sshd uses a fresh loopback port.
+    network=--unshare-net
+    port=2222
+    if [ -n "${GHOSTHUB_SSH_PR_TEST_PORT:-}" ]; then
+        test -n "${KWT_GITHUB_TOKEN:-}" || { echo "Set KWT_GITHUB_TOKEN" >&2; exit 2; }
+        case "$GHOSTHUB_SSH_PR_TEST_PORT" in *[!0-9]*) exit 2 ;; esac
+        port=$GHOSTHUB_SSH_PR_TEST_PORT
+        network=--share-net
+        printf '%s' "$KWT_GITHUB_TOKEN" > "$fixture/github-token"
+    fi
+    printf '%s' "$port" > "$fixture/port"
+
     # Rebind explicitly supplied library directories after hiding the host /tmp.
     # The client itself is staged so Cargo target directories under /tmp work.
     set -- -- /bin/sh "$fixture/fixture.sh" "$@"
+    if [ "$network" = --share-net ]; then
+        cp -f /etc/resolv.conf "$fixture/resolv.conf"
+        set -- --ro-bind "$fixture/resolv.conf" "$(realpath /etc/resolv.conf)" "$@"
+    fi
     old_ifs=$IFS
     IFS=:
     for library in ${LD_LIBRARY_PATH:-}; do
@@ -41,7 +58,7 @@ if [ "${GHOSTHUB_SSH_FIXTURE:-}" = "" ]; then
     IFS=$old_ifs
     env -i PATH=/usr/bin:/bin LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
         GHOSTHUB_SSH_FIXTURE="$fixture" \
-        bwrap --unshare-user --unshare-pid --unshare-net \
+        bwrap --unshare-user --unshare-pid "$network" \
         --unshare-uts --hostname ghosthub-fixture --die-with-parent \
         --ro-bind / / --tmpfs /tmp --bind "$fixture" "$fixture" \
         --tmpfs /run --proc /proc --dev /dev \
@@ -54,6 +71,7 @@ if [ "${GHOSTHUB_SSH_FIXTURE:-}" = "" ]; then
 fi
 
 root=$GHOSTHUB_SSH_FIXTURE
+port=$(cat "$root/port")
 export HOME="$root/home" SHELL=/bin/sh LANG=C.UTF-8 TERM=xterm-256color
 export KWT_HOME="$root/kwt" GHOSTHUB_HOME="$root/ghosthub"
 export GHOSTHUB_CONFIG_HOME="$root/config" GHOSTHUB_STATE_HOME="$root/state with spaces"
@@ -73,6 +91,9 @@ export XDG_DATA_HOME="$XDG_DATA_HOME" XDG_CACHE_HOME="$XDG_CACHE_HOME"
 export XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
 export ZELLIJ_CONFIG_DIR="$XDG_CONFIG_HOME/zellij"
 EOF
+fi
+if [ -f "$root/github-token" ]; then
+    printf '\nexport KWT_GITHUB_TOKEN="$(cat %s/github-token)"\n' "$root" >> "$HOME/.profile"
 fi
 if [ -x "$root/bin/herdr" ]; then
     mkdir -p "$XDG_CONFIG_HOME/herdr"
@@ -99,7 +120,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$root/client_key"
 ssh-keygen -q -t ed25519 -N '' -f "$root/host_key"
 cp -f "$root/client_key.pub" "$root/authorized_keys"
 cat > "$root/sshd_config" <<EOF
-Port 2222
+Port $port
 ListenAddress 127.0.0.1
 HostKey $root/host_key
 AuthorizedKeysFile $root/authorized_keys
@@ -115,7 +136,7 @@ EOF
 cat > "$HOME/.ssh/config" <<EOF
 Host studio.example
   HostName 127.0.0.1
-  Port 2222
+  Port $port
   User ghosthub
   IdentityFile $root/client_key
   IdentitiesOnly yes

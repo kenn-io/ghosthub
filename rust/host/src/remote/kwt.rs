@@ -13,6 +13,13 @@ mod tests;
 
 const MUTATION_TIMEOUT: Duration = Duration::from_mins(5);
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CommandKind {
+    Inventory,
+    Provider,
+    Mutation,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoteKwtTarget {
     DarwinAmd64,
@@ -59,21 +66,21 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             snapshot.lease(),
             &helper,
             &["projects", "--json"],
-            true,
+            CommandKind::Inventory,
             cancellation,
         )?;
         let worktrees = self.kwt_command(
             snapshot.lease(),
             &helper,
             &["list", "--global", "--json"],
-            true,
+            CommandKind::Inventory,
             cancellation,
         )?;
         let directories = self.kwt_command(
             snapshot.lease(),
             &helper,
             &["workspace", "list", "--json"],
-            true,
+            CommandKind::Inventory,
             cancellation,
         )?;
         KwtInventory::parse(&projects.stdout, &worktrees.stdout, &directories.stdout).map_err(
@@ -102,7 +109,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             snapshot.lease(),
             &helper,
             &["projects", "add", path, "--json"],
-            false,
+            CommandKind::Mutation,
             cancellation,
         )?;
         parse_project_mutation(&output.stdout, "registered")
@@ -126,12 +133,80 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             &helper,
             Some(project_path),
             &["branches", "--json"],
-            true,
+            CommandKind::Inventory,
             cancellation,
         )?;
         crate::kwt::parse_branches(&output.stdout).map_err(|error| {
             RemoteTmuxError::new(DiagnosticKind::MalformedOutput, error.to_string())
         })
+    }
+
+    /// List open pull requests using the remote account's GitHub authentication.
+    ///
+    /// # Errors
+    /// Returns an error when the helper, provider, or response is unavailable.
+    pub fn list_kwt_pull_requests(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        project_path: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<crate::KwtPullRequest>, RemoteTmuxError> {
+        require_absolute("remote project path", project_path)?;
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let output = self.kwt_command_in_directory(
+            snapshot.lease(),
+            &helper,
+            Some(project_path),
+            &[
+                "pr",
+                "list",
+                "--project",
+                project_path,
+                "--state",
+                "open",
+                "--json",
+            ],
+            CommandKind::Provider,
+            cancellation,
+        )?;
+        crate::kwt::parse_pull_requests(&output.stdout).map_err(|error| {
+            RemoteTmuxError::new(DiagnosticKind::MalformedOutput, error.to_string())
+        })
+    }
+
+    /// Import a PR through KWT without launching its protected session.
+    ///
+    /// # Errors
+    /// Returns an error for changed registration, rejected import, or invalid response.
+    pub fn import_kwt_pull_request(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        request: &crate::KwtPullRequestImportRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::KwtPullRequestImport, RemoteTmuxError> {
+        require_absolute("remote project path", request.project_path())?;
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let output = self.kwt_command_in_directory(
+            snapshot.lease(),
+            &helper,
+            Some(request.project_path()),
+            &[
+                "pr",
+                "import",
+                request.selector(),
+                "--project",
+                request.project_path(),
+                "--expected-repository",
+                request.repository(),
+                "--expected-registration",
+                request.registration_fingerprint(),
+                "--json",
+            ],
+            CommandKind::Mutation,
+            cancellation,
+        )?;
+        crate::kwt::parse_pull_request_import(&output.stdout)
+            .map_err(|error| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, error))
     }
 
     /// Create a worktree through the pinned helper without starting a terminal.
@@ -151,7 +226,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             &helper,
             Some(request.project_path()),
             &request.arguments(),
-            false,
+            CommandKind::Mutation,
             cancellation,
         )?;
         Ok(())
@@ -182,7 +257,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 generation,
                 "--json",
             ],
-            true,
+            CommandKind::Inventory,
             cancellation,
         )?;
         let inspection: serde_json::Value =
@@ -247,7 +322,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             &helper,
             Some(project.path()),
             &args,
-            false,
+            CommandKind::Mutation,
             cancellation,
         )?;
         Ok(())
@@ -288,7 +363,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 expected.registration_fingerprint(),
                 "--json",
             ],
-            false,
+            CommandKind::Mutation,
             cancellation,
         )?;
         validate_project_removal(&output.stdout, expected)
@@ -767,10 +842,10 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         lease: &SshLease,
         helper: &str,
         args: &[&str],
-        read: bool,
+        kind: CommandKind,
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, RemoteTmuxError> {
-        self.kwt_command_in_directory(lease, helper, None, args, read, cancellation)
+        self.kwt_command_in_directory(lease, helper, None, args, kind, cancellation)
     }
 
     fn kwt_command_in_directory(
@@ -779,7 +854,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         helper: &str,
         directory: Option<&str>,
         args: &[&str],
-        read: bool,
+        kind: CommandKind,
         cancellation: &CancellationToken,
     ) -> Result<CommandOutput, RemoteTmuxError> {
         let command = posix_command(&tmux_command(
@@ -792,7 +867,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             || command.clone(),
             |path| format!("cd {} && {command}", shell_quoted_argument(path)),
         );
-        let timeout = if read {
+        let timeout = if kind == CommandKind::Inventory {
             super::COMMAND_TIMEOUT
         } else {
             MUTATION_TIMEOUT
@@ -811,7 +886,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             }
             let failure = parse_command_failure(&output.stdout)
                 .or_else(|| parse_command_failure(&output.stderr));
-            if read
+            if kind != CommandKind::Mutation
                 && failure.is_some_and(|failure| failure.retryable())
                 && let Some(delay) = delays.next()
                 && !cancellation.wait_cancelled(Duration::from_secs(delay))
