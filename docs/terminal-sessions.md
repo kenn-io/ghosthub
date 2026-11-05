@@ -1029,13 +1029,13 @@ Hooks** runs the host's managed kwt (`kwt agent-hook status --json` and
 supported agent whose configuration directory exists on that host. Codex asks
 the user to trust new hooks once through `/hooks`.
 
-Each hook event writes the tmux pane option `@ghosthub_agent` as
+Each hook event writes the tmux pane option `@kwt_agent` as
 `<state> <unix-seconds> <agent>`, where state is `working`, `approval`,
 `input`, or `done`. Session start and end clear the option. Hooks outside tmux,
 and subagent events, do nothing. A failing hook never blocks the agent.
 
 POSIX discovery reads the option in the same command as `list-sessions` with
-`list-panes -a -f '#{@ghosthub_agent}'` and attaches each pane to its session by
+`list-panes -a -f '#{@kwt_agent}'` and attaches each pane to its session by
 socket and session ID, so the dot updates on the inventory poll (about every
 thirty seconds). A failed read leaves sessions without agent state. Native
 Windows discovery does not read agent state.

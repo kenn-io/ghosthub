@@ -1,7 +1,7 @@
 import Foundation
 
 /// Lifecycle state an agent hook recorded on its tmux pane. `kwt agent-hook`
-/// writes the pane option `@ghosthub_agent` as "<state> <unix-seconds>
+/// writes the pane option `@kwt_agent` as "<state> <unix-seconds>
 /// <agent>"; see `kwt agent-hook --help`.
 public enum AgentHookState: String, Codable, Sendable {
     case working
@@ -25,7 +25,7 @@ public struct TmuxPaneAgentState: Codable, Equatable, Sendable {
         self.agent = agent
     }
 
-    /// Parses a `@ghosthub_agent` option value; returns nil for anything
+    /// Parses a `@kwt_agent` option value; returns nil for anything
     /// the hook would not have written.
     public init?(paneID: String, optionValue: String) {
         let fields = optionValue.split(separator: " ", omittingEmptySubsequences: true)

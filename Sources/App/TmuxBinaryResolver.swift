@@ -380,7 +380,7 @@ struct TmuxBinaryResolver: Sendable {
     /// last because only it may contain spaces.
     private static func agentFormat(socketName: String?) -> String {
         agentPrefix + "\t\(socketName ?? "")"
-            + "\t#{session_id}\t#{pane_id}\t#{@ghosthub_agent}"
+            + "\t#{session_id}\t#{pane_id}\t#{@kwt_agent}"
     }
 
     private static let discoveryCommand: String = {
@@ -404,7 +404,7 @@ struct TmuxBinaryResolver: Sendable {
                 + prefix + "\"$ghosthub_tmux_path\" -L "
                 + shellQuotedCommandArgument(socketName ?? "default")
                 + " list-panes -a -f "
-                + shellQuotedCommandArgument("#{@ghosthub_agent}")
+                + shellQuotedCommandArgument("#{@kwt_agent}")
                 + " -F "
                 + shellQuotedCommandArgument(agentFormat(socketName: socketName))
                 + " 2>/dev/null; else "
