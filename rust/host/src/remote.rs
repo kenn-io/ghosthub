@@ -279,6 +279,19 @@ impl RemoteSessionInventory {
 }
 
 impl RemoteTmuxSnapshot {
+    /// Supply a controller lease for command-boundary tests.
+    ///
+    /// # Panics
+    /// Panics if the lease belongs to a different route or generation.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_test_lease(mut self, lease: SshLease) -> Self {
+        assert_eq!(self.route_identity, lease.result().route_identity());
+        assert_eq!(self.lease_generation, lease.result().generation());
+        self.lease = lease;
+        self
+    }
+
     #[cfg(feature = "test-support")]
     #[must_use]
     pub fn test_fixture(
