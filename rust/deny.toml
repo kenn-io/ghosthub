@@ -10,6 +10,7 @@ all-features = true
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "GPUI 0.2.2 transitively pins paste; no maintained compatible upgrade is available." },
     { id = "RUSTSEC-2025-0052", reason = "GPUI 0.2.2 transitively pins async-std; no maintained compatible upgrade is available." },
+    { id = "RUSTSEC-2026-0441", reason = "GPUI 0.2.2 requires pin-utils through async-std's std feature; no maintained compatible upgrade exists. Remove when GPUI drops async-std." },
     { id = "RUSTSEC-2025-0134", reason = "GPUI 0.2.2 transitively pins rustls-pemfile; no maintained compatible upgrade is available." },
     { id = "RUSTSEC-2026-0173", reason = "GPUI 0.2.2 transitively pins proc-macro-error2; no maintained compatible upgrade is available." },
     { id = "RUSTSEC-2026-0192", reason = "GPUI 0.2.2 transitively pins ttf-parser; no maintained compatible upgrade is available." },

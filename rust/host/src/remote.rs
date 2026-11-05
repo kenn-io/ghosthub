@@ -766,17 +766,30 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         session: &DiscoveredSession,
         cancellation: &CancellationToken,
     ) -> Result<(), RemoteTmuxError> {
-        let binary = snapshot.tmux_binary().ok_or_else(|| {
-            RemoteTmuxError::new(DiagnosticKind::ExecutableNotFound, "tmux is unavailable")
-        })?;
+        self.kill_tmux_session(
+            snapshot,
+            match server {
+                RemoteTmuxServer::Default => None,
+                RemoteTmuxServer::Kwt => Some("kwt"),
+            },
+            session,
+            cancellation,
+        )
+    }
+
+    fn kill_tmux_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        socket: Option<&str>,
+        session: &DiscoveredSession,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
         let marker = identity_mismatch_marker()?;
         let identity = session.identity();
-        let command = posix_command(&tmux_server_command(
-            &self.config,
-            server,
-            binary,
-            RemoteCommandLocale::StableOutput,
-            [
+        let command = self.kwt_tmux_probe(
+            snapshot,
+            socket,
+            &[
                 "if-shell",
                 "-F",
                 "-t",
@@ -785,7 +798,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 &format!("kill-session -t ={}", identity.session_id()),
                 &format!("display-message -p {marker}"),
             ],
-        ));
+        )?;
         let output = self.run_framed_remote_shell(
             snapshot.lease(),
             &command,

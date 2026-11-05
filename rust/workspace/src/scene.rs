@@ -1481,6 +1481,10 @@ pub(crate) fn capture_kill_request(
     generation: u64,
 ) -> Result<KillCaptureRequest, WorkspaceError> {
     if !is_local_host_id(selection.host_id()) {
+        if selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected) {
+            return crate::remote_workspace::capture_kill(scene, selection)
+                .map(|request| KillCaptureRequest::RemoteTmux(Box::new(request)));
+        }
         if selection.kind() == SessionKind::Zellij {
             let request = crate::runtime::capture_remote_zellij_request(&scene.runtime, selection)?;
             if matches!(crate::runtime::pending_remote_constructive_target(&scene.runtime, selection.host_id()),
@@ -1621,6 +1625,10 @@ pub(crate) fn capture_kill_request(
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "each backend captures and revalidates its confirmation in one dispatch"
+)]
 pub(crate) fn capture_tmux_kill(
     scene: &Scene,
     request: KillCaptureRequest,
@@ -1672,14 +1680,33 @@ pub(crate) fn capture_tmux_kill(
                 request.connection_generation,
                 &request.snapshot,
             )?;
-            request.session = host
-                .capture_live_session(
+            let protected =
+                request.selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected);
+            let session = if protected {
+                host.capture_protected_kwt_session(
+                    &snapshot,
+                    request
+                        .selection
+                        .tmux_socket_name()
+                        .expect("captured protected socket"),
+                    request.selection.session(),
+                    &cancellation,
+                )
+            } else {
+                host.capture_live_session(
                     &snapshot,
                     request.selection.remote_tmux_server()?,
                     request.selection.session(),
                     &cancellation,
                 )
-                .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            }
+            .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            if protected && session.identity() != request.session.identity() {
+                return Err(WorkspaceError::new(
+                    "The protected session changed; Kill was cancelled",
+                ));
+            }
+            request.session = session;
             // Check for a reconnect during the query; confirmation checks again.
             crate::runtime::recapture_remote_attachment_context(
                 &scene.runtime,

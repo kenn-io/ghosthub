@@ -538,7 +538,15 @@ tmux inventory does not reconcile the protected server; the retained terminal
 reports its own exit. Refresh does not discard a live protected client, even
 after checkout removal or project unregistration. Its retained row reopens that
 same terminal. New attachment still requires current inventory and verifies
-provenance again. Protected Kill/removal remains separate work.
+provenance again. An active or retained protected terminal offers **Kill** in
+its row menu. Ghosthub reads its current identity on the exact socket before
+showing **Kill Session**, then checks that identity again inside tmux when the
+user confirms. A replacement session or changed SSH connection invalidates the
+confirmation. Success closes matching clients in every window; the checkout and
+sessions on other sockets remain intact. Protected checkout removal remains
+separate work.
+
+![Confirm killing a protected PR session over SSH](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-protected-kill.png)
 
 ![An imported PR worktree opened over SSH](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remote-pr-worktree.png)
 

@@ -1449,7 +1449,14 @@ fn worktree_row_open_mode(
     }
 }
 
-fn can_kill_worktree(host: &HostItem, worktree: &workspace::WorktreeItem) -> bool {
+fn can_kill_worktree(host: &HostItem, worktree: &workspace::WorktreeItem, presented: bool) -> bool {
+    if host.is_ssh() && worktree.tmux_attach_mode() == KwtTmuxAttachMode::Protected {
+        return host.accepts_session_actions()
+            && presented
+            && worktree
+                .tmux_socket_name()
+                .is_some_and(|socket| !socket.is_empty());
+    }
     let endpoint_is_resolved = (!host.is_ssh()
         || (worktree.tmux_attach_mode() != KwtTmuxAttachMode::Protected
             && matches!(worktree.tmux_socket_name(), None | Some("kwt"))))
@@ -7653,7 +7660,7 @@ impl RootView {
                         || worktree.tmux_socket_name().is_some());
                 let open_mode = worktree_row_open_mode(host, worktree, is_active || is_retained);
                 let can_open = open_mode != WorktreeOpenMode::Disabled;
-                let can_kill = can_kill_worktree(host, worktree);
+                let can_kill = can_kill_worktree(host, worktree, is_active || is_retained);
                 let open_target = WorktreeOpenTarget {
                     host_id: host.id().to_owned(),
                     endpoint: host.endpoint().to_owned(),
@@ -10302,7 +10309,42 @@ mod tests {
                 (socket.map(str::to_owned), KwtTmuxAttachMode::Protected),
                 false,
             );
-            assert_eq!(can_kill_worktree(&host, &worktree), allowed);
+            assert_eq!(can_kill_worktree(&host, &worktree, false), allowed);
+        }
+    }
+
+    #[test]
+    fn remote_protected_worktrees_offer_kill_only_for_presented_clients() {
+        let row = WorktreeItem::new(
+            "/work/project/pr-17",
+            "pr-17",
+            false,
+            Some("checkout-17".to_owned()),
+            "project-pr-17",
+            (Some("kwt-pr-17".to_owned()), KwtTmuxAttachMode::Protected),
+            false,
+        );
+        for (connection, presented, actions) in [
+            (
+                HostConnectionState::Ready,
+                true,
+                vec![SessionRowAction::KillSession],
+            ),
+            (HostConnectionState::Ready, false, vec![]),
+            (HostConnectionState::Unavailable, true, vec![]),
+        ] {
+            let host = HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                connection,
+                Vec::new(),
+                None,
+            );
+            assert_eq!(
+                tmux_row_actions(false, can_kill_worktree(&host, &row, presented)),
+                actions
+            );
         }
     }
 
@@ -10460,7 +10502,7 @@ mod tests {
                 live,
             );
             assert_eq!(
-                tmux_row_actions(false, can_kill_worktree(&host, &worktree)),
+                tmux_row_actions(false, can_kill_worktree(&host, &worktree, false)),
                 actions
             );
         }
