@@ -428,6 +428,102 @@ fn protected_kill_rejects_a_replaced_session() {
     fixture.workspace.close();
 }
 
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn protected_kill_rejects_a_reused_name_before_confirmation() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::protected::protected_kill_rejects_a_reused_name_before_confirmation",
+    ) else {
+        return;
+    };
+    let (project, row) = imported_worktree(&fixture);
+    let socket = row.tmux_socket_name().unwrap();
+    let name = row.session_name();
+    fixture
+        .workspace
+        .open_kwt_worktree(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+            row.path(),
+            row.generation(),
+            name,
+            Some(socket),
+            row.tmux_attach_mode(),
+        )
+        .unwrap();
+    fixture.tmux_shell(name, "before-rename");
+    let selection = fixture
+        .workspace
+        .snapshot()
+        .active_selection()
+        .unwrap()
+        .clone();
+    let protected = |args: &[&str]| {
+        let output = Command::new("/usr/bin/tmux")
+            .env_remove("TMUX_TMPDIR")
+            .args(["-L", socket])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    protected(&[
+        "rename-session",
+        "-t",
+        &format!("={name}"),
+        "renamed-review",
+    ]);
+    protected(&["new-session", "-d", "-s", name, "/bin/sh"]);
+    for retained in [false, true] {
+        if retained {
+            fixture.attach("review", "protected-retained");
+        }
+        fixture.workspace.request_session_kill(&selection).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let mut rejected = false;
+            for event in fixture.workspace.drain_events().0 {
+                if let WorkspaceEvent::Error(message) = event {
+                    assert!(message.contains("session changed"), "{message}");
+                    rejected = true;
+                }
+            }
+            assert!(
+                fixture.workspace.session_kill_confirmation().is_none(),
+                "Kill offered for a different session reusing the open terminal's name (retained={retained})"
+            );
+            if rejected {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "missing identity-change rejection"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(fixture.workspace.confirm_session_kill().is_err());
+        protected(&["has-session", "-t", "=renamed-review"]);
+        protected(&["has-session", "-t", &format!("={name}")]);
+    }
+    fixture.workspace.switch_session(&selection).unwrap();
+    fixture
+        .workspace
+        .send_key(KeyInput::text(
+            "printf 'renamed-%s\\n' still-running",
+            Modifiers::default(),
+        ))
+        .unwrap();
+    fixture
+        .workspace
+        .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
+        .unwrap();
+    fixture.wait(|_| fixture.terminal_text().contains("renamed-still-running"));
+    fixture.workspace.close();
+}
+
 fn imported_worktree(fixture: &Fixture) -> (workspace::ProjectItem, workspace::WorktreeItem) {
     fixture.connect();
     wait_kwt_ready(fixture);

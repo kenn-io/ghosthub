@@ -1680,9 +1680,9 @@ pub(crate) fn capture_tmux_kill(
                 request.connection_generation,
                 &request.snapshot,
             )?;
-            request.session = if request.selection.tmux_attach_mode()
-                == Some(host::KwtTmuxAttachMode::Protected)
-            {
+            let protected =
+                request.selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected);
+            let session = if protected {
                 host.capture_protected_kwt_session(
                     &snapshot,
                     request
@@ -1701,6 +1701,12 @@ pub(crate) fn capture_tmux_kill(
                 )
             }
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
+            if protected && session.identity() != request.session.identity() {
+                return Err(WorkspaceError::new(
+                    "The protected session changed; Kill was cancelled",
+                ));
+            }
+            request.session = session;
             // Check for a reconnect during the query; confirmation checks again.
             crate::runtime::recapture_remote_attachment_context(
                 &scene.runtime,
