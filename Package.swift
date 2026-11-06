@@ -117,6 +117,7 @@ var targets: [Target] = [
             "GhosthubSettings",
             "GhosthubWorkspace",
             "GhosthubTerminalSupport",
+            "GhosthubZellij",
         ],
         path: "Sources/UI"
     ),

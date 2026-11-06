@@ -392,7 +392,14 @@ not relocate all session state.
 Ghosthub resolves `zellij` in the host account's login environment and opens an
 active session with `zellij attach <exact-name>`. **New Zellij Session** uses
 `zellij --session <exact-name>`, which creates and presents a new session while
-refusing both active and resurrectable name collisions. Local sessions use
+refusing both active and resurrectable name collisions.
+
+Since Zellij 0.45.1, `zellij attach` treats everything after `--` as a command
+to run in a new session, so Ghosthub passes the name without a separator.
+Zellij then cannot attach to a name that starts with `-` (other than `-`
+itself) or that is exactly `help` or `options`. **New Zellij Session** rejects
+those names, and opening an existing session with one reports an error instead
+of launching a client. Local sessions use
 libghostty's normal macOS login-shell path. Remote sessions use an ordinary
 OpenSSH PTY through one kwt-owned lease with keepalives and the remote account
 login environment. Reconnect retains only the host and session intent, then

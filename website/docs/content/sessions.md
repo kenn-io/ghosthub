@@ -83,8 +83,10 @@ present in either running or stopped state is
 rejected; restart a stopped session instead.
 
 A new Zellij session uses Zellij's new-session path and remains an ordinary
-Zellij session. Active and resurrectable names are both rejected. Ghosthub
-lists only active sessions and does not expose resurrection as a workflow.
+Zellij session. Active and resurrectable names are both rejected. Zellij
+cannot attach to names that start with `-` or that are exactly `help` or
+`options`, so Ghosthub rejects those too. Ghosthub lists only active sessions
+and does not expose resurrection as a workflow.
 
 ## Herdr desktop terminals
 
