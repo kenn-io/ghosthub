@@ -70,6 +70,77 @@ extension WorkspaceTmuxDiscoveryTests {
                 == attention.acknowledgedDoneStamps,
             "acknowledgements survive relaunch"
         )
+
+        store.returnsSurface = false
+        let anchor = WorkspaceTmuxSessionSelection(hostID: hostID, name: "anchor")
+        model.openBorrowedTmuxSession(anchor)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestCount > 1
+        }
+
+        #expect(model.activeBorrowedTmuxSelection == anchor)
+        #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        #expect(
+            current("anchor") == .finished(agent: "codex"),
+            "a session that never connected is not seen"
+        )
+        #expect(attention.acknowledgedDoneStamps.values.sorted() == [200])
+    }
+
+    @MainActor
+    @Test("returning to a retained connected session acknowledges its finished turn")
+    func returningToRetainedSessionAcknowledges() async throws {
+        let environment = try setupStandardEnvironment()
+        let hostID = environment.host.id
+        let store = SceneTmuxSurfaceStoreStub()
+        let defaults = try #require(UserDefaults(
+            suiteName: "ghosthub-agent-attention-\(UUID().uuidString)"
+        ))
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: hostID,
+            snapshot: environment.snapshot,
+            nativeTmuxSurfaceStore: store,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux")
+            },
+            tmuxSessionDiscovery: { _ in
+                .success([
+                    agentSession("anchor", "$1", [
+                        TmuxPaneAgentState(paneID: "%1", state: .done, stamp: 300, agent: "codex"),
+                    ]),
+                    agentSession("desk", "$2", [
+                        TmuxPaneAgentState(paneID: "%2", state: .done, stamp: 200, agent: "claude"),
+                    ]),
+                ])
+            }
+        )
+        let attention = AgentAttentionStore(userDefaults: defaults)
+        model.agentAttentionStore = attention
+        model.startTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            model.snapshot.hosts[0].tmuxSessions.count == 2
+        }
+        func open(_ name: String) async {
+            model.openBorrowedTmuxSession(
+                WorkspaceTmuxSessionSelection(hostID: hostID, name: name)
+            )
+            await waitUntilMainActor {
+                model.prepareActiveBorrowedTmuxSurface()
+                return model.activeBorrowedTmuxSelection?.name == name
+                    && model.activeBorrowedTmuxSessionIsConnected
+            }
+        }
+        await open("anchor")
+        await open("desk")
+        model.isFocusedWindow = true
+        #expect(attention.acknowledgedDoneStamps.values.sorted() == [200])
+
+        await open("anchor")
+
+        #expect(store.requestCount == 2, "anchor reused its retained client")
+        #expect(attention.acknowledgedDoneStamps.values.sorted() == [200, 300])
     }
 }
 

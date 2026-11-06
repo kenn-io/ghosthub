@@ -332,7 +332,9 @@ final class WorkspaceSceneModel: ObservableObject {
         WorkspaceTmuxSessionSelection? {
         didSet { acknowledgeVisibleAgentTurns() }
     }
-    private var activeBorrowedTmuxHandle: BorrowedTmuxSessionHandle?
+    private var activeBorrowedTmuxHandle: BorrowedTmuxSessionHandle? {
+        didSet { acknowledgeVisibleAgentTurns() }
+    }
     private(set) var activeBorrowedTmuxLaunchMode:
         TmuxAttachmentLaunchMode?
     @Published private(set) var activeBorrowedTmuxRecoveryState:
@@ -1010,11 +1012,17 @@ final class WorkspaceSceneModel: ObservableObject {
         workspaceConfiguration.notifications.idleThresholdSeconds
     }
     /// A finished agent turn counts as seen once its session is the
-    /// connected presentation of the key window.
+    /// connected presentation of the key window. Switching sessions updates
+    /// the selection before the handle, so the connected handle must be the
+    /// selected session's own.
     func acknowledgeVisibleAgentTurns() {
         guard isFocusedWindow,
               activeBorrowedTmuxSessionIsConnected,
               let selection = activeBorrowedTmuxSelection,
+              let handle = activeBorrowedTmuxHandle,
+              handle.hostID == selection.hostID,
+              handle.name == selection.name,
+              handle.socketName == selection.socketName,
               let host = snapshot.host(id: selection.hostID),
               let session = host.tmuxSessions.first(where: {
                   $0.name == selection.name
