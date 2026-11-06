@@ -5234,6 +5234,7 @@ impl Workspace {
             if active_matches {
                 workspace.detach_locked();
             }
+            remote_recovery::forget_tmux_host(&scene, id);
             scene
                 .remote_retained
                 .lock()

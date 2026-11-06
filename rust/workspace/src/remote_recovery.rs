@@ -3,6 +3,139 @@ use crate::{
     Workspace, WorkspaceError, lock_live_navigation, runtime,
 };
 
+pub(crate) struct InterruptedTmux {
+    key: crate::RemotePresentationKey,
+    navigation_generation: u64,
+}
+
+/// Remember only an established ordinary tmux presentation, under its navigation fence.
+pub(crate) fn remember_tmux(scene: &crate::Scene, active: &crate::RemoteActive) -> bool {
+    if scene.closed.load(crate::Ordering::Acquire)
+        || scene.navigation_generation.load(crate::Ordering::Acquire)
+            != active.navigation_generation
+        || !matches!(
+            active.key.session_identity,
+            crate::RemoteSessionIdentity::Tmux(_) | crate::RemoteSessionIdentity::KwtTmux(_)
+        )
+    {
+        return false;
+    }
+    *scene
+        .interrupted_tmux
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(InterruptedTmux {
+        key: active.key.clone(),
+        navigation_generation: active.navigation_generation,
+    });
+    true
+}
+
+pub(crate) fn forget_tmux_host(scene: &crate::Scene, host_id: &str) {
+    let mut interrupted = scene
+        .interrupted_tmux
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if interrupted
+        .as_ref()
+        .is_some_and(|pending| pending.key.host_id == host_id)
+    {
+        interrupted.take();
+    }
+}
+
+/// A successful explicit reconnect supplies fresh inventory. Never create a missing session.
+/// The caller holds publication and retains all scene handles until it releases that lock.
+pub(crate) fn restore_tmux(
+    scenes: &[crate::Arc<crate::Scene>],
+    host_id: &str,
+    generation: u64,
+    host: &crate::RuntimeRemoteHost,
+    snapshot: &RemoteTmuxSnapshot,
+) {
+    for scene in scenes {
+        let Ok(_navigation) = lock_live_navigation(scene) else {
+            continue;
+        };
+        let mut interrupted = scene
+            .interrupted_tmux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(pending) = interrupted
+            .as_ref()
+            .filter(|pending| pending.key.host_id == host_id)
+        else {
+            continue;
+        };
+        if pending.navigation_generation
+            != scene.navigation_generation.load(crate::Ordering::Acquire)
+        {
+            interrupted.take();
+            continue;
+        }
+        let (server, identity) = match &pending.key.session_identity {
+            crate::RemoteSessionIdentity::Tmux(identity) => {
+                (host::RemoteTmuxServer::Default, identity)
+            }
+            crate::RemoteSessionIdentity::KwtTmux(identity) => {
+                (host::RemoteTmuxServer::Kwt, identity)
+            }
+            _ => unreachable!("only ordinary tmux clients are remembered"),
+        };
+        // Failed inventory is not evidence that the session ended. A later reconnect can retry.
+        let diagnostic = match server {
+            host::RemoteTmuxServer::Default => snapshot.tmux_diagnostic(),
+            host::RemoteTmuxServer::Kwt => snapshot.kwt_tmux_diagnostic(),
+        };
+        if diagnostic.is_some() {
+            continue;
+        }
+        let request = if pending.key.endpoint != snapshot.endpoint()
+            || pending.key.route_identity != snapshot.route_identity()
+        {
+            Err(WorkspaceError::new(
+                "The SSH route changed. Select a session to open it.",
+            ))
+        } else {
+            snapshot
+                .sessions_on(server)
+                .iter()
+                .find(|session| session.identity() == identity)
+                .map(|session| crate::RemoteTmuxAttachRequest {
+                    host_id: host_id.to_owned(),
+                    connection_generation: generation,
+                    selection: pending
+                        .key
+                        .selection(crate::SessionKind::Tmux, session.name()),
+                    host: host.clone(),
+                    snapshot: snapshot.clone(),
+                    session: session.clone(),
+                })
+                .ok_or_else(|| {
+                    WorkspaceError::new("The interrupted tmux session is no longer running.")
+                })
+        };
+        let mut pending = interrupted.take().expect("matched interrupted session");
+        drop(interrupted);
+        let workspace = Workspace {
+            scene: crate::Arc::clone(scene),
+        };
+        let result = request.and_then(|request| {
+            let navigation = workspace.begin_navigation();
+            // A second reconnect can cancel this queued attachment. Keep its target until
+            // publication; user navigation still clears it through begin_navigation.
+            pending.navigation_generation = navigation;
+            *scene
+                .interrupted_tmux
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pending);
+            workspace.start_remote_tmux_attachment(request, navigation)
+        });
+        if let Err(error) = result {
+            workspace.push_operation_error(error.to_string());
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum Target {
     Herdr(RemoteHerdrAttachRequest),

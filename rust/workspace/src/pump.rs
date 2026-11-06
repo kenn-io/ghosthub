@@ -220,6 +220,7 @@ impl Workspace {
                     else {
                         if self.handle_remote_terminal_exit(
                             source_worker_generation,
+                            code == 255 && client_confirmed_live,
                             self.classify_active_remote_terminal_exit(
                                 source_worker_generation,
                                 code,
@@ -253,6 +254,7 @@ impl Workspace {
                     else {
                         if self.handle_remote_terminal_exit(
                             source_worker_generation,
+                            false,
                             Some(error.to_string()),
                             &mut emitted,
                         ) {
@@ -323,9 +325,15 @@ impl Workspace {
     pub(crate) fn handle_remote_terminal_exit(
         &self,
         worker_generation: u64,
+        transport_lost: bool,
         error: Option<String>,
         emitted: &mut Vec<WorkspaceEvent>,
     ) -> bool {
+        let _navigation = self
+            .scene
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut remote_active = self
             .scene
             .remote_active
@@ -346,9 +354,11 @@ impl Workspace {
             return false;
         }
         let closed = worker.invalidate_if_generation(worker_generation);
-        let _active = remote_active.take();
+        let active = remote_active.take().expect("checked active remote worker");
         drop(worker);
         drop(remote_active);
+        let recoverable =
+            transport_lost && crate::remote_recovery::remember_tmux(&self.scene, &active);
         // An exited terminal's queued and in-flight clipboard writes are
         // discarded: its authority ended with its process.
         if let Some(worker) = closed {
@@ -360,7 +370,11 @@ impl Workspace {
         clear_terminal_notice(&self.scene);
         self.restore_inventory_state();
         if let Some(error) = error {
-            emitted.push(WorkspaceEvent::Error(error));
+            emitted.push(WorkspaceEvent::Error(if recoverable {
+                format!("{error}. Refresh the host to reopen this session.")
+            } else {
+                error
+            }));
         }
         true
     }

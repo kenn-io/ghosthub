@@ -103,6 +103,7 @@ pub(crate) struct Scene {
     #[cfg(test)]
     pub(crate) before_navigation_lock: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub(crate) remote_active: Mutex<Option<RemoteActive>>,
+    pub(crate) interrupted_tmux: Mutex<Option<crate::remote_recovery::InterruptedTmux>>,
     pub(crate) remote_retained: Mutex<RemoteRetainedPresentations>,
     pub(crate) worker: Mutex<WorkerState<TerminalWorker>>,
     pub(crate) retained_presentations: Mutex<RetainedPresentations<TerminalWorker>>,
@@ -172,6 +173,7 @@ pub(crate) fn attach_scene(
         #[cfg(test)]
         before_navigation_lock: Mutex::new(None),
         remote_active: Mutex::new(None),
+        interrupted_tmux: Mutex::new(None),
         remote_retained: Mutex::new(RemoteRetainedPresentations::new()),
         worker: Mutex::new(WorkerState::new()),
         retained_presentations: Mutex::new(RetainedPresentations::new()),
@@ -258,6 +260,11 @@ pub(crate) fn join_runtime(runtime: Arc<Runtime>) -> Arc<Scene> {
 /// operation id, and cancel its superseded un-launched constructive
 /// operations. Other scenes' confirmations and attempts are untouched.
 pub(crate) fn begin_scene_navigation(scene: &Scene) -> u64 {
+    scene
+        .interrupted_tmux
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
     invalidate_pending_kill(scene);
     invalidate_pending_herdr_lifecycle(scene);
     cancel_scene_remote_attachments(&scene.runtime, scene.id);
@@ -580,6 +587,8 @@ pub(crate) fn publish_remote_connection(
     generation: u64,
     result: Result<(RuntimeRemoteHost, RemoteTmuxSnapshot), host::RemoteTmuxError>,
 ) {
+    // Scene teardown may acquire publication locks; retain these handles until after unlock.
+    let scenes = live_scenes(&scene.runtime);
     let publication = scene
         .runtime
         .remote_publication
@@ -617,7 +626,7 @@ pub(crate) fn publish_remote_connection(
                     });
             entry.context = Some(RemoteHostContext {
                 generation,
-                host,
+                host: host.clone(),
                 snapshot: snapshot.clone(),
             });
             drop(entries);
@@ -630,6 +639,7 @@ pub(crate) fn publish_remote_connection(
                 Some(RemoteInventory::from(&snapshot)),
             );
             set_remote_host_snapshot(&scene.runtime, host_id, &snapshot);
+            crate::remote_recovery::restore_tmux(&scenes, host_id, generation, &host, &snapshot);
         }
         Err(error) => {
             let diagnostic = HostDiagnostic::new(error.kind(), error.to_string());
@@ -6798,6 +6808,11 @@ pub(crate) fn publish_remote_worker(
         retainable: retain_remote_session(selection.kind()),
         identity_mismatch_marker,
     });
+    scene
+        .interrupted_tmux
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
     clear_pending_paste(scene);
     set_terminal_notice(scene, term);
     set_scene_state(

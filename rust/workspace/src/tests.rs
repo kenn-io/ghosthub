@@ -12067,7 +12067,7 @@ fn a_remote_terminal_exit_retires_its_clipboard_authority() {
     let observed = seed_clipboard_write(&workspace, "queued before exit");
 
     let mut emitted = Vec::new();
-    let handled = workspace.handle_remote_terminal_exit(generation, None, &mut emitted);
+    let handled = workspace.handle_remote_terminal_exit(generation, false, None, &mut emitted);
     assert!(handled, "the registered remote worker's exit is claimed");
 
     assert_clipboard_authority_retired(&workspace, observed, "terminal exit");

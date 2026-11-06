@@ -211,5 +211,16 @@ passive activity state.
 The unreleased Rust/Linux source build also connects to POSIX SSH hosts using
 its bundled KWT controller. See the [native Linux SSH guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
 for setup and current limits. It supports remote tmux, Herdr, and Zellij
-session lifecycle actions, plus [project registration](projects-worktrees.md#rust-source-builds).
-Remote worktree mutation and automatic recovery remain follow-up work.
+session lifecycle actions, plus [projects and worktrees](projects-worktrees.md#rust-source-builds).
+
+If an active tmux terminal loses its SSH connection, select **Refresh** or
+**Retry** beside the host. Ghosthub reconnects and reopens that same session,
+even if it was renamed. It will not create a missing session or open a new
+session that reused the old name. Selecting another session, detaching, or
+closing the window cancels the pending recovery.
+
+This recovery supports the default tmux server and KWT's shared server.
+Select retained inactive sessions, protected PR worktrees, Herdr, and Zellij
+again to reopen them. Automatic retries remain follow-up work.
+
+![Native Linux Ghosthub after reconnecting to the original tmux shell](/docs/assets/guide-rust-ssh-reconnect.png)

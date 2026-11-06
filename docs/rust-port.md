@@ -348,14 +348,15 @@ The path matrix is:
 | Ordinary kwt workspace | RepairOrOpen workspace variant | Exact probe, attach if present, rerun kwt open only if absent |
 | Protected pull-request workspace | RepairOrOpen protected variant | Rerun exact kwt pr attach |
 
-No mutable creation boolean exists. The remote reconnect loop cannot accept
-CreateOnce.
+No mutable creation boolean exists. Recovery cannot accept CreateOnce. The
+matrix describes the target lifecycle contract; automatic recovery and KWT
+repair during reconnect remain unimplemented.
 
 Local ordinary-client exit always ends the presentation. The Windows WSL MVP
-does not reconnect a local `wsl.exe` relay after client exit. Remote OpenSSH
-exit status 255 alone invokes bounded exponential reconnect; a connection
-healthy for 30 seconds resets backoff. Every other status passes through
-unchanged.
+does not reconnect a local `wsl.exe` relay after client exit. After an established
+active remote tmux client exits with OpenSSH status 255, an explicit host
+reconnect can restore that exact session. Other exit statuses end the
+presentation. Automatic retries and backoff remain follow-up work.
 
 ### Shared local host boundary
 
@@ -419,6 +420,20 @@ and an SSH destination from your OpenSSH configuration, then select **Save Host*
 Select **Connect** beside that host in the sidebar. Review any host-key or
 authentication prompt before continuing. Select a discovered session to open
 its terminal; switching tmux rows retains the previous presentation.
+
+If an active ordinary tmux terminal loses its SSH connection, select the host's
+**Refresh** or **Retry** button. After reconnect, Ghosthub reopens the same
+session on the same server, including if it was renamed. It does not create a
+missing session or open a replacement that reused the old name. Selecting
+another session, detaching, closing the window, or removing the host cancels
+that recovery. Failed connection attempts preserve it for a later retry.
+
+This applies to the default tmux server and KWT's shared server. Retained
+inactive clients, protected PR worktrees, Herdr, and Zellij require an explicit
+session selection after transport loss. Background retry/backoff is not yet
+implemented.
+
+![Native Linux Ghosthub after reconnecting to the original tmux shell](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-ssh-reconnect.png)
 
 To create a tmux session, select **+** beside **Tmux Sessions** on the connected
 host, enter a name, and select **Create**. The new session opens immediately.
@@ -592,9 +607,8 @@ incomplete change inspection still blocks removal.
 
 ![Confirm removal of a remote worktree](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-remove-worktree.png)
 
-Protected imports, other named sockets,
-and automatic transport recovery remain separate work. Their
-unsupported controls are unavailable in the remote project tree.
+Custom named sockets and automatic transport recovery remain separate work.
+Unsupported controls are unavailable in the remote project tree.
 
 ![Confirm the exact remote tmux session and host](https://github.com/user-attachments/assets/11938b82-22ae-4f84-b653-d9edcfc03592)
 
@@ -1450,9 +1464,9 @@ attachments queued in other windows resume after it settles. Reconnect cancels
 pending destructive commands; known successful removals tombstone the exact
 checkout before inventory reconciliation. Force removal of an ordinary SSH
 worktree requires a separate acknowledgement bound to its captured dirty
-state and identities. Protected imports,
-automatic reconnect, and restoration remain separate work. An absent control cannot silently fall back to
-WSL or unguarded SSH.
+state and identities. Automatic reconnect and application-state restoration
+remain separate work. An absent control cannot silently fall back to WSL or
+unguarded SSH.
 
 Rust config resolution is:
 
