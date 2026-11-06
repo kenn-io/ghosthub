@@ -174,6 +174,9 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     /// Remembers finished agent turns the user has seen; replaceable in tests.
     var agentAttentionStore: AgentAttentionStore = .shared
+    private var agentAcknowledgementTask: Task<Void, Never>?
+    /// Set when state changes during a probe, so it is checked again after.
+    private var agentAcknowledgementRecheck = false
     let sidebarSectionCache = WorkspaceSidebarSectionCache()
     private(set) var sidebarSnapshotRevision: UInt64 = 0
     private var tmuxDiscoveryEnabled = false
@@ -1014,29 +1017,65 @@ final class WorkspaceSceneModel: ObservableObject {
     /// A finished agent turn counts as seen once its session is the
     /// connected presentation of the key window. Switching sessions updates
     /// the selection before the handle, so the connected handle must be the
-    /// selected session's own. The discovered session must also be the one
-    /// the client verifiably attached to, so a new session that takes the
-    /// name of a renamed one is not acknowledged; surface readiness retries
-    /// once that identity is known.
+    /// selected session's own. The turn belongs to the session tmux reports
+    /// the client is showing right now: matching by name would acknowledge a
+    /// new session that took a renamed one's name, and the identity cached at
+    /// attach goes stale when the user switches sessions inside tmux. Surface
+    /// readiness retries once the client's identity is first known.
     func acknowledgeVisibleAgentTurns() {
+        guard agentAcknowledgementTask == nil else {
+            agentAcknowledgementRecheck = true
+            return
+        }
+        agentAcknowledgementRecheck = false
+        guard let handle = visibleTmuxHandleForAcknowledgement(),
+              let cached = nativeTmuxSessionCoordinator
+              .attachedSessionIdentity(handle),
+              let host = snapshot.host(id: handle.hostID),
+              let session = tmuxSession(on: host, handle: handle, identity: cached),
+              agentAttentionStore.hasUnacknowledgedDone(session, hostID: host.id)
+        else { return }
+        agentAcknowledgementTask = Task { [weak self] in
+            guard let self else { return }
+            let current = await nativeTmuxSessionCoordinator
+                .revalidateAttachedSessionIdentity(handle)
+            agentAcknowledgementTask = nil
+            if let current,
+               visibleTmuxHandleForAcknowledgement() == handle,
+               let host = snapshot.host(id: handle.hostID),
+               let session = tmuxSession(on: host, handle: handle, identity: current) {
+                agentAttentionStore.acknowledge(session, hostID: host.id)
+            }
+            if agentAcknowledgementRecheck {
+                acknowledgeVisibleAgentTurns()
+            }
+        }
+    }
+
+    private func visibleTmuxHandleForAcknowledgement()
+        -> BorrowedTmuxSessionHandle? {
         guard isFocusedWindow,
               activeBorrowedTmuxSessionIsConnected,
               let selection = activeBorrowedTmuxSelection,
               let handle = activeBorrowedTmuxHandle,
               handle.hostID == selection.hostID,
               handle.name == selection.name,
-              handle.socketName == selection.socketName,
-              let attached = nativeTmuxSessionCoordinator
-              .attachedSessionIdentity(handle),
-              let host = snapshot.host(id: selection.hostID),
-              let session = host.tmuxSessions.first(where: {
-                  $0.socketName == selection.socketName
-                      && $0.serverPID == attached.serverPID
-                      && $0.sessionID == attached.sessionID
-                      && $0.createdAt == attached.createdAt
-              })
-        else { return }
-        agentAttentionStore.acknowledge(session, hostID: host.id)
+              handle.socketName == selection.socketName
+        else { return nil }
+        return handle
+    }
+
+    private func tmuxSession(
+        on host: HostSummary,
+        handle: BorrowedTmuxSessionHandle,
+        identity: TmuxSessionIdentity
+    ) -> TmuxSessionSummary? {
+        host.tmuxSessions.first {
+            $0.socketName == handle.socketName
+                && $0.serverPID == identity.serverPID
+                && $0.sessionID == identity.sessionID
+                && $0.createdAt == identity.createdAt
+        }
     }
 
     var workingTmuxSessionIDs: Set<String> {

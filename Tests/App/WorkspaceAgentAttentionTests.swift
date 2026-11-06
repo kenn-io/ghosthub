@@ -107,23 +107,53 @@ extension WorkspaceTmuxDiscoveryTests {
     @MainActor
     @Test("a new session that reuses a renamed session's name is not acknowledged")
     func nameReuseIsNotAcknowledged() async throws {
-        let fixture = try AttentionFixture(sessions: [
-            agentSession("desk", "$2", [
-                TmuxPaneAgentState(paneID: "%2", state: .done, stamp: 200, agent: "claude"),
+        let fixture = try AttentionFixture(sessions: [agentSession("desk", "$2", [])])
+        await fixture.discover()
+        fixture.model.isFocusedWindow = true
+        await fixture.open("desk", attachedTo: "$2")
+
+        // Outside Ghosthub, the attached session is renamed and a new
+        // session takes its old name. Both agents finish a turn.
+        await fixture.refresh([
+            agentSession("desk-old", "$2", [
+                TmuxPaneAgentState(paneID: "%2", state: .done, stamp: 250, agent: "codex"),
             ]),
+            agentSession("desk", "$5", [
+                TmuxPaneAgentState(paneID: "%5", state: .done, stamp: 200, agent: "claude"),
+            ]),
+        ])
+
+        await waitUntilMainActor {
+            fixture.attention.acknowledgedDoneStamps.values.sorted() == [250]
+        }
+        #expect(fixture.current("desk") == .finished(agent: "claude"))
+    }
+
+    @MainActor
+    @Test("switching sessions inside tmux acknowledges the session the client shows")
+    func tmuxSessionSwitchAcknowledgesShownSession() async throws {
+        let fixture = try AttentionFixture(sessions: [
+            agentSession("anchor", "$1", []),
+            agentSession("desk", "$2", []),
         ])
         await fixture.discover()
         fixture.model.isFocusedWindow = true
+        await fixture.open("desk", attachedTo: "$2")
 
-        // The client is attached to the original session, which was renamed
-        // away; "desk" is now a different session.
-        await fixture.open("desk", attachedTo: "$9")
-        await waitUntilMainActor { fixture.identityReplies.load() > 0 }
-        for _ in 0 ..< 10 {
-            await Task.yield()
+        // The user switches the client to anchor with tmux's own keys.
+        fixture.attachedSessionID.store("$1")
+        await fixture.refresh([
+            agentSession("anchor", "$1", [
+                TmuxPaneAgentState(paneID: "%1", state: .done, stamp: 300, agent: "codex"),
+            ]),
+            agentSession("desk", "$2", [
+                TmuxPaneAgentState(paneID: "%2", state: .done, stamp: 400, agent: "claude"),
+            ]),
+        ])
+
+        await waitUntilMainActor {
+            fixture.attention.acknowledgedDoneStamps.values.sorted() == [300]
         }
-
-        #expect(fixture.attention.acknowledgedDoneStamps.isEmpty)
         #expect(fixture.current("desk") == .finished(agent: "claude"))
     }
 }
@@ -138,7 +168,7 @@ private struct AttentionFixture {
     /// Session the next attached client reports; nil keeps it unverified.
     let attachedSessionID = LockedValue<String?>(nil)
     let identityReplies = LockedValue(0)
-    private let sessionCount: Int
+    private let sessions: LockedValue<[DiscoveredTmuxSession]>
 
     init(sessions: [DiscoveredTmuxSession]) throws {
         let environment = try setupStandardEnvironment()
@@ -148,6 +178,8 @@ private struct AttentionFixture {
         ))
         let attachedSessionID = attachedSessionID
         let identityReplies = identityReplies
+        let sessions = LockedValue(sessions)
+        self.sessions = sessions
         model = try makeModel(
             database: environment.database,
             localHostID: hostID,
@@ -167,17 +199,29 @@ private struct AttentionFixture {
                         + "\t/dev/ttys001\t\(sessionID)\t1000\t%9\n"
                 )
             },
-            tmuxSessionDiscovery: { _ in .success(sessions) }
+            tmuxSessionDiscovery: { _ in .success(sessions.load()) }
         )
         attention = AgentAttentionStore(userDefaults: defaults)
         model.agentAttentionStore = attention
-        sessionCount = sessions.count
     }
 
     func discover() async {
         model.startTmuxSessionDiscovery()
+        await waitForInventory()
+    }
+
+    /// Replaces the discovered sessions and waits for the snapshot to match.
+    func refresh(_ updated: [DiscoveredTmuxSession]) async {
+        sessions.store(updated)
+        model.refreshTmuxSessionDiscovery()
+        await waitForInventory()
+    }
+
+    private func waitForInventory() async {
+        let expected = inventoryShape(sessions.load().map { ($0.name, $0.agentPanes) })
         await waitUntilMainActor {
-            model.snapshot.hosts[0].tmuxSessions.count == sessionCount
+            let current = model.snapshot.hosts[0].tmuxSessions
+            return inventoryShape(current.map { ($0.name, $0.agentPanes) }) == expected
         }
     }
 
@@ -198,6 +242,13 @@ private struct AttentionFixture {
             AgentAttentionStore.endpointKey(hostID: hostID, name: name, socketName: nil)
         ]
     }
+}
+
+/// Session names with their agent states, for comparing inventories.
+private func inventoryShape(_ sessions: [(String, [TmuxPaneAgentState])]) -> [String] {
+    sessions.map { name, panes in
+        ([name] + panes.map { "\($0.state.rawValue):\($0.stamp)" }).joined(separator: " ")
+    }.sorted()
 }
 
 private func agentSession(

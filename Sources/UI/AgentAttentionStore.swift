@@ -43,12 +43,19 @@ public final class AgentAttentionStore: ObservableObject {
         }
     }
 
+    /// Whether the session reports a finished turn the user has not seen.
+    public func hasUnacknowledgedDone(_ session: TmuxSessionSummary, hostID: UUID) -> Bool {
+        guard let stamp = session.latestAgentDoneStamp else { return false }
+        return (acknowledgedDoneStamps[session.agentAttentionKey(hostID: hostID)] ?? 0) < stamp
+    }
+
     /// Records that the user has seen every finished turn currently
     /// reported for the session.
     public func acknowledge(_ session: TmuxSessionSummary, hostID: UUID) {
-        guard let stamp = session.latestAgentDoneStamp else { return }
+        guard hasUnacknowledgedDone(session, hostID: hostID),
+              let stamp = session.latestAgentDoneStamp
+        else { return }
         let key = session.agentAttentionKey(hostID: hostID)
-        guard (acknowledgedDoneStamps[key] ?? 0) < stamp else { return }
         var updated = acknowledgedDoneStamps
         updated[key] = stamp
         if updated.count > Self.capacity {
