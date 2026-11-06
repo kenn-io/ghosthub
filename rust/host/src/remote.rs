@@ -821,6 +821,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
     ///
     /// The returned marker is unique to this attachment and is the only
     /// authoritative identity-mismatch signal in the client's output.
+    /// The receipt acknowledges attachment independently of terminal screen modes.
     ///
     /// # Errors
     ///
@@ -832,12 +833,19 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         server: RemoteTmuxServer,
         session: &DiscoveredSession,
         term: &str,
-    ) -> Result<(AttachPlan, String), RemoteTmuxError> {
+    ) -> Result<(AttachPlan, String, CreationReceipt), RemoteTmuxError> {
         snapshot
             .lease()
             .ensure_live()
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
         let identity_mismatch_marker = identity_mismatch_marker()?;
+        let receipt = crate::local::creation_identity_receipt()
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        // Only an attached client can acknowledge startup; screen modes are optional.
+        let report = format!(
+            "/bin/sh -c 'test \"$6\" = 1 || exit; umask 077; set -C; printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && mv -f \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}' '#{{!=:#{{client_session}},}}'",
+            receipt.staging_path, receipt.path
+        );
         let identity = session.identity();
         let condition = tmux_identity_condition(identity);
         let attach = format!("attach-session -E -t ={}", identity.session_id());
@@ -859,6 +867,10 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 &condition,
                 &attach,
                 &format!("display-message -p {identity_mismatch_marker}"),
+                ";",
+                "run-shell",
+                "-b",
+                &report,
             ],
         );
         let mut command = command;
@@ -876,7 +888,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             session.name(),
             session.identity().clone(),
         );
-        Ok((plan, identity_mismatch_marker))
+        Ok((plan, identity_mismatch_marker, receipt))
     }
 
     /// Revalidate a confirmed Herdr Stop/Delete and execute it on the reviewed lease.
@@ -1072,7 +1084,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok((plan, receipt))
     }
 
-    /// Read the exact identity reported by the one-shot remote tmux client.
+    /// Read the exact identity acknowledged by the remote tmux client.
     ///
     /// # Errors
     ///
@@ -1681,10 +1693,12 @@ fn extract_framed_command_output(
     end_marker: &str,
 ) -> Result<crate::CommandOutput, RemoteTmuxError> {
     if output.status != 0 {
-        return Err(RemoteTmuxError::new(
+        let mut error = RemoteTmuxError::new(
             DiagnosticKind::Transport,
             nonempty_diagnostic(&output.stderr, "SSH command transport failed"),
-        ));
+        );
+        error.retryable_transport = output.status == 255 && !ssh_needs_review(&error.detail);
+        return Err(error);
     }
     let stdout_framed = extract_framed_stdout(&output.stdout, begin_marker, end_marker);
     let stderr_framed = has_complete_frame(&output.stderr, begin_marker, end_marker);
@@ -1980,6 +1994,21 @@ fn nonempty_diagnostic(bytes: &[u8], fallback: &str) -> String {
 pub struct RemoteTmuxError {
     kind: DiagnosticKind,
     detail: String,
+    retryable_transport: bool,
+}
+
+fn ssh_needs_review(message: &str) -> bool {
+    let detail = message.to_ascii_lowercase();
+    [
+        "permission denied",
+        "authentication failed",
+        "no supported authentication methods",
+        "too many authentication failures",
+        "host key verification failed",
+        "remote host identification has changed",
+    ]
+    .iter()
+    .any(|message| detail.contains(message))
 }
 
 impl RemoteTmuxError {
@@ -1987,6 +2016,7 @@ impl RemoteTmuxError {
         Self {
             kind,
             detail: detail.into(),
+            retryable_transport: false,
         }
     }
 
@@ -2014,7 +2044,41 @@ impl RemoteTmuxError {
     }
 
     fn ssh(error: &crate::SshError) -> Self {
-        Self::new(error.kind(), error.to_string())
+        let mut failure = Self::new(error.kind(), error.to_string());
+        // Some controller failures advertise retryability after user action. Background
+        // recovery must not retry authentication or route/trust review on its own.
+        let needs_review = matches!(
+            error.code(),
+            Some(
+                "ssh_interaction_required"
+                    | "ssh_prompt_rejected"
+                    | "ssh_prompt_timed_out"
+                    | "ssh_configuration_changed"
+                    | "ssh_invalid_target"
+                    | "ssh_route_unreviewable"
+                    | "ssh_unsupported_version"
+                    | "ssh_persistent_unsupported"
+            )
+        );
+        failure.retryable_transport = !needs_review
+            && !ssh_needs_review(&failure.detail)
+            && (error.retryable()
+                || error.code() == Some("ssh_acquisition_timed_out")
+                || (error.code().is_none() && error.kind() == DiagnosticKind::Timeout));
+        failure
+    }
+
+    /// A bounded connection attempt expired; a later transport retry is allowed.
+    #[must_use]
+    pub fn timeout(detail: impl Into<String>) -> Self {
+        let mut error = Self::new(DiagnosticKind::Timeout, detail);
+        error.retryable_transport = true;
+        error
+    }
+
+    #[must_use]
+    pub const fn retryable_transport(&self) -> bool {
+        self.retryable_transport
     }
 
     /// Construct a host-scoped transport failure before SSH admission begins.
@@ -2049,6 +2113,86 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn connection_failures_separate_transport_retry_from_user_review() {
+        #[derive(Clone)]
+        struct Failure(&'static str, &'static str, bool);
+        impl CommandRunner for Failure {
+            fn run(
+                &self,
+                _program: &OsStr,
+                args: &[OsString],
+                _: &CancellationToken,
+                _: Duration,
+            ) -> std::io::Result<crate::CommandOutput> {
+                let expected: Vec<OsString> = ["ssh", "resolve", "--json", "--", "studio.example"]
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
+                assert!(args.ends_with(&expected));
+                Ok(crate::CommandOutput {
+                    status: 1,
+                    stdout: serde_json::to_vec(&serde_json::json!({
+                        "error": {"code": self.0, "message": self.1, "retryable": self.2}
+                    }))
+                    .unwrap(),
+                    stderr: Vec::new(),
+                })
+            }
+        }
+        for (code, message, retryable, expected) in [
+            ("ssh_connection_failed", "Connection refused", true, true),
+            ("ssh_connection_failed", "Connection refused", false, false),
+            (
+                "ssh_acquisition_timed_out",
+                "Acquisition timed out",
+                false,
+                true,
+            ),
+            ("ssh_configuration_changed", "Route changed", true, false),
+            ("ssh_prompt_timed_out", "Prompt expired", true, false),
+            ("ssh_interaction_required", "Review needed", true, false),
+            (
+                "ssh_connection_failed",
+                "Permission denied (publickey)",
+                true,
+                false,
+            ),
+            (
+                "ssh_connection_failed",
+                "Host key verification failed",
+                true,
+                false,
+            ),
+        ] {
+            let config = RemoteTmuxConfig::new(
+                "ssh:studio",
+                "Studio",
+                SshTarget::new("studio.example", None, None).unwrap(),
+                "/usr/bin/tmux",
+                None,
+            )
+            .unwrap();
+            let controller =
+                KwtSshExecutable::from_absolute(std::env::current_exe().unwrap()).unwrap();
+            let host = RemoteTmuxHost::new(
+                config,
+                &controller,
+                &SshExecutable::system().unwrap(),
+                &std::env::temp_dir().join("ghosthub-ssh-fixture"),
+                Failure(code, message, retryable),
+            );
+            let failure = host
+                .connect(
+                    &CancellationToken::new(),
+                    |_| panic!("resolution failed"),
+                    |_| {},
+                )
+                .expect_err("failed resolver reply");
+            assert_eq!(failure.retryable_transport(), expected, "{code}: {message}");
+        }
+    }
 
     fn framed_stdout(payload: &[u8], status: u8) -> Vec<u8> {
         let mut framed = b"BEGIN\n".to_vec();
@@ -2437,6 +2581,18 @@ mod tests {
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
         assert_eq!(error.to_string(), "connection closed");
+        assert!(error.retryable_transport());
+        let auth = extract_framed_command_output(
+            crate::CommandOutput {
+                status: 255,
+                stdout: Vec::new(),
+                stderr: b"Permission denied (publickey)".to_vec(),
+            },
+            "BEGIN",
+            "END",
+        )
+        .unwrap_err();
+        assert!(!auth.retryable_transport());
     }
 
     #[test]

@@ -668,9 +668,14 @@ server. Session inventory, retained-client keys, and exact Kill authority includ
 the server, so same-name sessions remain independent. The canonical server
 ignores `TMUX_TMPDIR`; its probe failures appear beside Projects without hiding
 ordinary sessions. Removing a project registration preserves its retained
-clients as session rows. Remote worktree mutation, protected or other named
-sockets, automatic reconnect, and persisted restoration remain separate Rust
-parity work.
+clients as session rows. Active ordinary SSH tmux clients recover automatically
+on transport exit 255 using fresh inventory and the original session identity.
+The event pump schedules one connection attempt per host with 1/2/4/8/16/30-second
+backoff and a 15-second deadline. Authentication and route-review failures pause
+automatic attempts until explicit Retry. Navigation clears the scene's saved
+target; Cancel pauses the host's automatic attempts. Retained inactive clients,
+protected worktrees, other backends, and persisted restoration remain separate
+recovery work.
 
 Ghosthub bundles revision-pinned kwt CLI builds for local project and worktree
 operations and for `darwin/{amd64,arm64}`, `linux/{amd64,arm64}`, and

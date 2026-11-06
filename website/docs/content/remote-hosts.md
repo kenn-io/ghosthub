@@ -213,16 +213,21 @@ its bundled KWT controller. See the [native Linux SSH guide](https://github.com/
 for setup and current limits. It supports remote tmux, Herdr, and Zellij
 session lifecycle actions, plus [projects and worktrees](projects-worktrees.md#rust-source-builds).
 
-If an active tmux terminal loses its SSH connection, select **Refresh** or
-**Retry** beside the host. Ghosthub reconnects and reopens that same session,
-even if it was renamed. It will not create a missing session or open a new
-session that reused the old name. Selecting another session, detaching, or
-closing the window cancels the pending recovery. If reconnecting or starting the
+If an active tmux terminal loses its SSH connection, Ghosthub retries
+automatically after 1, 2, 4, 8, 16, then 30 seconds. Automatic attempts have
+a 15-second limit. Select **Refresh** or **Retry** beside the host to try now
+and reset the backoff.
+Ghosthub reopens that same session, even if it was renamed. It will not create
+a missing session or open a new session that reused the old name. Selecting
+another session, detaching, or closing the window cancels the pending recovery. If reconnecting or starting the
 terminal fails, **Retry** still opens the original session. Recovery also works
-when tmux alternate-screen switching is disabled.
+when tmux alternate-screen switching is disabled. Authentication failures,
+changed SSH settings, and host-key prompts pause automatic attempts; select
+**Retry** to review them. **Cancel** stops an in-progress connection and further
+automatic attempts.
 
 This recovery supports the default tmux server and KWT's shared server.
 Select retained inactive sessions, protected PR worktrees, Herdr, and Zellij
-again to reopen them. Automatic retries remain follow-up work.
+again to reopen them.
 
 ![Native Linux Ghosthub after reconnecting to the original tmux shell](/docs/assets/guide-rust-ssh-reconnect.png)

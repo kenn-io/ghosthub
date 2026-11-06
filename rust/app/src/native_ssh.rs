@@ -163,7 +163,9 @@ impl Fixture {
         loop {
             let mut found = false;
             for event in self.workspace.drain_events().0 {
-                if let WorkspaceEvent::Error(message) = event {
+                if let WorkspaceEvent::Error(message)
+                | WorkspaceEvent::RemoteSessionInterrupted(message) = event
+                {
                     assert!(message.contains(expected), "{message}");
                     found = true;
                 }

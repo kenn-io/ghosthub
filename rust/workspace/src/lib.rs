@@ -1428,6 +1428,8 @@ pub enum WorkspaceEvent {
         worktree_path: Option<String>,
         message: String,
     },
+    /// The saved session is awaiting recovery; its current status is in the snapshot notice.
+    RemoteSessionInterrupted(String),
     Error(String),
 }
 
@@ -1915,6 +1917,7 @@ struct RemoteHostContext {
 }
 
 struct RemoteEntry {
+    reconnect: remote_recovery::retry::Retry,
     kwt: remote_kwt::State,
     config: RemoteTmuxConfig,
     native_host: Option<RuntimeRemoteHost>,
@@ -4235,6 +4238,7 @@ impl Workspace {
                     entries.insert(
                         item.id().to_owned(),
                         RemoteEntry {
+                            reconnect: remote_recovery::retry::Retry::default(),
                             kwt: remote_kwt::State::default(),
                             config: spec.config.clone(),
                             native_host: spec.runtime_host(&ssh_kwt_home, Arc::clone(&runner)),
@@ -4803,10 +4807,6 @@ impl Workspace {
     ///
     /// Returns an error when the host no longer exists or its background task
     /// cannot be scheduled.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the runtime/scene split lengthens shared-state paths without adding logic"
-    )]
     pub fn connect_host(&self, id: &str) -> Result<(), WorkspaceError> {
         // Lock order: `remote_publication` strictly before any scene
         // navigation lock. The publication side (publish_remote_connection
@@ -4830,6 +4830,15 @@ impl Workspace {
             // The connect fence above already holds the navigation guard.
             return self.refresh_locked();
         }
+        self.start_remote_connection(id, true)
+    }
+
+    // The caller holds publication and navigation, in that order.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the runtime/scene split lengthens shared-state paths without adding logic"
+    )]
+    fn start_remote_connection(&self, id: &str, interactive: bool) -> Result<(), WorkspaceError> {
         let generation = self
             .scene
             .runtime
@@ -4849,6 +4858,9 @@ impl Workspace {
                 let entry = entries
                     .get_mut(id)
                     .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
+                if interactive {
+                    entry.reconnect.enable();
+                }
                 cancel_remote_constructive(entry);
                 cancel_remote_attachment(entry);
                 remote_kwt::cancel_for_reconnect(entry);
@@ -4875,12 +4887,24 @@ impl Workspace {
                 let prompt_scene = Arc::clone(&scene);
                 let prompt_host = host_id.clone();
                 let prompt_cancel = cancellation.clone();
-                let result =
-                    remote_host_for_connection(&scene.runtime, config, native_host, &cancellation)
+                let result = remote_recovery::retry::attempt(
+                    &scene.runtime,
+                    &cancellation,
+                    interactive,
+                    || {
+                        remote_host_for_connection(
+                            &scene.runtime,
+                            config,
+                            native_host,
+                            &cancellation,
+                        )
                         .and_then(|host| {
                             host.connect(
                                 &cancellation,
                                 move |prompt| {
+                                    if !interactive {
+                                        return Err(host::SshError::interaction_required());
+                                    }
                                     request_ssh_prompt(
                                         &prompt_scene,
                                         &prompt_host,
@@ -4892,7 +4916,9 @@ impl Workspace {
                                 |_| {},
                             )
                             .map(|snapshot| (host, snapshot))
-                        });
+                        })
+                    },
+                );
                 publish_remote_connection(&scene, &host_id, generation, result);
             }),
         ) {
@@ -4908,6 +4934,7 @@ impl Workspace {
                     .filter(|entry| entry.generation == generation)
                     .map(|entry| {
                         entry.cancellation.take();
+                        entry.reconnect.pause();
                         entry.session_recoveries.clear();
                         entry.context.take()
                     });
@@ -4958,7 +4985,11 @@ impl Workspace {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 entries.get_mut(id).and_then(|entry| {
-                    let cancellation = entry.cancellation.take()?;
+                    let waiting = entry.reconnect.pause();
+                    let cancellation = entry.cancellation.take();
+                    if cancellation.is_none() && !waiting {
+                        return None;
+                    }
                     entry.session_recoveries.clear();
                     entry.generation = entry.generation.wrapping_add(1).max(1);
                     Some((cancellation, entry.context.take()))
@@ -4976,7 +5007,9 @@ impl Workspace {
             cancelled
         };
         if let Some((cancellation, stale_context)) = cancelled {
-            cancellation.cancel();
+            if let Some(cancellation) = cancellation {
+                cancellation.cancel();
+            }
             drop(stale_context);
             true
         } else {
@@ -5118,6 +5151,7 @@ impl Workspace {
                 .insert(
                     settings.id(),
                     RemoteEntry {
+                        reconnect: remote_recovery::retry::Retry::default(),
                         kwt: remote_kwt::State::default(),
                         config,
                         native_host: runtime,
@@ -6010,7 +6044,8 @@ impl Workspace {
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone()
-            };
+            }
+            .or_else(|| remote_recovery::notice(&self.scene));
             let active_selection = {
                 let remote = self
                     .scene

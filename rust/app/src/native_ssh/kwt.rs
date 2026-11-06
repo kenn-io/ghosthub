@@ -578,7 +578,17 @@ fn opens_and_kills_kwt_sessions_when_default_inventory_fails() {
     std::fs::create_dir(&directory).unwrap();
     remote_kwt(&["workspace", "add", directory.to_str().unwrap()]);
     fixture.connect();
-    wait_kwt_ready(&fixture);
+    // Host readiness precedes the asynchronous KWT refresh; the previous empty
+    // inventory is still marked available until that refresh starts.
+    fixture.wait(|snapshot| {
+        snapshot.hosts().iter().any(|host| {
+            host.id() == fixture.host_id
+                && host
+                    .directory_workspaces()
+                    .iter()
+                    .any(|row| Path::new(row.path()) == directory)
+        })
+    });
     let snapshot = fixture.workspace.snapshot();
     let row = &snapshot
         .hosts()
@@ -595,10 +605,13 @@ fn opens_and_kills_kwt_sessions_when_default_inventory_fails() {
     std::fs::write(&socket_directory, "not a directory").unwrap();
     fixture.connect();
     fixture.wait(|snapshot| {
-        snapshot
-            .hosts()
-            .iter()
-            .any(|host| host.id() == fixture.host_id && !host.kwt_refreshing())
+        snapshot.hosts().iter().any(|host| {
+            host.id() == fixture.host_id
+                && host
+                    .directory_workspaces()
+                    .iter()
+                    .any(|row| Path::new(row.path()) == directory && row.session_available())
+        })
     });
     let snapshot = fixture.workspace.snapshot();
     let host = snapshot

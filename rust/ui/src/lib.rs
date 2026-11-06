@@ -3722,6 +3722,8 @@ impl RootView {
                         apply_new_worktree_failure(dialog, operation_id, &project_path, message);
                     }
                 }
+                // Recovery status follows the snapshot and disappears when its target clears.
+                WorkspaceEvent::RemoteSessionInterrupted(_) => {}
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
             }
         }
