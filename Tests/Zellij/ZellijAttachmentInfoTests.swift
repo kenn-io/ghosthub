@@ -17,16 +17,38 @@ struct ZellijAttachmentInfoTests {
         #expect(!command.contains("--create"))
     }
 
-    @Test("attachment terminates options before a leading-dash name")
-    func attachmentLeadingDashName() throws {
+    @Test("attachment passes the session name as attach's positional argument")
+    func attachmentSessionArgument() throws {
         let command = try ZellijAttachmentInfo(
-            sessionName: "-release",
+            sessionName: "release work",
             host: .local
         ).attachCommand(zellijPath: "/usr/bin/zellij")
 
+        // Since Zellij 0.45.1, anything after `--` is an initial command, so
+        // a separator here would leave the session unnamed and show a picker.
         #expect(command.contains(
-            #"'\''attach'\'' '\''--'\'' '\''-release'\''"#
+            #"'\''attach'\'' '\''release work'\''"#
         ))
+        #expect(!command.contains(#"'\''--'\''"#))
+    }
+
+    @Test(
+        "attachment refuses names Zellij parses as flags or subcommands",
+        arguments: ["-release", "--", "help", "options"]
+    )
+    func attachmentRefusesUnattachableName(_ name: String) {
+        #expect(throws: ZellijCommandError.unattachableSessionName(name)) {
+            try ZellijAttachmentInfo(sessionName: name, host: .local)
+                .attachCommand(zellijPath: "/usr/bin/zellij")
+        }
+    }
+
+    @Test("a lone dash is an ordinary attach target")
+    func attachmentLoneDash() throws {
+        let command = try ZellijAttachmentInfo(sessionName: "-", host: .local)
+            .attachCommand(zellijPath: "/usr/bin/zellij")
+
+        #expect(command.contains(#"'\''attach'\'' '\''-'\''"#))
     }
 
     @Test("new session refuses live and resurrectable name collisions")

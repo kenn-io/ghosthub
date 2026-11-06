@@ -7,6 +7,7 @@ public enum ZellijCommandError:
     case missingMarker
     case malformedInventory(line: String)
     case unsupportedPlatform
+    case unattachableSessionName(String)
 
     public var errorDescription: String? {
         switch self {
@@ -23,6 +24,10 @@ public enum ZellijCommandError:
             return "Zellij returned an unrecognized session entry: \(line)"
         case .unsupportedPlatform:
             return "Native Zellij sessions are unavailable on Windows hosts."
+        case let .unattachableSessionName(name):
+            return "Zellij cannot attach to “\(name)”. Names must not "
+                + "start with “-” (except “-” itself) or equal “help” or "
+                + "“options”."
         }
     }
 }

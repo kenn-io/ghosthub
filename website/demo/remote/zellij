@@ -12,9 +12,11 @@ if [[ "${1:-}" == "list-sessions" && "${2:-}" == "--no-formatting" \
   exit 0
 fi
 
-if [[ "${1:-}" == "attach" && "${2:-}" == "--" \
-  && -n "${3:-}" && "$#" -eq 3 ]]; then
-  name="$3"
+# Zellij 0.45.1 reads `attach -- <name>` as an initial command and parses a
+# leading-dash name as a flag, so accept only the bare session argument.
+if [[ "${1:-}" == "attach" && -n "${2:-}" && "${2:-}" != -* \
+  && "$#" -eq 2 ]]; then
+  name="$2"
   [[ -f "$scratch/zellij-killed-$name" ]] && exit 1
   printf 'Remote Zellij demo session: %s\n' "$name"
   while true; do sleep 3600; done
