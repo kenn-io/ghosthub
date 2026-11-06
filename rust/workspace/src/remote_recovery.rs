@@ -3,6 +3,35 @@ use crate::{
     Workspace, WorkspaceError, lock_live_navigation, runtime,
 };
 
+#[cfg(feature = "test-support")]
+impl Workspace {
+    /// Observe connection and attachment completion without cancelling the queued work.
+    #[must_use]
+    pub fn remote_attachment_pending(&self, host_id: &str) -> bool {
+        // Ready is visible before recovery is scheduled. Wait for publication to finish
+        // before inspecting registrations, which remain until attachment work returns.
+        let _publication = self
+            .scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(host_id)
+            .is_some_and(|entry| {
+                entry.cancellation.is_some()
+                    || entry
+                        .attachment_attempts
+                        .iter()
+                        .any(|attempt| attempt.scene == self.scene.id)
+            })
+    }
+}
+
 pub(crate) struct InterruptedTmux {
     key: crate::RemotePresentationKey,
     navigation_generation: u64,

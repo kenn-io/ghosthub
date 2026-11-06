@@ -238,16 +238,21 @@ fn clean_tmux_detach_is_not_reopened_by_host_refresh() {
     fixture.tmux(&["detach-client", "-s", "=review"]);
     fixture.wait(|snapshot| matches!(snapshot.content(), WorkspaceContent::Shell));
     fixture.connect();
+    fixture.wait(|_| {
+        !fixture
+            .workspace
+            .remote_attachment_pending(&fixture.host_id)
+    });
     assert!(matches!(
         fixture.workspace.snapshot().content(),
         WorkspaceContent::Shell
     ));
-    fixture.attach("notes 'one'", "later-navigation");
     assert!(
         fixture
             .tmux(&["list-clients", "-t", "=review", "-F", "#{client_pid}"])
             .is_empty()
     );
+    fixture.attach("notes 'one'", "later-navigation");
 }
 
 #[test]
