@@ -549,14 +549,24 @@ def test_demo_zellij_accepts_hardened_session_arguments(
     (scratch / ".ghosthub-demo-scratch").touch()
     fixture = DEMO / fixture_name
     env = {**os.environ, scratch_variable: str(scratch)}
-    attached_expected = f"{render_prefix}: -release"
+    attached_expected = f"{render_prefix}: release"
     created_expected = f"{render_prefix}: -new-release"
 
     attached, attach_error = run_zellij_until_render(
         fixture,
-        ["attach", "--", "-release"],
+        ["attach", "release"],
         env=env,
         expected_output=attached_expected,
+    )
+    # Zellij 0.45.1 treats arguments after `--` as an initial command, so the
+    # faux must refuse the form that leaves the session unnamed.
+    separated = subprocess.run(
+        [str(fixture), "attach", "--", "release"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
     created, create_error = run_zellij_until_render(
         fixture,
@@ -574,6 +584,7 @@ def test_demo_zellij_accepts_hardened_session_arguments(
     )
 
     assert attached_expected in attached, attach_error
+    assert separated.returncode == 64
     assert created_expected in created, create_error
     assert killed.returncode == 0, killed.stderr
     assert (scratch / f"zellij-killed-{kill_name}").is_file()

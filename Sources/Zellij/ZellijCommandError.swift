@@ -25,9 +25,9 @@ public enum ZellijCommandError:
         case .unsupportedPlatform:
             return "Native Zellij sessions are unavailable on Windows hosts."
         case let .unattachableSessionName(name):
-            return "Zellij cannot attach to “\(name)”. Zellij reads names "
-                + "beginning with “-” (except “-” itself), “help”, and "
-                + "“options” as command-line arguments."
+            return "Zellij cannot attach to “\(name)”. Names must not "
+                + "start with “-” (except “-” itself) or equal “help” or "
+                + "“options”."
         }
     }
 }
