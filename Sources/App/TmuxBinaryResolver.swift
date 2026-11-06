@@ -407,7 +407,7 @@ struct TmuxBinaryResolver: Sendable {
                 + shellQuotedCommandArgument("#{@kwt_agent}")
                 + " -F "
                 + shellQuotedCommandArgument(agentFormat(socketName: socketName))
-                + " 2>/dev/null; else "
+                + " 2>/dev/null || :; else "
                 + "printf '%s\\n' \"$ghosthub_tmux_output\" >&2; "
                 + "case \"$ghosthub_tmux_output\" in "
                 + "*\"no server running on \"*|"
