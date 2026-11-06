@@ -1051,7 +1051,9 @@ working. A finished turn is acknowledged when its session is the connected
 active presentation in the key window. Ghosthub asks tmux for the server PID,
 session ID, and creation time of the session the active client shows when the
 attachment, selection, or window focus changes and after each tmux discovery
-for that host, and acknowledges only after that answer. A switch made with
+for that host, and acknowledges only after that answer. An answer that
+arrives after another of those changes is discarded and tmux is asked again,
+because it may describe the client before the change. A switch made with
 tmux's own keys, or a new session that takes a renamed session's name, is
 therefore never acknowledged in its place, and the tab follows the session
 the client shows. The acknowledgement records the newest `done` stamp under

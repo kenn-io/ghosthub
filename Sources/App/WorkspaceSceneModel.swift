@@ -1046,12 +1046,13 @@ final class WorkspaceSceneModel: ObservableObject {
             let shown = await nativeTmuxSessionCoordinator
                 .revalidateAttachedSessionIdentity(handle)
             shownTmuxSessionProbe = nil
-            if activeBorrowedTmuxHandle == handle {
-                shownTmuxSessionIdentity = shown
-                acknowledgeShownAgentTurn()
-            }
+            // A change during the probe may postdate tmux's answer, so
+            // only a fresh probe may publish or mark a turn seen.
             if shownTmuxSessionRecheck {
                 refreshShownTmuxSession()
+            } else if activeBorrowedTmuxHandle == handle {
+                shownTmuxSessionIdentity = shown
+                acknowledgeShownAgentTurn()
             }
         }
     }

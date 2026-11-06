@@ -194,6 +194,41 @@ extension WorkspaceTmuxDiscoveryTests {
             fixture.attention.acknowledgedDoneStamps.values.sorted() == [400]
         }
     }
+
+    @MainActor
+    @Test("a tmux answer that predates an inventory refresh does not mark a turn seen")
+    func staleShownSessionAnswerIsDiscarded() async throws {
+        let fixture = try AttentionFixture(sessions: [
+            agentSession("anchor", "$1", []),
+            agentSession("desk", "$2", []),
+        ])
+        await fixture.discover()
+        await fixture.open("anchor", attachedTo: "$1")
+        await waitUntilMainActor { fixture.model.shownTmuxSession?.name == "anchor" }
+
+        // Focusing the window asks tmux what the client shows; tmux answers
+        // "anchor" but the reply is slow to arrive.
+        let gate = DispatchSemaphore(value: 0)
+        fixture.identityGate.store(gate)
+        fixture.model.isFocusedWindow = true
+        await waitUntilMainActor { fixture.heldIdentityReplies.load() > 0 }
+
+        // Meanwhile the user switches the client to desk, and anchor's
+        // agent then finishes a turn the user has not seen.
+        fixture.attachedSessionID.store("$2")
+        await fixture.refresh([
+            agentSession("anchor", "$1", [
+                TmuxPaneAgentState(paneID: "%1", state: .done, stamp: 300, agent: "codex"),
+            ]),
+            agentSession("desk", "$2", []),
+        ])
+        fixture.identityGate.store(nil)
+        gate.signal()
+
+        await waitUntilMainActor { fixture.model.shownTmuxSession?.name == "desk" }
+        #expect(fixture.attention.acknowledgedDoneStamps.isEmpty)
+        #expect(fixture.current("anchor") == .finished(agent: "codex"))
+    }
 }
 
 @MainActor
@@ -206,6 +241,9 @@ private struct AttentionFixture {
     /// Session the next attached client reports; nil keeps it unverified.
     let attachedSessionID = LockedValue<String?>(nil)
     let identityReplies = LockedValue(0)
+    /// While set, identity replies wait on it after reading the session.
+    let identityGate = LockedValue<DispatchSemaphore?>(nil)
+    let heldIdentityReplies = LockedValue(0)
     private let sessions: LockedValue<[DiscoveredTmuxSession]>
 
     init(sessions: [DiscoveredTmuxSession]) throws {
@@ -216,6 +254,8 @@ private struct AttentionFixture {
         ))
         let attachedSessionID = attachedSessionID
         let identityReplies = identityReplies
+        let identityGate = identityGate
+        let heldIdentityReplies = heldIdentityReplies
         let sessions = LockedValue(sessions)
         self.sessions = sessions
         model = try makeModel(
@@ -231,6 +271,10 @@ private struct AttentionFixture {
                       let sessionID = attachedSessionID.load()
                 else { return (0, "") }
                 identityReplies.withLock { $0 += 1 }
+                if let gate = identityGate.load() {
+                    heldIdentityReplies.withLock { $0 += 1 }
+                    gate.wait()
+                }
                 return (
                     0,
                     "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t101\t789\t321"
