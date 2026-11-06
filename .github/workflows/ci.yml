@@ -119,7 +119,7 @@ jobs:
           fi
           archive="$RUNNER_TEMP/$archive_name"
           install_root="$RUNNER_TOOL_CACHE/zig/${version}/arm64"
-          curl --fail --silent --show-error --location \
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
             "https://ziglang.org/download/${version}/$archive_name" \
             --output "$archive"
           printf '%s  %s\n' "$sha256" "$archive" | shasum -a 256 -c -
@@ -161,7 +161,7 @@ jobs:
           fi
           archive="$RUNNER_TEMP/$archive_name"
           install_root="$RUNNER_TOOL_CACHE/swiftformat/${version}"
-          curl --fail --silent --show-error --location \
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
             "https://github.com/nicklockwood/SwiftFormat/releases/download/${version}/swiftformat.zip" \
             --output "$archive"
           if ! printf '%s  %s\n' "$sha256" "$archive" | shasum -a 256 -c -; then
