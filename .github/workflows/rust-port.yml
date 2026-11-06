@@ -226,7 +226,7 @@ jobs:
           echo "url=${url%%\?*}" >> "$GITHUB_OUTPUT"
 
       - name: Check that the page paints with its stylesheets and fonts
-        uses: kenn-io/actions/first-paint@5d46153e44375ef5ab11a3aaa1ad81ebcba0965c # authenticated system-font pages
+        uses: kenn-io/actions/first-paint@6a8b4227ec7ce3c28c6b042b735781b1601211f4 # authenticated system-font pages
         with:
           urls: ${{ steps.serve.outputs.url }}
           bearer-token: ${{ steps.serve.outputs.token }}
