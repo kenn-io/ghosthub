@@ -158,6 +158,44 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 }
 
+extension WorkspaceTmuxDiscoveryTests {
+    @MainActor
+    @Test("switching inside tmux from a quiet session follows the shown session")
+    func tmuxSessionSwitchFromQuietSession() async throws {
+        let fixture = try AttentionFixture(sessions: [
+            agentSession("anchor", "$1", []),
+            agentSession("desk", "$2", []),
+        ])
+        await fixture.discover()
+        await fixture.open("anchor", attachedTo: "$1")
+        await waitUntilMainActor { fixture.model.shownTmuxSession?.name == "anchor" }
+
+        // The user switches the client to desk with tmux's own keys, and
+        // desk's agent then asks for approval while the window is behind.
+        fixture.attachedSessionID.store("$2")
+        await fixture.refresh([
+            agentSession("anchor", "$1", []),
+            agentSession("desk", "$2", [
+                TmuxPaneAgentState(paneID: "%2", state: .approval, stamp: 300, agent: "claude"),
+            ]),
+        ])
+        await waitUntilMainActor { fixture.model.shownTmuxSession?.name == "desk" }
+        #expect(fixture.model.activeBorrowedTmuxSelection?.name == "anchor")
+
+        // The agent finishes; viewing the window marks desk's turn seen.
+        await fixture.refresh([
+            agentSession("anchor", "$1", []),
+            agentSession("desk", "$2", [
+                TmuxPaneAgentState(paneID: "%2", state: .done, stamp: 400, agent: "claude"),
+            ]),
+        ])
+        fixture.model.isFocusedWindow = true
+        await waitUntilMainActor {
+            fixture.attention.acknowledgedDoneStamps.values.sorted() == [400]
+        }
+    }
+}
+
 @MainActor
 private struct AttentionFixture {
     let hostID: UUID

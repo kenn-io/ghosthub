@@ -1613,15 +1613,17 @@ struct WorkspaceWindow: View {
         agentAttentionStore.attentionByEndpoint(in: sceneModel.snapshot)
     }
 
-    /// Attention for the session this window is showing, for its tab.
+    /// Attention for the session this window is showing, for its tab: the
+    /// session tmux reports the client shows, or the selection until then.
     private var activeSessionAgentAttention: AgentAttention? {
         guard let selection = sceneModel.activeBorrowedTmuxSelection else {
             return nil
         }
+        let shown = sceneModel.shownTmuxSession
         return agentAttentionByEndpoint[AgentAttentionStore.endpointKey(
             hostID: selection.hostID,
-            name: selection.name,
-            socketName: selection.socketName
+            name: shown?.name ?? selection.name,
+            socketName: shown?.socketName ?? selection.socketName
         )]
     }
 

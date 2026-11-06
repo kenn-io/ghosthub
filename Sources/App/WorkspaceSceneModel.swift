@@ -169,14 +169,16 @@ final class WorkspaceSceneModel: ObservableObject {
             sidebarSnapshotRevision &+= 1
             publishProtectedTmuxEndpoints()
             reconcileInventoryHosts()
-            acknowledgeVisibleAgentTurns()
         }
     }
     /// Remembers finished agent turns the user has seen; replaceable in tests.
     var agentAttentionStore: AgentAttentionStore = .shared
-    private var agentAcknowledgementTask: Task<Void, Never>?
+    /// The session tmux last reported the active client shows; it can differ
+    /// from the selection after a switch made with tmux's own keys.
+    @Published private(set) var shownTmuxSessionIdentity: TmuxSessionIdentity?
+    private var shownTmuxSessionProbe: Task<Void, Never>?
     /// Set when state changes during a probe, so it is checked again after.
-    private var agentAcknowledgementRecheck = false
+    private var shownTmuxSessionRecheck = false
     let sidebarSectionCache = WorkspaceSidebarSectionCache()
     private(set) var sidebarSnapshotRevision: UInt64 = 0
     private var tmuxDiscoveryEnabled = false
@@ -306,7 +308,10 @@ final class WorkspaceSceneModel: ObservableObject {
         [UUID: ConnectionState] = [:] {
         didSet {
             refreshConnectedBorrowedTmuxSessionIDs()
-            acknowledgeVisibleAgentTurns()
+            if let id = activeBorrowedTmuxHandle?.id,
+               oldValue[id] != borrowedTmuxConnectionStates[id] {
+                refreshShownTmuxSession()
+            }
         }
     }
     private(set) var connectedBorrowedTmuxSessionIDs:
@@ -333,10 +338,15 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     @Published private(set) var activeBorrowedTmuxSelection:
         WorkspaceTmuxSessionSelection? {
-        didSet { acknowledgeVisibleAgentTurns() }
+        didSet { refreshShownTmuxSession() }
     }
     private var activeBorrowedTmuxHandle: BorrowedTmuxSessionHandle? {
-        didSet { acknowledgeVisibleAgentTurns() }
+        didSet {
+            if activeBorrowedTmuxHandle?.id != oldValue?.id {
+                shownTmuxSessionIdentity = nil
+            }
+            refreshShownTmuxSession()
+        }
     }
     private(set) var activeBorrowedTmuxLaunchMode:
         TmuxAttachmentLaunchMode?
@@ -807,7 +817,7 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxSessionPreviewCoordinator.sceneWindowFocusDidChange(
                 isKey: isFocusedWindow
             )
-            acknowledgeVisibleAgentTurns()
+            refreshShownTmuxSession()
             guard isFocusedWindow else { return }
             syncTerminalConfig()
         }
@@ -1014,49 +1024,63 @@ final class WorkspaceSceneModel: ObservableObject {
     var defaultIdleThresholdSeconds: Int {
         workspaceConfiguration.notifications.idleThresholdSeconds
     }
-    /// A finished agent turn counts as seen once its session is the
-    /// connected presentation of the key window. Switching sessions updates
-    /// the selection before the handle, so the connected handle must be the
-    /// selected session's own. The turn belongs to the session tmux reports
-    /// the client is showing right now: matching by name would acknowledge a
-    /// new session that took a renamed one's name, and the identity cached at
-    /// attach goes stale when the user switches sessions inside tmux. Surface
-    /// readiness retries once the client's identity is first known.
-    func acknowledgeVisibleAgentTurns() {
-        guard agentAcknowledgementTask == nil else {
-            agentAcknowledgementRecheck = true
+    /// Asks tmux which session the active client shows, publishes it, and
+    /// then marks that session's finished turn as seen if the window is in
+    /// front. The selection is not enough: switching sessions with tmux's own
+    /// keys changes what the client shows, and a new session can take a
+    /// renamed one's name. Runs when the attachment, selection, or focus
+    /// changes and after each tmux discovery for the client's host, so it
+    /// costs one tmux query per inventory refresh.
+    func refreshShownTmuxSession() {
+        guard shownTmuxSessionProbe == nil else {
+            shownTmuxSessionRecheck = true
             return
         }
-        agentAcknowledgementRecheck = false
-        guard let handle = visibleTmuxHandleForAcknowledgement(),
-              let cached = nativeTmuxSessionCoordinator
-              .attachedSessionIdentity(handle),
-              let host = snapshot.host(id: handle.hostID),
-              let session = tmuxSession(on: host, handle: handle, identity: cached),
-              agentAttentionStore.hasUnacknowledgedDone(session, hostID: host.id)
+        shownTmuxSessionRecheck = false
+        guard let handle = activeTmuxHandleMatchingSelection(),
+              activeBorrowedTmuxSessionIsConnected,
+              nativeTmuxSessionCoordinator.attachedSessionIdentity(handle) != nil
         else { return }
-        agentAcknowledgementTask = Task { [weak self] in
+        shownTmuxSessionProbe = Task { [weak self] in
             guard let self else { return }
-            let current = await nativeTmuxSessionCoordinator
+            let shown = await nativeTmuxSessionCoordinator
                 .revalidateAttachedSessionIdentity(handle)
-            agentAcknowledgementTask = nil
-            if let current,
-               visibleTmuxHandleForAcknowledgement() == handle,
-               let host = snapshot.host(id: handle.hostID),
-               let session = tmuxSession(on: host, handle: handle, identity: current) {
-                agentAttentionStore.acknowledge(session, hostID: host.id)
+            shownTmuxSessionProbe = nil
+            if activeBorrowedTmuxHandle == handle {
+                shownTmuxSessionIdentity = shown
+                acknowledgeShownAgentTurn()
             }
-            if agentAcknowledgementRecheck {
-                acknowledgeVisibleAgentTurns()
+            if shownTmuxSessionRecheck {
+                refreshShownTmuxSession()
             }
         }
     }
 
-    private func visibleTmuxHandleForAcknowledgement()
-        -> BorrowedTmuxSessionHandle? {
+    /// The discovered session the active client shows, once tmux has said.
+    var shownTmuxSession: TmuxSessionSummary? {
+        guard let identity = shownTmuxSessionIdentity,
+              let handle = activeTmuxHandleMatchingSelection(),
+              let host = snapshot.host(id: handle.hostID)
+        else { return nil }
+        return tmuxSession(on: host, handle: handle, identity: identity)
+    }
+
+    /// A finished agent turn counts as seen once tmux reports its session
+    /// is what the connected active client of the key window shows.
+    private func acknowledgeShownAgentTurn() {
         guard isFocusedWindow,
               activeBorrowedTmuxSessionIsConnected,
-              let selection = activeBorrowedTmuxSelection,
+              let session = shownTmuxSession,
+              let hostID = activeBorrowedTmuxHandle?.hostID
+        else { return }
+        agentAttentionStore.acknowledge(session, hostID: hostID)
+    }
+
+    /// Switching sessions updates the selection before the handle, so the
+    /// handle counts only once it belongs to the selected session.
+    private func activeTmuxHandleMatchingSelection()
+        -> BorrowedTmuxSessionHandle? {
+        guard let selection = activeBorrowedTmuxSelection,
               let handle = activeBorrowedTmuxHandle,
               handle.hostID == selection.hostID,
               handle.name == selection.name,
@@ -4511,6 +4535,10 @@ final class WorkspaceSceneModel: ObservableObject {
             followTmuxRenames(hostID: hostID)
         }
         updateWorkspaceInventoryState()
+        if let hostID = activeBorrowedTmuxHandle?.hostID,
+           updatedHostIDs.contains(hostID) {
+            refreshShownTmuxSession()
+        }
     }
 
     private func applySharedInventoryProgress(
@@ -6149,6 +6177,9 @@ final class WorkspaceSceneModel: ObservableObject {
             applyDeferredTmuxPresentationsIfReady()
             followTmuxRenames(hostID: hostID)
             reconcileAlwaysLiveTmuxPresentations(hostID: hostID)
+            if activeBorrowedTmuxHandle?.hostID == hostID {
+                refreshShownTmuxSession()
+            }
         }
     }
 
@@ -10963,7 +10994,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func tmuxSurfaceBecameReady(
         _ handle: BorrowedTmuxSessionHandle
     ) {
-        acknowledgeVisibleAgentTurns()
+        refreshShownTmuxSession()
         guard let presentation = retainedTmuxPresentation(for: handle) else {
             return
         }
