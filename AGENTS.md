@@ -171,7 +171,8 @@ layer, as subject to direct iteration.
   sections such as "Changes", "Validation", "Tests", or "Verification";
   mention unusual validation only inline when it is genuinely useful reviewer
   context.
-- Prefix every Rust-port pull request title with `Rust Port:` so changelog and
+- Give every Rust-port pull request title the `rust-port` scope, as in
+  `feat(rust-port): open imported PR worktrees over SSH`, so changelog and
   release-note entries clearly identify Rust-port work.
 - Always attach current application screenshots to Rust-port pull requests.
   Inspect the captures before uploading and use only synthetic session data.
@@ -189,6 +190,34 @@ layer, as subject to direct iteration.
   from the branch before pushing, opening, or updating a pull request.
 - Do not poll or watch GitHub Actions through `gh`, the GitHub API, or browser automation unless the user explicitly asks you to do so.
 - **NO DATABASE MIGRATIONS** until the first production release. Update the current schema, bootstrap paths, fixtures, and tests directly.
+
+## Commit Messages
+
+Commit subjects must use the Conventional Commits format. Pull requests are
+squash-merged: the PR title becomes the commit subject and the PR description
+becomes the commit body, so PR titles use the same format.
+
+```text
+type(scope): summary
+```
+
+The scope is optional and names the part of the project the change touches.
+Use one of these types:
+
+- `feat`: a new capability users can see or use.
+- `fix`: a bug fix users can notice.
+- `perf`: faster or lighter behavior users can notice.
+- `refactor`, `test`, `docs`, `build`, `ci`, or `chore`: a change that leaves
+  product behavior as it was.
+
+Mark a breaking change with `!` before the colon, as in
+`feat(api)!: remove the v1 endpoints`, and describe the break in a
+`BREAKING CHANGE:` footer at the end of the commit body or PR description.
+
+This format is required. Releases and release notes are generated from these
+messages: the type decides whether a change appears in the notes and under
+which heading, and the version bump follows the largest change since the last
+release, from a breaking change to `feat` to `fix`.
 
 ## Issue Tracking
 
