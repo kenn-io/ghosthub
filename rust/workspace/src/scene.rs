@@ -611,6 +611,7 @@ pub(crate) fn publish_remote_connection(
     entry.cancellation = None;
     match result {
         Ok((host, snapshot)) => {
+            entry.reconnect.connected();
             let endpoint = snapshot.endpoint().to_owned();
             let route_identity = snapshot.route_identity().to_owned();
             let lease_generation = snapshot.lease_generation();
@@ -642,6 +643,11 @@ pub(crate) fn publish_remote_connection(
             crate::remote_recovery::restore_tmux(&scenes, host_id, generation, &host, &snapshot);
         }
         Err(error) => {
+            if error.retryable_transport() {
+                entry.reconnect.schedule(std::time::Instant::now());
+            } else {
+                entry.reconnect.pause();
+            }
             let diagnostic = HostDiagnostic::new(error.kind(), error.to_string());
             entry.session_recoveries.clear();
             cancel_remote_constructive(entry);
@@ -4242,6 +4248,7 @@ fn cancel_dropped_event(scene: &Scene, event: WorkspaceEvent) {
         | WorkspaceEvent::KwtBranchesLoaded { .. }
         | WorkspaceEvent::KwtPullRequestsLoaded { .. }
         | WorkspaceEvent::KwtWorktreeCreated { .. }
+        | WorkspaceEvent::RemoteSessionInterrupted(_)
         | WorkspaceEvent::Error(_) => {}
         // Dialog-settling events travel the lossless lane and are never
         // enqueued as sheddable entries, so overflow cannot hand them to

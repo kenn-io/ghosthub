@@ -1267,8 +1267,7 @@ impl LeaseState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(active) = process.as_mut() else {
-            return Err(SshError::new(
-                DiagnosticKind::Transport,
+            return Err(SshError::interrupted(
                 "SSH lease controller is no longer active",
             ));
         };
@@ -1383,9 +1382,9 @@ impl LeaseProcess {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let message = String::from_utf8_lossy(&diagnostic).trim().to_owned();
         if message.is_empty() {
-            SshError::new(DiagnosticKind::Transport, fallback)
+            SshError::interrupted(fallback)
         } else {
-            SshError::new(DiagnosticKind::Transport, message)
+            SshError::interrupted(message)
         }
     }
 
@@ -1531,6 +1530,12 @@ impl SshError {
         }
     }
 
+    fn interrupted(detail: impl Into<String>) -> Self {
+        let mut error = Self::new(DiagnosticKind::Transport, detail);
+        error.retryable = true;
+        error
+    }
+
     fn malformed(detail: impl Into<String>) -> Self {
         Self::new(DiagnosticKind::MalformedOutput, detail)
     }
@@ -1549,6 +1554,15 @@ impl SshError {
             detail: failure.message,
             retryable: failure.retryable,
         }
+    }
+
+    /// Stop a background connection until the user explicitly reviews SSH prompts.
+    #[must_use]
+    pub fn interaction_required() -> Self {
+        Self::new(
+            DiagnosticKind::PermissionDenied,
+            "SSH needs your attention. Choose Retry to continue.",
+        )
     }
 
     /// Construct the user-cancelled prompt result used by native UI bridges.
@@ -2447,6 +2461,8 @@ mod tests {
 
         assert_eq!(error.kind(), DiagnosticKind::Transport);
         assert!(error.to_string().contains("controller exited"));
+        assert!(error.retryable(), "lease loss permits a fresh connection");
+        assert!(lease.ensure_live().unwrap_err().retryable());
     }
 
     #[test]

@@ -3,6 +3,8 @@ use crate::{
     Workspace, WorkspaceError, lock_live_navigation, runtime,
 };
 
+pub(crate) mod retry;
+
 #[cfg(feature = "test-support")]
 impl Workspace {
     /// Observe connection and attachment completion without cancelling the queued work.
@@ -37,6 +39,39 @@ pub(crate) struct InterruptedTmux {
     navigation_generation: u64,
 }
 
+/// Derive status from the saved target so success, cancellation and navigation cannot
+/// leave a stale reconnect message in the UI. Do not hold the target lock across hosts.
+pub(crate) fn notice(scene: &crate::Scene) -> Option<crate::WorkspaceNotice> {
+    let host_id = {
+        let interrupted = scene
+            .interrupted_tmux
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = interrupted.as_ref()?;
+        if pending.navigation_generation
+            != scene.navigation_generation.load(crate::Ordering::Acquire)
+        {
+            return None;
+        }
+        pending.key.host_id.clone()
+    };
+    let entries = scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = entries.get(&host_id)?;
+    Some(crate::WorkspaceNotice {
+        message: if entry.reconnect.enabled() {
+            "Connection interrupted. Reconnecting automatically."
+        } else {
+            "Connection interrupted. Choose Retry beside the host."
+        }
+        .to_owned(),
+        transient: false,
+    })
+}
+
 /// Preserve the selected ordinary tmux identity, even if SSH failed before terminal startup.
 /// Called under the navigation fence; explicit navigation still cancels recovery.
 pub(crate) fn remember_tmux(scene: &crate::Scene, active: &crate::RemoteActive) -> bool {
@@ -57,6 +92,7 @@ pub(crate) fn remember_tmux(scene: &crate::Scene, active: &crate::RemoteActive) 
         key: active.key.clone(),
         navigation_generation: active.navigation_generation,
     });
+    retry::schedule(scene, &active.key.host_id);
     true
 }
 
@@ -108,7 +144,7 @@ pub(crate) fn forget_tmux_host(scene: &crate::Scene, host_id: &str) {
     }
 }
 
-/// A successful explicit reconnect supplies fresh inventory. Never create a missing session.
+/// A successful reconnect supplies fresh inventory. Never create a missing session.
 /// The caller holds publication and retains all scene handles until it releases that lock.
 pub(crate) fn restore_tmux(
     scenes: &[crate::Arc<crate::Scene>],
