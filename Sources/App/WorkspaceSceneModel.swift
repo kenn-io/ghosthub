@@ -1014,7 +1014,10 @@ final class WorkspaceSceneModel: ObservableObject {
     /// A finished agent turn counts as seen once its session is the
     /// connected presentation of the key window. Switching sessions updates
     /// the selection before the handle, so the connected handle must be the
-    /// selected session's own.
+    /// selected session's own. The discovered session must also be the one
+    /// the client verifiably attached to, so a new session that takes the
+    /// name of a renamed one is not acknowledged; surface readiness retries
+    /// once that identity is known.
     func acknowledgeVisibleAgentTurns() {
         guard isFocusedWindow,
               activeBorrowedTmuxSessionIsConnected,
@@ -1023,10 +1026,14 @@ final class WorkspaceSceneModel: ObservableObject {
               handle.hostID == selection.hostID,
               handle.name == selection.name,
               handle.socketName == selection.socketName,
+              let attached = nativeTmuxSessionCoordinator
+              .attachedSessionIdentity(handle),
               let host = snapshot.host(id: selection.hostID),
               let session = host.tmuxSessions.first(where: {
-                  $0.name == selection.name
-                      && $0.socketName == selection.socketName
+                  $0.socketName == selection.socketName
+                      && $0.serverPID == attached.serverPID
+                      && $0.sessionID == attached.sessionID
+                      && $0.createdAt == attached.createdAt
               })
         else { return }
         agentAttentionStore.acknowledge(session, hostID: host.id)
@@ -10917,6 +10924,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func tmuxSurfaceBecameReady(
         _ handle: BorrowedTmuxSessionHandle
     ) {
+        acknowledgeVisibleAgentTurns()
         guard let presentation = retainedTmuxPresentation(for: handle) else {
             return
         }
