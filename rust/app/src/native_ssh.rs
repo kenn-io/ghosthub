@@ -10,6 +10,7 @@ use workspace::{
 
 mod herdr;
 mod kwt;
+mod recovery;
 mod zellij;
 
 struct Fixture {

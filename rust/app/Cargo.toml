@@ -27,6 +27,7 @@ hex.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+ghosthub-workspace = { workspace = true, features = ["test-support"] }
 sha2.workspace = true
 serde_json.workspace = true
 

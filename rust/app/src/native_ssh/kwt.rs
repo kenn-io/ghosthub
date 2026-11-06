@@ -1429,6 +1429,98 @@ fn opens_idle_worktrees_and_reuses_the_attached_client() {
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn reconnect_restores_the_worktree_client_on_the_kwt_server() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::reconnect_restores_the_worktree_client_on_the_kwt_server",
+    ) else {
+        return;
+    };
+    let project_path = fixture.root.join("orbit");
+    create_project(&project_path);
+    fixture.connect();
+    wait_kwt_ready(&fixture);
+    let path = project_path.to_str().unwrap();
+    remote_kwt(&["projects", "add", path, "--json"]);
+    remote_kwt_in(path, &["add", "--branch", "feature", "--no-launch"]);
+    fixture.connect();
+    fixture.wait(|snapshot| {
+        snapshot.hosts().iter().any(|host| {
+            host.id() == fixture.host_id
+                && host.projects().iter().any(|project| {
+                    project.path() == path
+                        && project
+                            .worktrees()
+                            .iter()
+                            .any(|worktree| worktree.branch() == "feature")
+                })
+        })
+    });
+    let snapshot = fixture.workspace.snapshot();
+    let project = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == fixture.host_id)
+        .unwrap()
+        .projects()
+        .iter()
+        .find(|project| project.path() == path)
+        .unwrap();
+    let worktree = project
+        .worktrees()
+        .iter()
+        .find(|worktree| worktree.branch() == "feature")
+        .unwrap();
+    fixture
+        .workspace
+        .open_kwt_worktree(
+            &fixture.host_id,
+            &fixture.endpoint,
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+            worktree.path(),
+            worktree.generation(),
+            worktree.session_name(),
+            worktree.tmux_socket_name(),
+            worktree.tmux_attach_mode(),
+        )
+        .unwrap();
+    fixture.tmux_shell(worktree.session_name(), "kwt-before-loss");
+    fixture.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        worktree.session_name(),
+        "/bin/sh",
+    ]);
+    fixture.interrupt_ssh();
+    fixture.connect();
+    fixture.tmux_shell(worktree.session_name(), "kwt-after-reconnect");
+    assert!(fixture.terminal_text().contains("kwt-before-loss"));
+    assert_eq!(
+        fixture
+            .workspace
+            .snapshot()
+            .active_selection()
+            .unwrap()
+            .tmux_socket_name(),
+        Some("kwt")
+    );
+    assert!(
+        fixture
+            .tmux(&[
+                "list-clients",
+                "-t",
+                &format!("={}", worktree.session_name()),
+                "-F",
+                "#{client_pid}"
+            ])
+            .is_empty()
+    );
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 fn opens_idle_worktree_with_destroy_unattached() {
     let Some(fixture) =
         Fixture::isolated("native_ssh::kwt::opens_idle_worktree_with_destroy_unattached")

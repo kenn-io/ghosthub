@@ -142,6 +142,16 @@ pub(crate) fn monitor_remote_lease_liveness(runtime: &Runtime) {
 }
 
 impl Workspace {
+    /// Hold terminal event consumption while an integration test completes a reconnect.
+    #[cfg(feature = "test-support")]
+    pub fn pause_event_pump(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.scene
+            .runtime
+            .event_drain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Consume one pump pass of this scene's worker events: the active
     /// worker within `ACTIVE_EVENT_BUDGET`, exit classification and
     /// handling, then the retained and remote-retained drains within the
@@ -220,6 +230,7 @@ impl Workspace {
                     else {
                         if self.handle_remote_terminal_exit(
                             source_worker_generation,
+                            code == 255,
                             self.classify_active_remote_terminal_exit(
                                 source_worker_generation,
                                 code,
@@ -253,6 +264,7 @@ impl Workspace {
                     else {
                         if self.handle_remote_terminal_exit(
                             source_worker_generation,
+                            false,
                             Some(error.to_string()),
                             &mut emitted,
                         ) {
@@ -323,9 +335,23 @@ impl Workspace {
     pub(crate) fn handle_remote_terminal_exit(
         &self,
         worker_generation: u64,
+        transport_lost: bool,
         error: Option<String>,
         emitted: &mut Vec<WorkspaceEvent>,
     ) -> bool {
+        // Reconnect publication takes these fences in this order too. Either it sees
+        // the saved target, or this exit sees the already-published newer connection.
+        let _publication = self
+            .scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let navigation = self
+            .scene
+            .navigation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut remote_active = self
             .scene
             .remote_active
@@ -346,9 +372,11 @@ impl Workspace {
             return false;
         }
         let closed = worker.invalidate_if_generation(worker_generation);
-        let _active = remote_active.take();
+        let active = remote_active.take().expect("checked active remote worker");
         drop(worker);
         drop(remote_active);
+        let recoverable =
+            transport_lost && crate::remote_recovery::remember_tmux(&self.scene, &active);
         // An exited terminal's queued and in-flight clipboard writes are
         // discarded: its authority ended with its process.
         if let Some(worker) = closed {
@@ -360,7 +388,15 @@ impl Workspace {
         clear_terminal_notice(&self.scene);
         self.restore_inventory_state();
         if let Some(error) = error {
-            emitted.push(WorkspaceEvent::Error(error));
+            emitted.push(WorkspaceEvent::Error(if recoverable {
+                format!("{error}. Refresh the host to reopen this session.")
+            } else {
+                error
+            }));
+        }
+        drop(navigation);
+        if recoverable {
+            crate::remote_recovery::restore_after_tmux_exit(&self.scene, &active);
         }
         true
     }
