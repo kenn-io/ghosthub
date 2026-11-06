@@ -2,16 +2,15 @@ import Foundation
 import GhosthubTransport
 import GhosthubUI
 
-enum KwtAgentHookError: Error, Equatable, LocalizedError {
-    case commandFailed(host: String, status: Int32, message: String?)
-    case malformedOutput(host: String)
+/// The command failed or its output could not be read.
+struct KwtAgentHookError: Error, Equatable, LocalizedError {
+    var action: KwtAgentHookClient.Action
+    var host: String
 
     var errorDescription: String? {
-        switch self {
-        case let .commandFailed(host, status, message):
-            message ?? "kwt agent-hook exited with status \(status) on \(host)."
-        case let .malformedOutput(host):
-            "kwt returned an invalid agent hook response on \(host)."
+        switch action {
+        case .status: "Could not read agent hook status on \(host)."
+        case .install: "Agent hook setup failed on \(host)."
         }
     }
 }
@@ -88,7 +87,7 @@ struct KwtAgentHookClient: Sendable {
             }
             result = (output.status, output.stdout)
         }
-        return try Self.decode(result, hostLabel: host.displayName)
+        return try Self.decode(result, action: action, hostLabel: host.displayName)
     }
 
     static func command(_ action: Action, binaryPrelude: String) -> String {
@@ -99,20 +98,17 @@ struct KwtAgentHookClient: Sendable {
 
     static func decode(
         _ result: (status: Int32, stdout: String),
+        action: Action,
         hostLabel: String
     ) throws -> [AgentHookSetupStatus] {
         let output = result.stdout.replacingOccurrences(of: "\r\n", with: "\n")
-        guard result.status == 0 else {
-            throw KwtAgentHookError.commandFailed(
-                host: hostLabel, status: result.status, message: nil
-            )
-        }
-        guard let marker = output.range(of: jsonMarker, options: .backwards),
+        guard result.status == 0,
+              let marker = output.range(of: jsonMarker, options: .backwards),
               let response = try? JSONDecoder().decode(
                   Response.self, from: Data(output[marker.upperBound...].utf8)
               )
         else {
-            throw KwtAgentHookError.malformedOutput(host: hostLabel)
+            throw KwtAgentHookError(action: action, host: hostLabel)
         }
         return response.agents
     }
