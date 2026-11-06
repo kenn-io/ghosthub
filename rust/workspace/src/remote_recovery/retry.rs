@@ -40,8 +40,18 @@ impl Retry {
         self.started = None;
     }
 
+    pub(crate) fn restored(&mut self) {
+        self.interval = 0;
+        self.connected();
+    }
+
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn interval(&self) -> Duration {
+        Duration::from_secs(INTERVALS[self.interval])
     }
 
     fn due(&self, now: Instant) -> bool {
@@ -60,6 +70,57 @@ pub(crate) fn schedule(scene: &Scene, host_id: &str) {
         && entry.cancellation.is_none()
     {
         entry.reconnect.schedule(Instant::now());
+    }
+}
+
+/// Wait outside publication, navigation and session locks for tmux to acknowledge its client.
+pub(crate) fn confirm_restoration(
+    scene: &Scene,
+    request: &crate::RemoteTmuxAttachRequest,
+    receipt: &host::CreationReceipt,
+    navigation_generation: u64,
+    cancellation: &CancellationToken,
+) {
+    let identity = request.host.wait_for_creation_identity(
+        &request.snapshot,
+        receipt,
+        cancellation,
+        Duration::from_secs(15),
+    );
+    if identity.as_ref().ok() != Some(request.session.identity()) {
+        return;
+    }
+    let _publication = scene
+        .runtime
+        .remote_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Ok(_navigation) = lock_live_navigation(scene) else {
+        return;
+    };
+    if cancellation.is_cancelled()
+        || scene.navigation_generation.load(Ordering::Acquire) != navigation_generation
+    {
+        return;
+    }
+    let mut entries = scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(entry) = entries.get_mut(&request.host_id)
+        && entry.generation == request.connection_generation
+        && scene
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|active| {
+                active.connection_generation == request.connection_generation
+                    && active.navigation_generation == navigation_generation
+            })
+    {
+        entry.reconnect.restored();
     }
 }
 
@@ -165,9 +226,7 @@ pub(crate) fn attempt<T>(
                 connection_cancel.cancel();
             }),
         )
-        .map_err(|error| {
-            host::RemoteTmuxError::transport(format!("start SSH deadline: {error}"))
-        })?;
+        .map_err(|error| host::RemoteTmuxError::transport(format!("Reconnect failed: {error}")))?;
     let result = connect();
     deadline.cancel();
     if expired.load(Ordering::Acquire) {
@@ -283,6 +342,22 @@ mod tests {
         retry.enable();
         retry.schedule(now);
         assert!(retry.due(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_connection_without_a_restored_terminal_keeps_the_backoff() {
+        let mut retry = Retry::default();
+        let now = Instant::now();
+        retry.enable();
+        retry.schedule(now);
+        retry.connected();
+        retry.schedule(now);
+        assert!(!retry.due(now + Duration::from_millis(1999)));
+        assert!(retry.due(now + Duration::from_secs(2)));
+        retry.connected();
+        retry.schedule(now);
+        assert!(!retry.due(now + Duration::from_millis(3999)));
+        assert!(retry.due(now + Duration::from_secs(4)));
     }
 
     #[test]

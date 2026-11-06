@@ -75,16 +75,36 @@ fn transport_loss_automatically_restores_the_selected_tmux_session() {
     ) else {
         return;
     };
+    fixture.tmux(&[
+        "set-option",
+        "-as",
+        "terminal-overrides",
+        ",*:smcup@:rmcup@",
+    ]);
     fixture.connect();
     fixture.attach("review", "before-automatic-recovery");
-    fixture.break_ssh_connections();
-    fixture.wait_for_error("status 255");
-    fixture.wait_for_automatic_recovery();
-    assert!(
-        fixture.workspace.snapshot().notice().is_none(),
-        "recovery must clear its notice"
-    );
-    fixture.tmux_shell("review", "automatic-recovery");
+    for marker in ["first-automatic-recovery", "second-automatic-recovery"] {
+        fixture.break_ssh_connections();
+        fixture.wait_for_error("status 255");
+        fixture.wait_for_automatic_recovery();
+        assert!(
+            fixture.workspace.snapshot().notice().is_none(),
+            "recovery must clear its notice"
+        );
+        fixture.tmux_shell("review", marker);
+        fixture.wait(|_| {
+            !fixture
+                .workspace
+                .remote_attachment_pending(&fixture.host_id)
+        });
+        assert_eq!(
+            fixture
+                .workspace
+                .remote_reconnect_interval(&fixture.host_id),
+            Some(Duration::from_secs(1)),
+            "a restored terminal must give the next outage its initial delay"
+        );
+    }
     assert!(
         fixture
             .terminal_text()
@@ -175,18 +195,44 @@ exec /usr/bin/tmux "$@"
         .unwrap();
     fixture.connect();
     fixture.attach("review", "before-startup-failure");
-    fixture.interrupt_ssh();
     let home = fixture.root.join("home");
     std::fs::write(home.join("block-tmux-attach"), "").unwrap();
-    fixture.connect();
+    fixture.break_ssh_connections();
+    fixture.wait_for_error("status 255");
     fixture.wait(|snapshot| {
         home.join("tmux-attach-started").exists()
             && matches!(snapshot.content(), WorkspaceContent::Terminal { .. })
     });
-    fixture.interrupt_ssh();
+    assert_eq!(
+        fixture
+            .workspace
+            .remote_reconnect_interval(&fixture.host_id),
+        Some(Duration::from_secs(2)),
+        "launching SSH does not acknowledge tmux attachment"
+    );
+    fixture.break_ssh_connections();
+    fixture.wait_for_error("status 255");
+    assert_eq!(
+        fixture
+            .workspace
+            .remote_reconnect_interval(&fixture.host_id),
+        Some(Duration::from_secs(4)),
+        "failed terminal startup must keep increasing the retry interval"
+    );
     std::fs::remove_file(home.join("block-tmux-attach")).unwrap();
-    fixture.connect();
+    fixture.wait_for_automatic_recovery();
     fixture.tmux_shell("review", "resumed-after-startup-failure");
+    fixture.wait(|_| {
+        !fixture
+            .workspace
+            .remote_attachment_pending(&fixture.host_id)
+    });
+    assert_eq!(
+        fixture
+            .workspace
+            .remote_reconnect_interval(&fixture.host_id),
+        Some(Duration::from_secs(1)),
+    );
     assert!(
         fixture
             .terminal_text()
@@ -432,13 +478,18 @@ fn automatic_recovery_retries_an_unavailable_server() {
             .iter()
             .find(|host| host.id() == fixture.host_id)
             .unwrap();
-        if host.connection() == HostConnectionState::Unavailable {
-            assert!(host.diagnostic().is_some());
+        if host.connection() == HostConnectionState::Unavailable
+            && host.diagnostic().is_some_and(|diagnostic| {
+                diagnostic.message().contains("port 1:")
+                    && diagnostic.message().contains("Connection refused")
+            })
+        {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "automatic connection did not fail"
+            "automatic connection to Port 1 did not fail: {:?}",
+            host.diagnostic()
         );
         thread::sleep(Duration::from_millis(20));
     }

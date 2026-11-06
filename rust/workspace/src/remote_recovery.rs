@@ -7,6 +7,18 @@ pub(crate) mod retry;
 
 #[cfg(feature = "test-support")]
 impl Workspace {
+    /// Observe the delay selected for the next reconnect without starting or cancelling work.
+    #[must_use]
+    pub fn remote_reconnect_interval(&self, host_id: &str) -> Option<std::time::Duration> {
+        self.scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(host_id)
+            .map(|entry| entry.reconnect.interval())
+    }
+
     /// Observe connection and attachment completion without cancelling the queued work.
     #[must_use]
     pub fn remote_attachment_pending(&self, host_id: &str) -> bool {
@@ -85,6 +97,7 @@ pub(crate) fn remember_tmux(scene: &crate::Scene, active: &crate::RemoteActive) 
     {
         return false;
     }
+    crate::runtime::cancel_scene_remote_attachments(&scene.runtime, scene.id);
     *scene
         .interrupted_tmux
         .lock()

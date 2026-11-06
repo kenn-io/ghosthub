@@ -821,6 +821,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
     ///
     /// The returned marker is unique to this attachment and is the only
     /// authoritative identity-mismatch signal in the client's output.
+    /// The receipt acknowledges attachment independently of terminal screen modes.
     ///
     /// # Errors
     ///
@@ -832,12 +833,19 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         server: RemoteTmuxServer,
         session: &DiscoveredSession,
         term: &str,
-    ) -> Result<(AttachPlan, String), RemoteTmuxError> {
+    ) -> Result<(AttachPlan, String, CreationReceipt), RemoteTmuxError> {
         snapshot
             .lease()
             .ensure_live()
             .map_err(|error| RemoteTmuxError::ssh(&error))?;
         let identity_mismatch_marker = identity_mismatch_marker()?;
+        let receipt = crate::local::creation_identity_receipt()
+            .map_err(|error| RemoteTmuxError::from_host(&error))?;
+        // Only an attached client can acknowledge startup; screen modes are optional.
+        let report = format!(
+            "/bin/sh -c 'test \"$6\" = 1 || exit; umask 077; set -C; printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && mv -f \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}' '#{{!=:#{{client_session}},}}'",
+            receipt.staging_path, receipt.path
+        );
         let identity = session.identity();
         let condition = tmux_identity_condition(identity);
         let attach = format!("attach-session -E -t ={}", identity.session_id());
@@ -859,6 +867,10 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
                 &condition,
                 &attach,
                 &format!("display-message -p {identity_mismatch_marker}"),
+                ";",
+                "run-shell",
+                "-b",
+                &report,
             ],
         );
         let mut command = command;
@@ -876,7 +888,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             session.name(),
             session.identity().clone(),
         );
-        Ok((plan, identity_mismatch_marker))
+        Ok((plan, identity_mismatch_marker, receipt))
     }
 
     /// Revalidate a confirmed Herdr Stop/Delete and execute it on the reviewed lease.
@@ -1072,7 +1084,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok((plan, receipt))
     }
 
-    /// Read the exact identity reported by the one-shot remote tmux client.
+    /// Read the exact identity acknowledged by the remote tmux client.
     ///
     /// # Errors
     ///

@@ -4786,7 +4786,7 @@ pub(crate) fn run_remote_tmux_attach(
         host_id: &request.host_id,
         navigation_generation,
     };
-    let _operation = scene
+    let operation = scene
         .runtime
         .session_operations
         .lock()
@@ -4797,43 +4797,63 @@ pub(crate) fn run_remote_tmux_attach(
     let result =
         recapture_remote_tmux_attach_request(&scene.runtime, request).and_then(|request| {
             prepare_remote_tmux_attachment(scene, &request, navigation_generation, cancellation)
-                .and_then(|(navigation, worker, term, identity_mismatch_marker)| {
-                    // The launch fence rides into publication: the same
-                    // guard that authorized the spawn covers the publish, so
-                    // a close cannot strand the worker unregistered.
-                    let key = RemotePresentationKey {
-                        host_id: request.host_id.clone(),
-                        endpoint: request.snapshot.endpoint().to_owned(),
-                        route_identity: request.snapshot.route_identity().to_owned(),
-                        lease_generation: request.snapshot.lease_generation(),
-                        session_identity: RemoteSessionIdentity::tmux(
-                            request.selection.remote_tmux_server()?,
-                            request.session.identity().clone(),
-                        ),
-                    };
-                    let selection = key.selection(SessionKind::Tmux, request.session.name());
-                    let published = publish_remote_worker(
-                        scene,
-                        worker,
-                        key,
-                        &selection,
-                        request.snapshot.lease().clone(),
-                        next_presentation_id(&scene.runtime),
-                        term,
-                        Some(identity_mismatch_marker),
-                        Some(&RemotePublicationFence {
-                            host_id: &request.host_id,
-                            connection_generation: request.connection_generation,
-                            snapshot: &request.snapshot,
-                            cancellation,
-                        }),
-                    )
-                    .map_err(|error| error.error);
-                    drop(navigation);
-                    published?;
-                    Ok(())
-                })
+                .and_then(
+                    |(navigation, worker, term, identity_mismatch_marker, receipt)| {
+                        // The launch fence rides into publication: the same
+                        // guard that authorized the spawn covers the publish, so
+                        // a close cannot strand the worker unregistered.
+                        let key = RemotePresentationKey {
+                            host_id: request.host_id.clone(),
+                            endpoint: request.snapshot.endpoint().to_owned(),
+                            route_identity: request.snapshot.route_identity().to_owned(),
+                            lease_generation: request.snapshot.lease_generation(),
+                            session_identity: RemoteSessionIdentity::tmux(
+                                request.selection.remote_tmux_server()?,
+                                request.session.identity().clone(),
+                            ),
+                        };
+                        let selection = key.selection(SessionKind::Tmux, request.session.name());
+                        let published = publish_remote_worker(
+                            scene,
+                            worker,
+                            key,
+                            &selection,
+                            request.snapshot.lease().clone(),
+                            next_presentation_id(&scene.runtime),
+                            term,
+                            Some(identity_mismatch_marker),
+                            Some(&RemotePublicationFence {
+                                host_id: &request.host_id,
+                                connection_generation: request.connection_generation,
+                                snapshot: &request.snapshot,
+                                cancellation,
+                            }),
+                        )
+                        .map_err(|error| error.error);
+                        drop(navigation);
+                        if published.is_err() {
+                            let _ = request.host.wait_for_creation_identity(
+                                &request.snapshot,
+                                &receipt,
+                                cancellation,
+                                Duration::ZERO,
+                            );
+                        }
+                        published?;
+                        Ok((request, receipt))
+                    },
+                )
         });
+    drop(operation);
+    if let Ok((request, receipt)) = &result {
+        crate::remote_recovery::retry::confirm_restoration(
+            scene,
+            request,
+            receipt,
+            navigation_generation,
+            cancellation,
+        );
+    }
     if let Err(error) = result
         && remote_attachment_is_current(
             scene,
@@ -4851,12 +4871,21 @@ pub(crate) fn prepare_remote_tmux_attachment<'scene>(
     request: &RemoteTmuxAttachRequest,
     navigation_generation: u64,
     cancellation: &CancellationToken,
-) -> Result<(NavigationFence<'scene>, TerminalWorker, AttachTerm, String), WorkspaceError> {
+) -> Result<
+    (
+        NavigationFence<'scene>,
+        TerminalWorker,
+        AttachTerm,
+        String,
+        host::CreationReceipt,
+    ),
+    WorkspaceError,
+> {
     let term = request
         .host
         .probe_terminal_term(&request.snapshot, cancellation)
         .map_err(|error| WorkspaceError::new(error.to_string()))?;
-    let (plan, identity_mismatch_marker) = request
+    let (plan, identity_mismatch_marker, receipt) = request
         .host
         .attach_plan(
             &request.snapshot,
@@ -4887,7 +4916,7 @@ pub(crate) fn prepare_remote_tmux_attachment<'scene>(
             .map_err(|error| WorkspaceError::new(error.to_string()))
         },
     )?;
-    Ok((navigation, worker, term, identity_mismatch_marker))
+    Ok((navigation, worker, term, identity_mismatch_marker, receipt))
 }
 
 pub(crate) fn run_remote_herdr_attach(
