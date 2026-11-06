@@ -37,16 +37,37 @@ public struct TmuxPaneAgentState: Codable, Equatable, Sendable {
     }
 }
 
-/// Why a session's row shows the attention dot.
+/// The agent state a session's row shows. Approval, input, and an unseen
+/// finished turn need the user; working only reports progress.
 public enum AgentAttention: Equatable, Sendable {
     case approval(agent: String)
     case input(agent: String)
     case finished(agent: String)
+    case working(agent: String)
 
     public var agent: String {
         switch self {
-        case let .approval(agent), let .input(agent), let .finished(agent):
+        case let .approval(agent), let .input(agent), let .finished(agent),
+             let .working(agent):
             agent
+        }
+    }
+
+    /// Whether the user has something to do in the session.
+    public var needsUser: Bool {
+        if case .working = self {
+            return false
+        }
+        return true
+    }
+
+    /// One-word badge title.
+    public var title: String {
+        switch self {
+        case .approval: "Approval"
+        case .input: "Input"
+        case .finished: "Done"
+        case .working: "Working"
         }
     }
 
@@ -57,6 +78,7 @@ public enum AgentAttention: Equatable, Sendable {
         case .approval: "\(name) needs approval"
         case .input: "\(name) is waiting for input"
         case .finished: "\(name) finished"
+        case .working: "\(name) is working"
         }
     }
 
@@ -82,9 +104,9 @@ public extension TmuxSessionSummary {
         agentPanes.filter { $0.state == .done }.map(\.stamp).max()
     }
 
-    /// The attention a session needs. A pending approval or question always
-    /// shows; a finished turn shows until a stamp at least as new has been
-    /// acknowledged by viewing the session.
+    /// The state a session's row shows. A pending approval or question
+    /// always shows; a finished turn shows until a stamp at least as new has
+    /// been acknowledged by viewing the session; otherwise a working agent.
     func agentAttention(acknowledgedDoneStamp: Int?) -> AgentAttention? {
         if let pane = newest(.approval) {
             return .approval(agent: pane.agent)
@@ -94,6 +116,9 @@ public extension TmuxSessionSummary {
         }
         if let pane = newest(.done), pane.stamp > (acknowledgedDoneStamp ?? 0) {
             return .finished(agent: pane.agent)
+        }
+        if let pane = newest(.working) {
+            return .working(agent: pane.agent)
         }
         return nil
     }

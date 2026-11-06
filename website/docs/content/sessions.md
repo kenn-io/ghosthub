@@ -292,16 +292,21 @@ indicators require psmux 3.3.4 or newer.
 
 ## Agents waiting for you
 
-**Unreleased.** A blue dot appears on a tmux session's sidebar row when a
-coding agent running in it needs you: it is waiting for permission, it asked
-you a question, or it finished its turn. The native tab whose current session
-needs you shows the same dot beside its shortcut. Hover the dot to see which
-agent and why.
+**Unreleased.** A tmux session running a coding agent shows what the agent is
+doing at the right edge of its sidebar row:
 
-![Ghosthub sidebar with blue dots beside two tmux sessions whose agents need attention while another session is selected](/docs/assets/guide-agent-attention.png)
+- **Approval** (amber bubble): the agent is waiting for permission.
+- **Input** (purple bubble): the agent asked you a question.
+- **Done** (green dot): the agent finished a turn you have not looked at.
+- **Working** (pulsing green dot): the agent is busy.
 
-A finished turn clears once you view that session in the front window.
-Permission requests and questions stay marked until the agent continues.
+The native tab whose current session needs you shows the same icon beside its
+shortcut. Hover a badge to see which agent it is.
+
+![Ghosthub sidebar with Approval, Input, Done, and Working badges on four tmux sessions](/docs/assets/guide-agent-attention.png)
+
+**Done** clears once you view that session in the front window. **Approval**
+and **Input** stay until the agent continues.
 
 To turn this on for a host:
 
@@ -310,10 +315,10 @@ To turn this on for a host:
 3. In Codex, open `/hooks` once to trust the new hooks.
 
 Ghosthub installs hooks for each supported agent already set up on that host,
-including Claude Code, Codex, Gemini CLI, and Cursor. Dots refresh when you
+including Claude Code, Codex, Gemini CLI, and Cursor. Badges refresh when you
 switch to Ghosthub and about every thirty seconds while it stays in front.
 Native Windows hosts and Herdr and Zellij sessions do not show agent
-dots yet.
+badges yet.
 
 ## Reopen an exited standalone session
 

@@ -12,10 +12,10 @@ test, and documentation-only changes are omitted.
   **Herdr Terminals**, separate from **Herdr TUI Sessions**. Closing the view
   leaves the program running; desktop spaces, tabs, and terminal lifecycle
   remain in Herdr.
-- See which tmux sessions need you. A blue dot on the sidebar row and window
-  tab marks a session whose coding agent is waiting for permission, asked a
-  question, or finished its turn. Install the hooks for a host from
-  **Settings → Hosts → Agent Hooks**.
+- See what the coding agent in each tmux session is doing. A badge on the
+  sidebar row shows **Approval**, **Input**, **Done**, or **Working**, and the
+  window tab shows when its session needs you. Install the hooks for a host
+  from **Settings → Hosts → Agent Hooks**.
 
 ### Changed
 

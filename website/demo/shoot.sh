@@ -197,24 +197,27 @@ capture_session_rename() {
 }
 
 capture_agent_attention() {
-  # Write the state kwt's agent hooks record on the demo socket only: one
-  # session waits for approval, another finished an unviewed turn. Inventory
-  # refreshes when the app becomes active and every thirty seconds while it
-  # stays active, so write the state before the palette activates the demo.
+  # Write the state kwt's agent hooks record on the demo socket only, one
+  # agent state per standalone session. Inventory refreshes when the app
+  # becomes active and every thirty seconds while it stays active, so write
+  # the state before the palette activates the demo.
   local socket="$scratch/tmux/tmux-$(id -u)/default"
-  local now
+  local now session
   now="$(date +%s)"
   tmux -S "$socket" set-option -p -t '=release-watch:' @kwt_agent "approval $now claude"
+  tmux -S "$socket" set-option -p -t '=docbank-export:' @kwt_agent "input $now codex"
   tmux -S "$socket" set-option -p -t '=test-matrix:' @kwt_agent "done $now codex"
+  tmux -S "$socket" set-option -p -t '=scratch:' @kwt_agent "working $now claude"
   palette "add-session-filters"
   sleep 35
   capture_state guide-agent-attention.png
-  tmux -S "$socket" set-option -p -u -t '=release-watch:' @kwt_agent
-  tmux -S "$socket" set-option -p -u -t '=test-matrix:' @kwt_agent
+  for session in release-watch docbank-export test-matrix scratch; do
+    tmux -S "$socket" set-option -p -u -t "=$session:" @kwt_agent
+  done
 }
 
 if [[ "${GHOSTHUB_DEMO_AGENT_ATTENTION_ONLY:-}" == "1" ]]; then
-  echo "==> guide: agent attention dots"
+  echo "==> guide: agent state badges"
   capture_agent_attention
   echo "captured agent attention website asset -> $out_dir"
   exit 0
@@ -651,7 +654,7 @@ tmux -S "$demo_tmux_socket" send-keys -t '=scratch:' \
 sleep 24
 capture_state guide-session-activity.png
 
-echo "==> guide: agent attention dots"
+echo "==> guide: agent state badges"
 capture_agent_attention
 
 echo "captured website asset set -> $out_dir"

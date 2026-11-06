@@ -38,7 +38,7 @@ struct AgentAttentionTests {
         )
     }
 
-    @Test("a finished turn shows until a stamp at least as new is acknowledged")
+    @Test("a finished turn shows until acknowledged, then a working agent shows")
     func finishedTurnAcknowledgement() {
         let session = summary([
             pane("%1", .done, 200, "claude"),
@@ -47,10 +47,10 @@ struct AgentAttentionTests {
 
         #expect(session.agentAttention(acknowledgedDoneStamp: nil) == .finished(agent: "claude"))
         #expect(session.agentAttention(acknowledgedDoneStamp: 199) == .finished(agent: "claude"))
-        #expect(session.agentAttention(acknowledgedDoneStamp: 200) == nil)
+        #expect(session.agentAttention(acknowledgedDoneStamp: 200) == .working(agent: "codex"))
         #expect(session.latestAgentDoneStamp == 200)
-        #expect(summary([pane("%2", .working, 250, "codex")])
-            .agentAttention(acknowledgedDoneStamp: nil) == nil)
+        #expect(summary([pane("%1", .done, 200, "claude")])
+            .agentAttention(acknowledgedDoneStamp: 200) == nil)
     }
 
     @Test("a replacement session with the same name has its own acknowledgement key")

@@ -110,7 +110,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     var onSettings: () -> Void
     var onNewWorktree: () -> Void
     var onRenameWindow: () -> Void
-    var tabAttention: String?
+    var tabAttention: AgentAttention?
     var onWindowChanged: (NSWindow?) -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -169,8 +169,8 @@ private struct WindowFocusTracker: NSViewRepresentable {
         )
         let titlebarController: CompactWorkspaceTitlebarController
 
-        func setTabAttention(_ label: String?) {
-            tabBadgeController.setAttention(label)
+        func setTabAttention(_ attention: AgentAttention?) {
+            tabBadgeController.setAttention(attention)
         }
 
         init(
@@ -1346,7 +1346,9 @@ struct WorkspaceWindow: View {
                     )
                 },
                 onRenameWindow: requestWindowTitleRename,
-                tabAttention: activeSessionAgentAttention?.label,
+                tabAttention: activeSessionAgentAttention.flatMap {
+                    $0.needsUser ? $0 : nil
+                },
                 onWindowChanged: { window in
                     sceneModel.workspaceWindow = window
                     updateRelaunchPlacement.bind(window)

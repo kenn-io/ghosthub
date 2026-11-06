@@ -1153,11 +1153,6 @@ struct WorkspaceSidebarView: View {
                             ? WorktreeFlagPresentation.flagColor
                             : (isSelected ? .primary : .secondary))
                         .frame(width: 18)
-                        .overlay(alignment: .leading) {
-                            if let agentAttention {
-                                agentAttentionIndicator(agentAttention)
-                            }
-                        }
                     if let status = row.worktreeStatus {
                         worktreeRowContent(
                             row.title,
@@ -1172,7 +1167,9 @@ struct WorkspaceSidebarView: View {
                         )
                     }
                     Spacer(minLength: 0)
-                    if isTmuxSessionWorking {
+                    if let agentAttention {
+                        AgentStateBadge(attention: agentAttention)
+                    } else if isTmuxSessionWorking {
                         tmuxSessionActivityIndicator
                     }
                     if isSelected, differentiateWithoutColor {
@@ -1230,7 +1227,8 @@ struct WorkspaceSidebarView: View {
                 WorkspaceAccessibilityModel.descriptor(
                     for: row,
                     isSelected: isSelected,
-                    hasRecentTmuxOutput: isTmuxSessionWorking,
+                    hasRecentTmuxOutput: isTmuxSessionWorking
+                        && agentAttention == nil,
                     agentAttention: agentAttention,
                     isWorktreeFlagged: isWorktreeFlagged
                 )
@@ -2583,19 +2581,6 @@ struct WorkspaceSidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Unread-style dot drawn in the row's leading indent so it stays
-    /// distinct from the trailing recent-output dot.
-    private func agentAttentionIndicator(
-        _ attention: AgentAttention
-    ) -> some View {
-        Circle()
-            .fill(Color.blue)
-            .frame(width: 7, height: 7)
-            .offset(x: -8)
-            .help(attention.label)
-            .accessibilityHidden(true)
     }
 
     private var tmuxSessionActivityIndicator: some View {

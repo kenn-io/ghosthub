@@ -1,6 +1,8 @@
 import AppKit
 import Combine
 import GhosthubTerminalSupport
+import GhosthubUI
+import GhosthubWorkspace
 
 @MainActor
 final class NativeTabBadgeController {
@@ -10,7 +12,7 @@ final class NativeTabBadgeController {
     private nonisolated(unsafe) var shortcutObservation: AnyCancellable?
     private var order: [ObjectIdentifier] = []
     private var availableShortcuts = Set(1 ... 9)
-    private var attention: String?
+    private var attention: AgentAttention?
 
     init(
         shortcuts: AnyPublisher<ResolvedApplicationShortcuts, Never>? = nil
@@ -48,12 +50,12 @@ final class NativeTabBadgeController {
         )
     }
 
-    /// Shows or clears the attention dot on this window's tab.
-    func setAttention(_ label: String?) {
-        guard attention != label else { return }
-        attention = label
+    /// Shows or clears the agent state icon on this window's tab.
+    func setAttention(_ attention: AgentAttention?) {
+        guard self.attention != attention else { return }
+        self.attention = attention
         guard let window else { return }
-        NativeTabCommands.setAttention(label, for: window)
+        NativeTabCommands.setAttention(attention, for: window)
         order = []
         refresh()
     }
@@ -174,12 +176,12 @@ enum NativeTabCommands {
         return windows[index]
     }
 
-    /// Attention labels for workspace windows whose visible session has an
-    /// agent waiting; set by each window's badge controller.
-    private static var attentionLabels: [ObjectIdentifier: String] = [:]
+    /// Agent state for workspace windows whose visible session needs the
+    /// user; set by each window's badge controller.
+    private static var attentionByWindow: [ObjectIdentifier: AgentAttention] = [:]
 
-    static func setAttention(_ label: String?, for window: NSWindow) {
-        attentionLabels[ObjectIdentifier(window)] = label
+    static func setAttention(_ attention: AgentAttention?, for window: NSWindow) {
+        attentionByWindow[ObjectIdentifier(window)] = attention
     }
 
     static func refreshBadges(
@@ -198,7 +200,7 @@ enum NativeTabCommands {
             let shortcutText = shortcut.flatMap {
                 availableShortcuts.contains($0) ? "⌘\($0)" : nil
             }
-            let attention = attentionLabels[ObjectIdentifier(window)]
+            let attention = attentionByWindow[ObjectIdentifier(window)]
             guard shortcutText != nil || attention != nil else {
                 if window.tab.accessoryView?.identifier == badgeIdentifier {
                     window.tab.accessoryView = nil
@@ -223,26 +225,34 @@ enum NativeTabCommands {
             }
             label.attributedStringValue = badgeText(
                 shortcut: shortcutText,
-                hasAttention: attention != nil
+                attention: attention
             )
-            label.toolTip = attention
+            label.toolTip = attention?.label
             label.setAccessibilityLabel(
-                [attention, shortcutText].compactMap(\.self).joined(separator: ", ")
+                [attention?.label, shortcutText].compactMap(\.self).joined(separator: ", ")
             )
         }
     }
 
     private static func badgeText(
         shortcut: String?,
-        hasAttention: Bool
+        attention: AgentAttention?
     ) -> NSAttributedString {
         let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         let text = NSMutableAttributedString()
-        if hasAttention {
-            text.append(NSAttributedString(string: "●", attributes: [
-                .font: font,
-                .foregroundColor: NSColor.systemBlue,
-            ]))
+        if let attention,
+           let symbol = NSImage(
+               systemSymbolName: attention.symbolName,
+               accessibilityDescription: nil
+           )?.withSymbolConfiguration(
+               NSImage.SymbolConfiguration(
+                   pointSize: attention == .finished(agent: attention.agent) ? 6 : 9,
+                   weight: .regular
+               ).applying(.init(paletteColors: [attention.tint]))
+           ) {
+            let attachment = NSTextAttachment()
+            attachment.image = symbol
+            text.append(NSAttributedString(attachment: attachment))
             if shortcut != nil {
                 text.append(NSAttributedString(string: " ", attributes: [.font: font]))
             }

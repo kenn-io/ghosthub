@@ -1013,15 +1013,20 @@ is not saved to the database.
 
 ### Agent attention
 
-A blue dot on a tmux session's sidebar row, and on the native window tab whose
-active session it is, means a coding agent in that session needs the user:
+A badge at the trailing edge of a tmux session's sidebar row shows what a
+coding agent in that session is doing. It replaces the recent-output dot.
 
-| Agent state | Dot |
-| --- | --- |
-| Waiting for permission approval | Shown until the agent moves on |
-| Asking the user a question | Shown until the agent moves on |
-| Finished its turn | Shown until the user views the session |
-| Working, or no hook state | Hidden |
+| Agent state | Badge | Shown |
+| --- | --- | --- |
+| Waiting for permission approval | Amber speech bubble, **Approval** | Until the agent moves on |
+| Asking the user a question | Purple speech bubble, **Input** | Until the agent moves on |
+| Finished its turn | Small green dot, **Done** | Until the user views the session |
+| Working | Green dot, **Working** | While the agent works |
+
+Speech bubbles fade in and out slowly, and the working dot pulses, unless
+Reduce Motion is on. The native window tab shows the same icon beside its
+shortcut for approval, input, and finished turns of the window's active
+session; it never shows Working.
 
 Agent hooks installed by kwt record the state. Settings → Hosts → **Agent
 Hooks** runs the host's managed kwt (`kwt agent-hook status --json` and
@@ -1036,16 +1041,18 @@ and subagent events, do nothing. A failing hook never blocks the agent.
 
 POSIX discovery reads the option in the same command as `list-sessions` with
 `list-panes -a -f '#{@kwt_agent}'` and attaches each pane to its session by
-socket and session ID. The dot therefore follows tmux inventory refresh: when
+socket and session ID. Badges therefore follow tmux inventory refresh: when
 the app becomes active and every thirty seconds while it stays active. A
 failed read leaves sessions without agent state. Native
 Windows discovery does not read agent state.
 
-A session shows approval first, then input, then a finished turn. A finished
-turn is acknowledged when its session is the connected active presentation in
-the key window; the acknowledgement records the newest `done` stamp under the
-session's server PID, session ID, and creation time, so a replacement session
-with the same name starts unacknowledged. Acknowledgements persist in
+A session shows approval first, then input, then an unseen finished turn, then
+working. A finished turn is acknowledged when its session is the connected
+active presentation in the key window and tmux has confirmed the server PID,
+session ID, and creation time of the session the client attached to. Until
+that confirmation arrives the turn stays unseen. The acknowledgement records
+the newest `done` stamp under that identity, so a session that takes over a
+renamed session's name starts unacknowledged. Acknowledgements persist in
 UserDefaults and keep the 512 most recent sessions.
 
 Pull-request imports are the one alternate-socket case. Kwt returns the named
