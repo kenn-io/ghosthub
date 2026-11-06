@@ -353,10 +353,12 @@ matrix describes the target lifecycle contract; automatic recovery and KWT
 repair during reconnect remain unimplemented.
 
 Local ordinary-client exit always ends the presentation. The Windows WSL MVP
-does not reconnect a local `wsl.exe` relay after client exit. After an established
-active remote tmux client exits with OpenSSH status 255, an explicit host
+does not reconnect a local `wsl.exe` relay after client exit. After a selected
+remote tmux client exits with OpenSSH status 255, an explicit host
 reconnect can restore that exact session. Other exit statuses end the
-presentation. Automatic retries and backoff remain follow-up work.
+presentation. Recovery uses the selected session identity, not alternate-screen
+output, and survives SSH failures before the terminal starts. Automatic retries
+and backoff remain follow-up work.
 
 ### Shared local host boundary
 
@@ -426,7 +428,9 @@ If an active ordinary tmux terminal loses its SSH connection, select the host's
 session on the same server, including if it was renamed. It does not create a
 missing session or open a replacement that reused the old name. Selecting
 another session, detaching, closing the window, or removing the host cancels
-that recovery. Failed connection attempts preserve it for a later retry.
+that recovery. Failed connections and terminal startup attempts preserve it for
+a later retry. A reconnect that finishes before the old terminal reports its
+exit also restores the session.
 
 This applies to the default tmux server and KWT's shared server. Retained
 inactive clients, protected PR worktrees, Herdr, and Zellij require an explicit

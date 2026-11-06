@@ -8,7 +8,8 @@ pub(crate) struct InterruptedTmux {
     navigation_generation: u64,
 }
 
-/// Remember only an established ordinary tmux presentation, under its navigation fence.
+/// Preserve the selected ordinary tmux identity, even if SSH failed before terminal startup.
+/// Called under the navigation fence; explicit navigation still cancels recovery.
 pub(crate) fn remember_tmux(scene: &crate::Scene, active: &crate::RemoteActive) -> bool {
     if scene.closed.load(crate::Ordering::Acquire)
         || scene.navigation_generation.load(crate::Ordering::Acquire)
@@ -28,6 +29,41 @@ pub(crate) fn remember_tmux(scene: &crate::Scene, active: &crate::RemoteActive) 
         navigation_generation: active.navigation_generation,
     });
     true
+}
+
+/// Reconnect may publish before the pump consumes the old client's exit.
+/// The caller holds publication, but has released navigation before scheduling recovery.
+pub(crate) fn restore_after_tmux_exit(
+    scene: &crate::Arc<crate::Scene>,
+    active: &crate::RemoteActive,
+) {
+    let fresh = {
+        let entries = scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries
+            .get(&active.key.host_id)
+            .and_then(crate::current_remote_context)
+            .filter(|context| context.generation > active.connection_generation)
+            .map(|context| {
+                (
+                    context.generation,
+                    context.host.clone(),
+                    context.snapshot.clone(),
+                )
+            })
+    };
+    if let Some((generation, host, snapshot)) = fresh {
+        restore_tmux(
+            std::slice::from_ref(scene),
+            &active.key.host_id,
+            generation,
+            &host,
+            &snapshot,
+        );
+    }
 }
 
 pub(crate) fn forget_tmux_host(scene: &crate::Scene, host_id: &str) {
@@ -122,7 +158,8 @@ pub(crate) fn restore_tmux(
         let result = request.and_then(|request| {
             let navigation = workspace.begin_navigation();
             // A second reconnect can cancel this queued attachment. Keep its target until
-            // publication; user navigation still clears it through begin_navigation.
+            // publication, when the active presentation takes ownership. User navigation
+            // still clears it through begin_navigation.
             pending.navigation_generation = navigation;
             *scene
                 .interrupted_tmux

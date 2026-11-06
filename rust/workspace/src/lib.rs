@@ -1974,6 +1974,8 @@ struct RemoteAttachmentAttempt {
 struct RemoteActive {
     /// Navigation that installed or reselected this presentation.
     navigation_generation: u64,
+    /// Connection that launched this client; inventory reconciliation must not advance it.
+    connection_generation: u64,
     key: RemotePresentationKey,
     selection: SessionSelection,
     worker_generation: u64,

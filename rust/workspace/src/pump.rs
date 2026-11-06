@@ -142,6 +142,16 @@ pub(crate) fn monitor_remote_lease_liveness(runtime: &Runtime) {
 }
 
 impl Workspace {
+    /// Hold terminal event consumption while an integration test completes a reconnect.
+    #[cfg(feature = "test-support")]
+    pub fn pause_event_pump(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.scene
+            .runtime
+            .event_drain
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Consume one pump pass of this scene's worker events: the active
     /// worker within `ACTIVE_EVENT_BUDGET`, exit classification and
     /// handling, then the retained and remote-retained drains within the
@@ -220,7 +230,7 @@ impl Workspace {
                     else {
                         if self.handle_remote_terminal_exit(
                             source_worker_generation,
-                            code == 255 && client_confirmed_live,
+                            code == 255,
                             self.classify_active_remote_terminal_exit(
                                 source_worker_generation,
                                 code,
@@ -329,7 +339,15 @@ impl Workspace {
         error: Option<String>,
         emitted: &mut Vec<WorkspaceEvent>,
     ) -> bool {
-        let _navigation = self
+        // Reconnect publication takes these fences in this order too. Either it sees
+        // the saved target, or this exit sees the already-published newer connection.
+        let _publication = self
+            .scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let navigation = self
             .scene
             .navigation
             .lock()
@@ -375,6 +393,10 @@ impl Workspace {
             } else {
                 error
             }));
+        }
+        drop(navigation);
+        if recoverable {
+            crate::remote_recovery::restore_after_tmux_exit(&self.scene, &active);
         }
         true
     }

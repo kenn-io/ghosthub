@@ -6799,6 +6799,7 @@ pub(crate) fn publish_remote_worker(
     reconcile_active_worker_terminal_settings(&scene.runtime, &workers);
     let previous_remote = remote_active.replace(RemoteActive {
         navigation_generation: scene.navigation_generation.load(Ordering::Acquire),
+        connection_generation: fence.map_or(0, |fence| fence.connection_generation),
         key,
         selection: selection.clone(),
         worker_generation,
@@ -6808,6 +6809,8 @@ pub(crate) fn publish_remote_worker(
         retainable: retain_remote_session(selection.kind()),
         identity_mismatch_marker,
     });
+    // The active presentation now owns the exact recovery target, including before startup.
+    // An SSH failure transfers it back to interrupted_tmux; it needs no screen-mode signal.
     scene
         .interrupted_tmux
         .lock()

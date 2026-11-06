@@ -2,6 +2,15 @@ use super::*;
 
 impl Fixture {
     pub(super) fn interrupt_ssh(&self) {
+        self.break_ssh_connections();
+        self.wait_for_error("status 255");
+        assert!(matches!(
+            self.workspace.snapshot().content(),
+            WorkspaceContent::Shell
+        ));
+    }
+
+    fn break_ssh_connections(&self) {
         let listener = std::fs::read_to_string(self.root.join("sshd.pid")).unwrap();
         let listener = listener.trim();
         let mut connections = Vec::new();
@@ -27,12 +36,109 @@ impl Fixture {
                 "could not interrupt fixture SSH process"
             );
         }
-        self.wait_for_error("status 255");
-        assert!(matches!(
-            self.workspace.snapshot().content(),
-            WorkspaceContent::Shell
-        ));
     }
+}
+
+#[test]
+#[ignore = "requires the isolated SSH fixture; run make rust-test-ssh-live"]
+fn reconnect_restores_tmux_without_alternate_screen_switching() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::recovery::reconnect_restores_tmux_without_alternate_screen_switching",
+    ) else {
+        return;
+    };
+    fixture.tmux(&[
+        "set-option",
+        "-as",
+        "terminal-overrides",
+        ",*:smcup@:rmcup@",
+    ]);
+    fixture.connect();
+    fixture.attach("review", "without-alternate-screen");
+    fixture.interrupt_ssh();
+    fixture.connect();
+    fixture.tmux_shell("review", "resumed-without-alternate-screen");
+}
+
+#[test]
+#[ignore = "requires the isolated SSH fixture; run make rust-test-ssh-live"]
+fn reconnect_published_before_terminal_exit_still_restores_tmux() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::recovery::reconnect_published_before_terminal_exit_still_restores_tmux",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    fixture.attach("review", "before-delayed-exit");
+    let pump = fixture.workspace.pause_event_pump();
+    fixture.break_ssh_connections();
+    fixture.connect();
+    // Connection publication has finished, but the old terminal exit is still queued.
+    assert!(matches!(
+        fixture.workspace.snapshot().content(),
+        WorkspaceContent::Terminal { .. }
+    ));
+    drop(pump);
+    fixture.wait_for_error("status 255");
+    fixture.tmux_shell("review", "resumed-after-delayed-exit");
+    assert!(
+        fixture
+            .terminal_text()
+            .contains("remote-review:before-delayed-exit")
+    );
+}
+
+#[test]
+#[ignore = "requires the isolated SSH fixture; run make rust-test-ssh-live"]
+fn failed_recovery_startup_preserves_tmux_for_another_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::recovery::failed_recovery_startup_preserves_tmux_for_another_retry",
+    ) else {
+        return;
+    };
+    let wrapper = fixture.root.join("tmux-wrapper");
+    std::fs::write(
+        &wrapper,
+        r#"#!/bin/sh
+case " $* " in
+    *"attach-session "*)
+        if test -f "$HOME/block-tmux-attach"; then
+            touch "$HOME/tmux-attach-started"
+            while test -f "$HOME/block-tmux-attach"; do sleep 0.02; done
+        fi
+        ;;
+esac
+exec /usr/bin/tmux "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut draft = fixture.workspace.configured_ssh_hosts()[0].draft().clone();
+    wrapper.to_str().unwrap().clone_into(&mut draft.tmux_binary);
+    fixture
+        .workspace
+        .save_ssh_host(Some(&fixture.host_id), &draft)
+        .unwrap();
+    fixture.connect();
+    fixture.attach("review", "before-startup-failure");
+    fixture.interrupt_ssh();
+    let home = fixture.root.join("home");
+    std::fs::write(home.join("block-tmux-attach"), "").unwrap();
+    fixture.connect();
+    fixture.wait(|snapshot| {
+        home.join("tmux-attach-started").exists()
+            && matches!(snapshot.content(), WorkspaceContent::Terminal { .. })
+    });
+    fixture.interrupt_ssh();
+    std::fs::remove_file(home.join("block-tmux-attach")).unwrap();
+    fixture.connect();
+    fixture.tmux_shell("review", "resumed-after-startup-failure");
+    assert!(
+        fixture
+            .terminal_text()
+            .contains("remote-review:before-startup-failure")
+    );
 }
 
 #[test]
