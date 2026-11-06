@@ -1,54 +1,64 @@
 import GhosthubTransport
+import Foundation
 import Testing
 @testable import GhosthubZellij
 
 @Suite("Native Zellij attachment")
 struct ZellijAttachmentInfoTests {
-    @Test("local attachment removes inherited Zellij identity")
-    func localAttachment() throws {
+    @Test(
+        "attachment passes one exact positional name and removes inherited identity",
+        arguments: ["review 'one'", "-", "déploiement", "release; echo unwanted"]
+    )
+    func localAttachment(_ name: String) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("zellij")
+        try """
+        #!/bin/sh
+        printf '<%s>\\n' "$@" "${ZELLIJ-unset}" "${ZELLIJ_PANE_ID-unset}" "${ZELLIJ_SESSION_NAME-unset}"
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
         let command = try ZellijAttachmentInfo(
-            sessionName: "release work",
+            sessionName: name,
             host: .local
-        ).attachCommand(zellijPath: "/opt/homebrew/bin/zellij")
-
-        #expect(command.contains("unset ZELLIJ ZELLIJ_PANE_ID ZELLIJ_SESSION_NAME"))
-        #expect(command.contains("attach"))
-        #expect(command.contains("release work"))
-        #expect(!command.contains("--create"))
-    }
-
-    @Test("attachment passes the session name as attach's positional argument")
-    func attachmentSessionArgument() throws {
-        let command = try ZellijAttachmentInfo(
-            sessionName: "release work",
-            host: .local
-        ).attachCommand(zellijPath: "/usr/bin/zellij")
-
-        // Since Zellij 0.45.1, anything after `--` is an initial command, so
-        // a separator here would leave the session unnamed and show a picker.
-        #expect(command.contains(
-            #"'\''attach'\'' '\''release work'\''"#
-        ))
-        #expect(!command.contains(#"'\''--'\''"#))
+        ).attachCommand(zellijPath: executable.path)
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ["ZELLIJ": "1", "ZELLIJ_PANE_ID": "7", "ZELLIJ_SESSION_NAME": "outer"]
+        process.standardOutput = output
+        try process.run()
+        process.waitUntilExit()
+        let received = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(process.terminationStatus == 0)
+        #expect(received == "<attach>\n<\(name)>\n<unset>\n<unset>\n<unset>\n")
     }
 
     @Test(
-        "attachment refuses names Zellij parses as flags or subcommands",
-        arguments: ["-release", "--", "help", "options"]
+        "attachment and creation reject names interpreted as flags or subcommands",
+        arguments: ["", "-release", "--", "--create", "help", "options"]
     )
-    func attachmentRefusesUnattachableName(_ name: String) {
-        #expect(throws: ZellijCommandError.unattachableSessionName(name)) {
-            try ZellijAttachmentInfo(sessionName: name, host: .local)
-                .attachCommand(zellijPath: "/usr/bin/zellij")
+    func unattachableName(_ name: String) {
+        for host in [
+            CommandHost.local,
+            .ssh(SSHHostInfo(user: nil, hostname: "example.test", port: nil)),
+        ] {
+            for mode in [ZellijAttachmentLaunchMode.attachExisting, .create] {
+                #expect(throws: ZellijCommandError.unattachableSessionName(name)) {
+                    try ZellijAttachmentInfo(sessionName: name, host: host)
+                        .attachCommand(zellijPath: "/usr/bin/zellij", launchMode: mode)
+                }
+            }
         }
-    }
-
-    @Test("a lone dash is an ordinary attach target")
-    func attachmentLoneDash() throws {
-        let command = try ZellijAttachmentInfo(sessionName: "-", host: .local)
-            .attachCommand(zellijPath: "/usr/bin/zellij")
-
-        #expect(command.contains(#"'\''attach'\'' '\''-'\''"#))
     }
 
     @Test("new session refuses live and resurrectable name collisions")
@@ -64,20 +74,6 @@ struct ZellijAttachmentInfoTests {
         #expect(command.contains("--session"))
         #expect(command.contains("new-session"))
         #expect(!command.contains("'attach'"))
-    }
-
-    @Test("creation joins a leading-dash name to the session option")
-    func creationLeadingDashName() throws {
-        let command = try ZellijAttachmentInfo(
-            sessionName: "-release",
-            host: .local
-        ).attachCommand(
-            zellijPath: "/usr/bin/zellij",
-            launchMode: .create
-        )
-
-        #expect(command.contains("'--session=-release'"))
-        #expect(!command.contains("'--session' '-release'"))
     }
 
     @Test("remote attachment allocates a PTY and uses the account shell")

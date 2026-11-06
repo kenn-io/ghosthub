@@ -83,10 +83,8 @@ present in either running or stopped state is
 rejected; restart a stopped session instead.
 
 A new Zellij session uses Zellij's new-session path and remains an ordinary
-Zellij session. Active and resurrectable names are both rejected. Zellij
-cannot attach to names that start with `-` or that are exactly `help` or
-`options`, so Ghosthub rejects those too. Ghosthub lists only active sessions
-and does not expose resurrection as a workflow.
+Zellij session. Active and resurrectable names are both rejected. Ghosthub
+lists only active sessions and does not expose resurrection as a workflow.
 
 ## Herdr desktop terminals
 
@@ -154,6 +152,12 @@ Palette with ++shift+cmd+p++. Ghosthub opens an ordinary local or SSH client
 for the selected backend. Herdr TUI receives the complete terminal and continues
 to own its workspaces, tabs, panes, history, and key bindings. Herdr desktop
 attachments open individual terminals as described above.
+
+**Unreleased on macOS:** selecting an existing session with Zellij 0.45
+attaches directly instead of opening its session chooser. Names beginning
+with `-` (except `-` alone), `help`, and `options` cannot be created or attached
+because Zellij reads them as options or commands. Existing sessions with
+those names remain visible and can still be killed after confirmation.
 
 For POSIX tmux sessions, Ghosthub enables tmux mouse mode on attachment. Wheel
 scrolling therefore opens and navigates tmux copy mode even when the session

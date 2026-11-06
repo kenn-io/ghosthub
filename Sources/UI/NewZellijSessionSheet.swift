@@ -1,24 +1,6 @@
 import Foundation
 import GhosthubWorkspace
-import GhosthubZellij
 import SwiftUI
-
-enum ZellijSessionName {
-    static func normalized(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    static func isValid(_ value: String) -> Bool {
-        let name = normalized(value)
-        guard name != ".", name != "..",
-              !name.isEmpty,
-              !name.contains("/")
-        else { return false }
-        return !name.unicodeScalars.contains(where: {
-            CharacterSet.controlCharacters.contains($0)
-        }) && ZellijAttachmentInfo.canAttach(sessionName: name)
-    }
-}
 
 struct NewZellijSessionSheet: View {
     let hosts: [HostSummary]
@@ -139,9 +121,11 @@ struct NewZellijSessionSheet: View {
         if existingNames.contains(normalizedName) {
             return "A Zellij session named “\(normalizedName)” already exists on this host."
         }
+        if !ZellijSessionName.isAttachable(normalizedName) {
+            return "Avoid names beginning with “-” (except “-” alone), “help”, or “options”."
+        }
         if !ZellijSessionName.isValid(normalizedName) {
-            return "Use a name without slashes or control characters that "
-                + "doesn’t start with “-” or equal “help” or “options”."
+            return "Use a nonempty name without slashes or control characters."
         }
         return "Create and attach to “\(normalizedName)”."
     }

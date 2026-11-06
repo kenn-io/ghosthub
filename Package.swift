@@ -88,6 +88,7 @@ var targets: [Target] = [
         name: "GhosthubZellij",
         dependencies: [
             "GhosthubTransport",
+            "GhosthubWorkspace",
         ],
         path: "Sources/Zellij"
     ),
@@ -117,7 +118,6 @@ var targets: [Target] = [
             "GhosthubSettings",
             "GhosthubWorkspace",
             "GhosthubTerminalSupport",
-            "GhosthubZellij",
         ],
         path: "Sources/UI"
     ),
@@ -350,6 +350,7 @@ if hasBootstrappedLibghostty {
                 "GhosthubTmux",
                 "GhosthubUI",
                 "GhosthubWorkspace",
+                "GhosthubZellij",
             ],
             path: "Tests/TerminalSmoke"
         )
