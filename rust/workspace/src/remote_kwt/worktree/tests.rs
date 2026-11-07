@@ -346,7 +346,8 @@ fn import_opens_only_the_exact_receipt_confirmed_by_fresh_inventory() {
 }
 
 #[test]
-fn worktree_open_survives_reconnect_during_creation_and_before_event_consumption() {
+#[allow(clippy::too_many_lines)] // Keep creation, concurrent publication, and the UI handoff together.
+fn worktree_open_survives_concurrent_inventory_and_reconnect() {
     for import in [false, true] {
         let mut commands = replies(output(0, &receipt().to_string()), output(0, PROJECTS));
         if !import {
@@ -364,12 +365,38 @@ fn worktree_open_survives_reconnect_during_creation_and_before_event_consumption
         let recovery_scene = Arc::downgrade(&other.scene);
         *runner.before_mutation_returns.lock().unwrap() = Some(Box::new(move || {
             // The mutation succeeded remotely; its response has not arrived yet.
-            retry(
-                &crate::Workspace {
-                    scene: recovery_scene.upgrade().unwrap(),
-                },
-                due,
-            );
+            let other = crate::Workspace {
+                scene: recovery_scene.upgrade().unwrap(),
+            };
+            let (generation, snapshot) = {
+                let entries = other.scene.runtime.remote_hosts.lock().unwrap();
+                let entry = &entries["ssh:studio"];
+                (
+                    entry.generation,
+                    entry.context.as_ref().unwrap().snapshot.clone(),
+                )
+            };
+            let mut sessions = snapshot.sessions().to_vec();
+            sessions.push(session::DiscoveredSession::new(
+                "another-window",
+                session::SessionIdentity::new(42, "$3", 102),
+                0,
+            ));
+            scene::publish_remote_inventory(
+                &other.scene,
+                "ssh:studio",
+                generation,
+                &snapshot,
+                &host::CancellationToken::new(),
+                host::RemoteSessionInventory::test_fixture(
+                    Some("/usr/bin/tmux".to_owned()),
+                    sessions,
+                    host::HerdrInventory::Unavailable,
+                    host::ZellijInventory::Unavailable,
+                ),
+            )
+            .expect("another window publishes session inventory on the same connection");
+            retry(&other, due);
         }));
         if import {
             workspace
@@ -400,6 +427,9 @@ fn worktree_open_survives_reconnect_during_creation_and_before_event_consumption
         retry(&other, due);
         // Consume exactly as the UI does: keep the event alive through opening.
         let event = result(&workspace, &runner);
+        if let WorkspaceEvent::KwtWorktreeOperationFailed { message, .. } = &event {
+            panic!("worktree operation failed: {message}");
+        }
         let WorkspaceEvent::KwtWorktreeCreated { target, .. } = &event else {
             panic!("expected completed worktree");
         };

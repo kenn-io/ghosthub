@@ -207,13 +207,19 @@ fn reserve_open(
     if scene.navigation_generation.load(Ordering::Acquire) != navigation {
         return Ok(None);
     }
+    let (_, snapshot) = crate::runtime::recapture_remote_attachment_context(
+        &scene.runtime,
+        &task.host_id,
+        task.generation,
+        &task.snapshot,
+    )?;
     let cancellation = host::CancellationToken::new();
     crate::register_remote_attachment(
         &scene.runtime,
         scene.id,
         &task.host_id,
         task.generation,
-        &task.snapshot,
+        &snapshot,
         navigation,
         &cancellation,
     )?;
