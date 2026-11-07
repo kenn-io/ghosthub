@@ -14,6 +14,14 @@ pub(crate) struct State {
     operation: Option<Operation>,
 }
 
+impl State {
+    pub(crate) fn blocks_reconnect(&self) -> bool {
+        self.operation
+            .as_ref()
+            .is_some_and(|operation| operation.mutation && !operation.removal)
+    }
+}
+
 struct Operation {
     id: u64,
     cancellation: CancellationToken,

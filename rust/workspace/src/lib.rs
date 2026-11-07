@@ -4865,7 +4865,7 @@ impl Workspace {
                     .get_mut(id)
                     .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
                 if let Some(now) = retry_at {
-                    // Creation and attachment registration use this same lock.
+                    // Creation, attachment, and KWT reservations use this same lock.
                     // An active operation must finish before automatic reconnect.
                     if entry.cancellation.is_some()
                         || !entry.attachment_attempts.is_empty()
@@ -4873,6 +4873,7 @@ impl Workspace {
                             entry.constructive_cancellation,
                             Some(RemoteConstructiveState::Active { .. })
                         )
+                        || entry.kwt.blocks_reconnect()
                         || !entry.reconnect.start(now)
                     {
                         return Ok(());

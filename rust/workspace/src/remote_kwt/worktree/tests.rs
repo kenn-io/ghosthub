@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PROJECTS: &str = r#"[{"repository":"github.com/acme/widget","name":"widget","path":"/code/widget","registration_fingerprint":"registration"}]"#;
 const WORKTREES: &str = r#"[{"repository":"github.com/acme/widget","branch":"pr-17","path":"/work/widget/pr-17","commit_hash":"abc","is_main":false,"generation":"checkout-17","session_name":"widget-pr-17","tmux_socket_name":"kwt-pr-17","tmux_attach_mode":"protected"}]"#;
@@ -39,7 +39,10 @@ fn output(status: i32, body: &str) -> io::Result<CommandOutput> {
     })
 }
 
-struct Runner(Mutex<VecDeque<Reply>>);
+struct Runner {
+    replies: Mutex<VecDeque<Reply>>,
+    before_mutation_returns: Mutex<Option<crate::RefreshTask>>,
+}
 
 impl CommandRunner for Runner {
     fn run(
@@ -62,12 +65,17 @@ impl CommandRunner for Runner {
         } else {
             assert!(marker.starts_with("GHOSTHUB_KWT_COMMAND_"));
             let (expected, result) = self
-                .0
+                .replies
                 .lock()
                 .unwrap()
                 .pop_front()
                 .expect("unexpected command or replay");
             assert!(command.contains(expected), "expected {expected}: {command}");
+            if expected == "--expected-registration"
+                && let Some(hook) = self.before_mutation_returns.lock().unwrap().take()
+            {
+                hook();
+            }
             result?
         };
         Ok(CommandOutput {
@@ -115,9 +123,26 @@ fn lease() -> host::SshLease {
     .unwrap()
 }
 
-fn import(replies: Vec<Reply>) -> (crate::Workspace, WorkspaceEvent) {
-    let (workspace, original) = remote_kill_refresh_fixture();
-    let runner = Arc::new(Runner(Mutex::new(replies.into())));
+fn fixture(
+    replies: Vec<Reply>,
+) -> (
+    crate::Workspace,
+    Arc<crate::tests::ManualRefreshRuntime>,
+    Arc<Runner>,
+) {
+    let (source, original) = remote_kill_refresh_fixture();
+    let refresh = Arc::new(crate::tests::ManualRefreshRuntime::default());
+    let workspace = crate::Workspace::application_with_services(
+        crate::TerminalAppearance::default(),
+        None,
+        Arc::new(crate::SystemLocalDiscovery::new()),
+        refresh.clone(),
+    );
+    *workspace.scene.runtime.hosts.write().unwrap() = source.snapshot().hosts().to_vec();
+    let runner = Arc::new(Runner {
+        replies: Mutex::new(replies.into()),
+        before_mutation_returns: Mutex::new(None),
+    });
     let config = host::RemoteTmuxConfig::new(
         "ssh:studio",
         "Studio",
@@ -139,50 +164,68 @@ fn import(replies: Vec<Reply>) -> (crate::Workspace, WorkspaceEvent) {
     );
     let snapshot = original.snapshot.with_test_lease(lease());
     let inventory = host::KwtInventory::parse(PROJECTS.as_bytes(), b"[]", b"[]").unwrap();
-    let request = Request {
-        project: inventory.projects()[0].project().clone(),
-        operation: KwtWorktreeOperation::ImportPullRequest {
-            selector: "17".to_owned(),
-            navigation_generation: 42,
-        },
-    };
-    let task = Task {
-        host_id: "ssh:studio".to_owned(),
-        generation: 7,
-        id: 43,
-        host,
-        snapshot: snapshot.clone(),
-        cancellation: host::CancellationToken::new(),
-        mutation: None,
-        worktree: Some(request.clone()),
-    };
-    {
-        let mut entries = workspace.scene.runtime.remote_hosts.lock().unwrap();
-        let entry = entries.get_mut("ssh:studio").unwrap();
-        entry.context.as_mut().unwrap().snapshot = snapshot;
-        entry.kwt.inventory = Some(inventory.clone());
-        entry.kwt.operation = Some(super::super::Operation {
-            id: task.id,
-            cancellation: task.cancellation.clone(),
-            mutation: true,
-            removal: false,
-            scene_id: workspace.scene.id,
-            listing: false,
-        });
-    }
+    let mut entry = source
+        .scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .unwrap()
+        .remove("ssh:studio")
+        .unwrap();
+    entry.native_host = Some(host.clone());
+    let context = entry.context.as_mut().unwrap();
+    context.host = host;
+    context.snapshot = snapshot;
+    entry.kwt.inventory = Some(inventory.clone());
+    workspace
+        .scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .unwrap()
+        .insert("ssh:studio".to_owned(), entry);
     update_host(&workspace.scene, "ssh:studio", |host| {
         scene::apply_kwt_inventory(host, &inventory);
-        host.kwt_state = KwtState::Mutating;
     });
-    run(&workspace.scene, &task, &request);
+    (workspace, refresh, runner)
+}
+
+fn start(workspace: &crate::Workspace, operation: KwtWorktreeOperation) {
+    start_worktree(
+        &workspace.scene,
+        "ssh:studio",
+        "studio.example",
+        "github.com/acme/widget",
+        "/code/widget",
+        "registration",
+        operation,
+    )
+    .unwrap();
+}
+
+fn result(workspace: &crate::Workspace, runner: &Runner) -> WorkspaceEvent {
     assert!(
-        runner.0.lock().unwrap().is_empty(),
+        runner.replies.lock().unwrap().is_empty(),
         "all expected commands must execute"
     );
     assert!(!workspace.snapshot().hosts()[0].kwt_mutating());
     let mut events = workspace.drain_events().0;
     assert_eq!(events.len(), 1);
-    (workspace, events.remove(0))
+    events.remove(0)
+}
+
+fn import(replies: Vec<Reply>) -> (crate::Workspace, WorkspaceEvent) {
+    let (workspace, refresh, runner) = fixture(replies);
+    start(
+        &workspace,
+        KwtWorktreeOperation::ImportPullRequest {
+            selector: "17".to_owned(),
+            navigation_generation: 42,
+        },
+    );
+    refresh.run_next_work();
+    let event = result(&workspace, &runner);
+    (workspace, event)
 }
 
 fn replies(import: io::Result<CommandOutput>, projects: io::Result<CommandOutput>) -> Vec<Reply> {
@@ -298,6 +341,90 @@ fn import_opens_only_the_exact_receipt_confirmed_by_fresh_inventory() {
         commands[5].1 = output(0, &worktrees);
         let (workspace, event) = import(commands);
         failure(event);
+        workspace.close();
+    }
+}
+
+#[test]
+fn automatic_reconnect_waits_for_worktree_creation_and_import_to_publish() {
+    for operation in [
+        KwtWorktreeOperation::Create {
+            branch: "pr-17".to_owned(),
+            source: None,
+            creates_branch: true,
+            navigation_generation: 42,
+        },
+        KwtWorktreeOperation::ImportPullRequest {
+            selector: "17".to_owned(),
+            navigation_generation: 42,
+        },
+    ] {
+        let mut commands = replies(output(0, &receipt().to_string()), output(0, PROJECTS));
+        if matches!(operation, KwtWorktreeOperation::Create { .. }) {
+            commands[3].1 = output(0, "");
+            commands[5].1 = output(
+                0,
+                &WORKTREES
+                    .replace("protected", "direct")
+                    .replace("kwt-pr-17", "kwt"),
+            );
+        }
+        let (workspace, refresh, runner) = fixture(commands);
+        let other = workspace.open_scene();
+        let now = Instant::now();
+        let due = now + Duration::from_secs(1);
+        {
+            let mut entries = workspace.scene.runtime.remote_hosts.lock().unwrap();
+            let entry = entries.get_mut("ssh:studio").unwrap();
+            entry.reconnect.enable();
+            entry.reconnect.schedule(now);
+        }
+        let recovery_scene = Arc::downgrade(&other.scene);
+        *runner.before_mutation_returns.lock().unwrap() = Some(Box::new(move || {
+            // The remote mutation has completed, but its result has not arrived.
+            // Another window now tries to reserve an already-due reconnect.
+            let recovery = crate::Workspace {
+                scene: recovery_scene.upgrade().unwrap(),
+            };
+            let _publication = recovery.scene.runtime.remote_publication.lock().unwrap();
+            let _navigation = scene::lock_live_navigation(&recovery.scene).unwrap();
+            recovery
+                .start_remote_connection("ssh:studio", Some(due))
+                .unwrap();
+        }));
+        start(&workspace, operation);
+        refresh.run_next_work();
+        let event = result(&workspace, &runner);
+        assert!(
+            matches!(event,
+                WorkspaceEvent::KwtWorktreeCreated { target, navigation_generation: 42 }
+                if target.worktree_path == "/work/widget/pr-17" && target.session_name == "widget-pr-17"
+            ),
+            "the dialog must receive the completed worktree to open"
+        );
+        assert_eq!(
+            workspace.snapshot().hosts()[0].projects()[0].worktrees()[0].path(),
+            "/work/widget/pr-17"
+        );
+        assert!(
+            refresh.work.lock().unwrap().is_empty(),
+            "reconnect must wait for publication"
+        );
+        {
+            let _publication = other.scene.runtime.remote_publication.lock().unwrap();
+            let _navigation = scene::lock_live_navigation(&other.scene).unwrap();
+            other
+                .start_remote_connection("ssh:studio", Some(due))
+                .unwrap();
+        }
+        let work = refresh.work.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(
+            work.len(),
+            1,
+            "completion releases the due retry without another backoff"
+        );
+        drop(work);
+        other.close();
         workspace.close();
     }
 }
