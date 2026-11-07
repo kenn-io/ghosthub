@@ -6203,6 +6203,13 @@ impl Workspace {
             if selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected) {
                 return remote_workspace::open_protected_selection(self, selection);
             }
+            // Keep connection capture and operation registration in one publication fence.
+            let _publication = self
+                .scene
+                .runtime
+                .remote_publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let _navigation = lock_live_navigation(&self.scene)?;
             if selection.kind() == SessionKind::Tmux {
                 runtime::require_remote_tmux_selection(&self.scene.runtime, selection)?;
@@ -6804,6 +6811,12 @@ impl Workspace {
         endpoint: &str,
         name: &str,
     ) -> Result<(), WorkspaceError> {
+        let _publication = self
+            .scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
         let name =
             SessionName::parse(name).map_err(|error| WorkspaceError::new(error.to_string()))?;
@@ -6879,6 +6892,12 @@ impl Workspace {
     ) -> Result<(), WorkspaceError> {
         let name = HerdrSessionName::parse(name)
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let _publication = self
+            .scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let navigation = lock_live_navigation(&self.scene)?;
         if self.is_remote_host(host_id) {
             let request =
@@ -6904,6 +6923,12 @@ impl Workspace {
     ) -> Result<(), WorkspaceError> {
         let name = ZellijSessionName::parse(name)
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
+        let _publication = self
+            .scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
         let navigation = lock_live_navigation(&self.scene)?;
         if self.is_remote_host(host_id) {
@@ -6973,6 +6998,12 @@ impl Workspace {
         &self,
         selection: &SessionSelection,
     ) -> Result<(), WorkspaceError> {
+        let _publication = self
+            .scene
+            .runtime
+            .remote_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let navigation = lock_live_navigation(&self.scene)?;
         if herdr_operation_pending_for_selection(&self.scene.runtime, selection) {
             return Err(WorkspaceError::new(

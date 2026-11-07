@@ -411,6 +411,132 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Exercise each public entry through capture, reservation, and retry.
+    fn explicit_session_requests_reserve_before_due_reconnect() {
+        for action in [
+            "attach-tmux",
+            "attach-herdr",
+            "attach-zellij",
+            "create-tmux",
+            "create-herdr",
+            "create-zellij",
+            "restart-herdr",
+        ] {
+            let (workspace, request, refresh) = fixture();
+            let other = workspace.open_scene();
+            crate::scene::publish_remote_inventory(
+                &workspace.scene,
+                "ssh:studio",
+                request.connection_generation,
+                &request.snapshot,
+                &CancellationToken::new(),
+                host::RemoteSessionInventory::test_fixture(
+                    Some("/usr/bin/tmux".to_owned()),
+                    request.snapshot.sessions().to_vec(),
+                    host::HerdrInventory::Available {
+                        executable: "/usr/bin/herdr".to_owned(),
+                        sessions: vec![
+                            session::HerdrSessionRecord::new(
+                                "review",
+                                false,
+                                session::HerdrSessionState::Running,
+                                "/srv/herdr/review",
+                                "/srv/herdr/review/herdr.sock",
+                            ),
+                            session::HerdrSessionRecord::new(
+                                "paused",
+                                false,
+                                session::HerdrSessionState::Stopped,
+                                "/srv/herdr/paused",
+                                "/srv/herdr/paused/herdr.sock",
+                            ),
+                        ],
+                    },
+                    host::ZellijInventory::Available {
+                        executable: "/usr/bin/zellij".to_owned(),
+                        sessions: vec![session::ZellijSessionRecord::discovered("review")],
+                    },
+                ),
+            )
+            .unwrap();
+            let now = Instant::now();
+            let due = now + Duration::from_secs(1);
+            workspace
+                .scene
+                .runtime
+                .remote_hosts
+                .lock()
+                .unwrap()
+                .get_mut("ssh:studio")
+                .unwrap()
+                .reconnect
+                .schedule(now);
+            // Stop the background client before any host command. This test observes
+            // whether the public request is accepted and keeps the due retry waiting.
+            let operation = workspace.scene.runtime.session_operations.lock().unwrap();
+            let reconnect = other.clone();
+            crate::runtime::BEFORE_REMOTE_REGISTRATION.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move || {
+                    // The explicit request has captured its connection but has not
+                    // registered yet. Run a due retry if publication permits it.
+                    if let Ok(_publication) = reconnect.scene.runtime.remote_publication.try_lock()
+                    {
+                        let _navigation = lock_live_navigation(&reconnect.scene).unwrap();
+                        reconnect
+                            .start_remote_connection("ssh:studio", Some(due))
+                            .unwrap();
+                    }
+                }));
+            });
+            let result = match action {
+                "attach-tmux" => workspace.switch_session(&request.selection),
+                "attach-herdr" => workspace.switch_session(&crate::SessionSelection::herdr(
+                    "ssh:studio",
+                    "studio.example",
+                    "review",
+                )),
+                "attach-zellij" => workspace.switch_session(&crate::SessionSelection::zellij(
+                    "ssh:studio",
+                    "studio.example",
+                    "review",
+                )),
+                "create-tmux" => workspace.create_session("ssh:studio", "studio.example", "new"),
+                "create-herdr" => {
+                    workspace.create_herdr_session("ssh:studio", "studio.example", "new")
+                }
+                "create-zellij" => {
+                    workspace.create_zellij_session("ssh:studio", "studio.example", "new")
+                }
+                "restart-herdr" => workspace.restart_herdr_session(
+                    &crate::SessionSelection::herdr("ssh:studio", "studio.example", "paused"),
+                ),
+                _ => unreachable!(),
+            };
+            assert!(
+                crate::runtime::BEFORE_REMOTE_REGISTRATION
+                    .with_borrow_mut(Option::take)
+                    .is_none(),
+                "{action} must reach operation registration"
+            );
+            result.unwrap_or_else(|error| panic!("{action} rejected: {error}"));
+            {
+                let _publication = other.scene.runtime.remote_publication.lock().unwrap();
+                let _navigation = lock_live_navigation(&other.scene).unwrap();
+                other
+                    .start_remote_connection("ssh:studio", Some(due))
+                    .unwrap();
+            }
+            assert!(
+                refresh.work.lock().unwrap().is_empty(),
+                "{action} must keep reconnect waiting"
+            );
+            workspace.close();
+            other.close();
+            drop(operation);
+        }
+    }
+
+    #[test]
     fn automatic_reconnect_waits_for_creation_but_allows_reconciliation() {
         for did_launch in [false, true] {
             let (workspace, request, refresh) = fixture();

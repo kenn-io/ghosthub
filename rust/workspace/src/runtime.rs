@@ -1274,6 +1274,8 @@ pub(crate) fn register_remote_constructive(
     cancellation: &CancellationToken,
     target: RemoteConstructiveTarget,
 ) -> Result<Arc<AtomicBool>, WorkspaceError> {
+    #[cfg(test)]
+    before_remote_registration();
     let mut entries = runtime
         .remote_hosts
         .lock()
@@ -1422,6 +1424,8 @@ pub(crate) fn register_remote_attachment(
     navigation_generation: u64,
     cancellation: &CancellationToken,
 ) -> Result<(), WorkspaceError> {
+    #[cfg(test)]
+    before_remote_registration();
     let mut entries = runtime
         .remote_hosts
         .lock()
@@ -1454,6 +1458,19 @@ pub(crate) fn register_remote_attachment(
         cancellation: cancellation.clone(),
     });
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static BEFORE_REMOTE_REGISTRATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn before_remote_registration() {
+    if let Some(before) = BEFORE_REMOTE_REGISTRATION.with_borrow_mut(Option::take) {
+        before();
+    }
 }
 
 pub(crate) fn clear_remote_attachment_registration(
