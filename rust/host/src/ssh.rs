@@ -1561,7 +1561,7 @@ impl SshError {
     pub fn interaction_required() -> Self {
         Self::new(
             DiagnosticKind::PermissionDenied,
-            "SSH needs your attention. Choose Retry to continue.",
+            "SSH authentication or host-key review required.",
         )
     }
 
