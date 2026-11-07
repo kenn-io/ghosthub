@@ -510,6 +510,11 @@ guarded, non-launching operation, refreshes inventory, and opens the resulting
 worktree through the ordinary remote workspace path. Later navigation prevents
 automatic selection of that result.
 
+Successful remote creation and PR import reserve the subsequent attachment before
+releasing the KWT mutation. The completion event holds that reservation through
+the UI's open request, so automatic reconnect in another window waits for both.
+Discarding the event, later navigation, or scene closure releases the reservation.
+
 The branch listing and creation share the host's KWT operation reservation.
 Cancel releases the listing immediately; closing its owning scene cancels a
 queued creation. Fresh inventory verifies the repository and registration before

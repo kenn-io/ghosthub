@@ -172,13 +172,52 @@ pub(crate) fn cancel_listing(scene: &Arc<Scene>, id: u64) -> bool {
 }
 
 pub(super) fn run(scene: &Arc<Scene>, task: &Task, request: &Request) {
-    let result = execute(scene, task, request);
+    let result = execute(scene, task, request).and_then(|mut event| {
+        if let WorkspaceEvent::KwtWorktreeCreated {
+            navigation_generation,
+            opening,
+            ..
+        } = &mut event
+        {
+            *opening = reserve_open(scene, task, *navigation_generation)?;
+        }
+        Ok(event)
+    });
     // The UI may immediately open the result or submit the next operation.
     finish(scene, task);
     scene::push_lossless_event(
         scene,
         result.unwrap_or_else(|error| request.failure(task, error.to_string())),
     );
+}
+
+fn reserve_open(
+    scene: &Scene,
+    task: &Task,
+    navigation: u64,
+) -> Result<Option<crate::KwtWorktreeOpening>, WorkspaceError> {
+    let _publication = scene
+        .runtime
+        .remote_publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Ok(_navigation) = scene::lock_live_navigation(scene) else {
+        return Ok(None);
+    };
+    if scene.navigation_generation.load(Ordering::Acquire) != navigation {
+        return Ok(None);
+    }
+    let cancellation = host::CancellationToken::new();
+    crate::register_remote_attachment(
+        &scene.runtime,
+        scene.id,
+        &task.host_id,
+        task.generation,
+        &task.snapshot,
+        navigation,
+        &cancellation,
+    )?;
+    Ok(Some(crate::KwtWorktreeOpening { cancellation }))
 }
 
 fn execute(
@@ -342,6 +381,7 @@ fn create_worktree(
     Ok(WorkspaceEvent::KwtWorktreeCreated {
         target,
         navigation_generation,
+        opening: None,
     })
 }
 
@@ -437,5 +477,6 @@ fn import_pull_request(
     Ok(WorkspaceEvent::KwtWorktreeCreated {
         target,
         navigation_generation,
+        opening: None,
     })
 }

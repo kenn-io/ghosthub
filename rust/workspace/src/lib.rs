@@ -1367,6 +1367,19 @@ impl ClipboardRead {
     }
 }
 
+/// Keeps automatic reconnect waiting through a created worktree's UI handoff.
+/// Keep this value alive until opening finishes or the result is discarded.
+pub struct KwtWorktreeOpening {
+    cancellation: CancellationToken,
+}
+
+impl Drop for KwtWorktreeOpening {
+    fn drop(&mut self) {
+        // Events can be dropped under publication locks; cancellation must not reenter them.
+        self.cancellation.cancel();
+    }
+}
+
 pub enum WorkspaceEvent {
     ClipboardWrite {
         text: String,
@@ -1406,6 +1419,7 @@ pub enum WorkspaceEvent {
     KwtWorktreeCreated {
         target: KwtWorktreeTarget,
         navigation_generation: u64,
+        opening: Option<KwtWorktreeOpening>,
     },
     KwtWorktreeRemoved {
         operation_id: u64,
@@ -4868,7 +4882,10 @@ impl Workspace {
                     // Creation, attachment, and KWT reservations use this same lock.
                     // An active operation must finish before automatic reconnect.
                     if entry.cancellation.is_some()
-                        || !entry.attachment_attempts.is_empty()
+                        || entry
+                            .attachment_attempts
+                            .iter()
+                            .any(|attempt| !attempt.cancellation.is_cancelled())
                         || matches!(
                             entry.constructive_cancellation,
                             Some(RemoteConstructiveState::Active { .. })

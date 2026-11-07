@@ -38,10 +38,9 @@ impl Workspace {
             .get(host_id)
             .is_some_and(|entry| {
                 entry.cancellation.is_some()
-                    || entry
-                        .attachment_attempts
-                        .iter()
-                        .any(|attempt| attempt.scene == self.scene.id)
+                    || entry.attachment_attempts.iter().any(|attempt| {
+                        attempt.scene == self.scene.id && !attempt.cancellation.is_cancelled()
+                    })
             })
     }
 }

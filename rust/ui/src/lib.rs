@@ -3571,6 +3571,8 @@ impl RootView {
                 WorkspaceEvent::KwtWorktreeCreated {
                     target,
                     navigation_generation,
+                    // Keep reconnect deferred through the open request below.
+                    opening: _opening,
                 } => {
                     let open = WorktreeOpenTarget {
                         host_id: target.host_id().to_owned(),

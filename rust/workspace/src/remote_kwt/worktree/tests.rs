@@ -296,7 +296,7 @@ fn import_opens_only_the_exact_receipt_confirmed_by_fresh_inventory() {
         output(0, PROJECTS),
     ));
     assert!(
-        matches!(event, WorkspaceEvent::KwtWorktreeCreated { target, navigation_generation:42 }
+        matches!(event, WorkspaceEvent::KwtWorktreeCreated { target, navigation_generation:42, .. }
         if target.worktree_path == "/work/widget/pr-17" && target.session_name == "widget-pr-17")
     );
     workspace.close();
@@ -346,21 +346,10 @@ fn import_opens_only_the_exact_receipt_confirmed_by_fresh_inventory() {
 }
 
 #[test]
-fn automatic_reconnect_waits_for_worktree_creation_and_import_to_publish() {
-    for operation in [
-        KwtWorktreeOperation::Create {
-            branch: "pr-17".to_owned(),
-            source: None,
-            creates_branch: true,
-            navigation_generation: 42,
-        },
-        KwtWorktreeOperation::ImportPullRequest {
-            selector: "17".to_owned(),
-            navigation_generation: 42,
-        },
-    ] {
+fn worktree_open_survives_reconnect_during_creation_and_before_event_consumption() {
+    for import in [false, true] {
         let mut commands = replies(output(0, &receipt().to_string()), output(0, PROJECTS));
-        if matches!(operation, KwtWorktreeOperation::Create { .. }) {
+        if !import {
             commands[3].1 = output(0, "");
             commands[5].1 = output(
                 0,
@@ -371,59 +360,146 @@ fn automatic_reconnect_waits_for_worktree_creation_and_import_to_publish() {
         }
         let (workspace, refresh, runner) = fixture(commands);
         let other = workspace.open_scene();
-        let now = Instant::now();
-        let due = now + Duration::from_secs(1);
-        {
-            let mut entries = workspace.scene.runtime.remote_hosts.lock().unwrap();
-            let entry = entries.get_mut("ssh:studio").unwrap();
-            entry.reconnect.enable();
-            entry.reconnect.schedule(now);
-        }
+        let due = arm_retry(&other);
         let recovery_scene = Arc::downgrade(&other.scene);
         *runner.before_mutation_returns.lock().unwrap() = Some(Box::new(move || {
-            // The remote mutation has completed, but its result has not arrived.
-            // Another window now tries to reserve an already-due reconnect.
-            let recovery = crate::Workspace {
-                scene: recovery_scene.upgrade().unwrap(),
-            };
-            let _publication = recovery.scene.runtime.remote_publication.lock().unwrap();
-            let _navigation = scene::lock_live_navigation(&recovery.scene).unwrap();
-            recovery
-                .start_remote_connection("ssh:studio", Some(due))
-                .unwrap();
+            // The mutation succeeded remotely; its response has not arrived yet.
+            retry(
+                &crate::Workspace {
+                    scene: recovery_scene.upgrade().unwrap(),
+                },
+                due,
+            );
         }));
-        start(&workspace, operation);
-        refresh.run_next_work();
-        let event = result(&workspace, &runner);
-        assert!(
-            matches!(event,
-                WorkspaceEvent::KwtWorktreeCreated { target, navigation_generation: 42 }
-                if target.worktree_path == "/work/widget/pr-17" && target.session_name == "widget-pr-17"
-            ),
-            "the dialog must receive the completed worktree to open"
-        );
-        assert_eq!(
-            workspace.snapshot().hosts()[0].projects()[0].worktrees()[0].path(),
-            "/work/widget/pr-17"
-        );
-        assert!(
-            refresh.work.lock().unwrap().is_empty(),
-            "reconnect must wait for publication"
-        );
-        {
-            let _publication = other.scene.runtime.remote_publication.lock().unwrap();
-            let _navigation = scene::lock_live_navigation(&other.scene).unwrap();
-            other
-                .start_remote_connection("ssh:studio", Some(due))
+        if import {
+            workspace
+                .import_kwt_pull_request(
+                    "ssh:studio",
+                    "studio.example",
+                    "github.com/acme/widget",
+                    "/code/widget",
+                    "registration",
+                    "17",
+                )
+                .unwrap();
+        } else {
+            workspace
+                .create_kwt_worktree(
+                    "ssh:studio",
+                    "studio.example",
+                    "github.com/acme/widget",
+                    "/code/widget",
+                    "registration",
+                    "pr-17",
+                    None,
+                    true,
+                )
                 .unwrap();
         }
-        let work = refresh.work.lock().unwrap().drain(..).collect::<Vec<_>>();
-        assert_eq!(
-            work.len(),
-            1,
-            "completion releases the due retry without another backoff"
+        refresh.run_next_work();
+        retry(&other, due);
+        // Consume exactly as the UI does: keep the event alive through opening.
+        let event = result(&workspace, &runner);
+        let WorkspaceEvent::KwtWorktreeCreated { target, .. } = &event else {
+            panic!("expected completed worktree");
+        };
+        workspace
+            .open_kwt_worktree(
+                target.host_id(),
+                target.endpoint(),
+                target.repository(),
+                target.project_path(),
+                target.registration_fingerprint(),
+                target.worktree_path(),
+                target.generation(),
+                target.session_name(),
+                target.tmux_socket_name(),
+                target.tmux_attach_mode(),
+            )
+            .expect("reconnect must preserve automatic opening");
+        drop(event);
+        let attachment = refresh
+            .work
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("queued attachment");
+        retry(&other, due);
+        assert!(
+            refresh.work.lock().unwrap().is_empty(),
+            "the real attachment must keep reconnect waiting after event consumption"
         );
-        drop(work);
+        workspace.detach();
+        retry(&other, due);
+        let connections = refresh.work.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(
+            connections.len(),
+            1,
+            "cancelling navigation releases the due reconnect"
+        );
+        drop(attachment);
+        drop(connections);
+        other.close();
+        workspace.close();
+    }
+}
+
+fn arm_retry(workspace: &crate::Workspace) -> Instant {
+    let now = Instant::now();
+    let mut entries = workspace.scene.runtime.remote_hosts.lock().unwrap();
+    let entry = entries.get_mut("ssh:studio").unwrap();
+    entry.reconnect.enable();
+    entry.reconnect.schedule(now);
+    now + Duration::from_secs(1)
+}
+
+fn retry(workspace: &crate::Workspace, due: Instant) {
+    let _publication = workspace.scene.runtime.remote_publication.lock().unwrap();
+    let _navigation = scene::lock_live_navigation(&workspace.scene).unwrap();
+    workspace
+        .start_remote_connection("ssh:studio", Some(due))
+        .unwrap();
+}
+
+#[test]
+fn abandoned_created_worktrees_do_not_block_another_windows_reconnect() {
+    for abandon in ["discard", "navigate", "close", "navigate-before-completion"] {
+        let (workspace, refresh, runner) = fixture(replies(
+            output(0, &receipt().to_string()),
+            output(0, PROJECTS),
+        ));
+        let other = workspace.open_scene();
+        workspace
+            .import_kwt_pull_request(
+                "ssh:studio",
+                "studio.example",
+                "github.com/acme/widget",
+                "/code/widget",
+                "registration",
+                "17",
+            )
+            .unwrap();
+        if abandon == "navigate-before-completion" {
+            workspace.detach();
+        }
+        refresh.run_next_work();
+        let event = result(&workspace, &runner);
+        let due = arm_retry(&other);
+        match abandon {
+            "discard" => drop(event),
+            "navigate" => workspace.detach(),
+            "close" => workspace.close(),
+            "navigate-before-completion" => {}
+            _ => unreachable!(),
+        }
+        retry(&other, due);
+        let connections = refresh.work.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(
+            connections.len(),
+            1,
+            "{abandon} must release the due reconnect"
+        );
+        drop(connections);
         other.close();
         workspace.close();
     }

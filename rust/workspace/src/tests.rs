@@ -599,6 +599,7 @@ fn later_kwt_inventory_resolves_a_pending_created_worktree_once() {
         Some(WorkspaceEvent::KwtWorktreeCreated {
             target,
             navigation_generation: 41,
+            ..
         }) if target.worktree_path() == "/work/widget/new"
     ));
 }
@@ -11869,6 +11870,7 @@ fn broadcast_facts_reach_every_scene_without_consuming_each_other() {
     let target = created_worktree_target();
     broadcast_event(&a.scene.runtime, || WorkspaceEvent::KwtWorktreeCreated {
         target: target.clone(),
+        opening: None,
         navigation_generation: 41,
     });
 
@@ -11915,6 +11917,7 @@ fn broadcast_created_fact_never_matches_another_scenes_navigation_intent() {
     let target = created_worktree_target();
     broadcast_event(&a.scene.runtime, || WorkspaceEvent::KwtWorktreeCreated {
         target: target.clone(),
+        opening: None,
         navigation_generation: a_generation,
     });
 
@@ -14326,6 +14329,7 @@ fn created_fact_is_lossless_only_for_the_initiating_scene() {
     broadcast_event_with_lossless_owner(&a.scene.runtime, a.scene.id, || {
         WorkspaceEvent::KwtWorktreeCreated {
             target: target.clone(),
+            opening: None,
             navigation_generation: 41,
         }
     });

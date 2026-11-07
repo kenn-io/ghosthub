@@ -2964,6 +2964,7 @@ pub(crate) fn run_kwt_pull_request_import(
         WorkspaceEvent::KwtWorktreeCreated {
             target: target.clone(),
             navigation_generation,
+            opening: None,
         }
     });
     KwtWorktreeOutcome::default()
@@ -3538,6 +3539,7 @@ pub(crate) fn resolve_pending_kwt_creations_at(
             WorkspaceEvent::KwtWorktreeCreated {
                 target: target.clone(),
                 navigation_generation,
+                opening: None,
             }
         });
     }

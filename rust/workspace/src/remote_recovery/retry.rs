@@ -151,7 +151,10 @@ pub(crate) fn tick(scenes: &[Arc<Scene>], now: Instant) {
         .iter()
         .filter(|(_, entry)| {
             entry.cancellation.is_none()
-                && entry.attachment_attempts.is_empty()
+                && entry
+                    .attachment_attempts
+                    .iter()
+                    .all(|attempt| attempt.cancellation.is_cancelled())
                 && entry.reconnect.enabled
         })
         .map(|(id, _)| id.clone())

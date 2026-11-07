@@ -217,6 +217,8 @@ If an active tmux terminal loses its SSH connection, Ghosthub retries
 automatically after 1, 2, 4, 8, 16, then 30 seconds. Automatic attempts have
 a 15-second limit. Select **Refresh** or **Retry** beside the host to try now
 and reset the backoff.
+Automatic retries wait for worktree creation or import and the resulting
+terminal to open, so recovery in another window does not interrupt that work.
 Ghosthub reopens that same session, even if it was renamed. It will not create
 a missing session or open a new session that reused the old name. Selecting
 another session, detaching, or closing the window cancels the pending recovery. If reconnecting or starting the
