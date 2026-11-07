@@ -531,16 +531,17 @@ fn automatic_recovery_waits_for_explicit_host_key_review() {
             .iter()
             .find(|host| host.id() == fixture.host_id)
             .unwrap();
-        if host.connection() == HostConnectionState::Unavailable {
-            assert_eq!(
-                host.diagnostic().unwrap().kind(),
-                model::DiagnosticKind::PermissionDenied
-            );
+        if host.connection() == HostConnectionState::Unavailable
+            && host.diagnostic().is_some_and(|diagnostic| {
+                diagnostic.kind() == model::DiagnosticKind::PermissionDenied
+            })
+        {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "host-key review was not surfaced"
+            "host-key review was not surfaced: {:?}",
+            host.diagnostic()
         );
         thread::sleep(Duration::from_millis(20));
     }

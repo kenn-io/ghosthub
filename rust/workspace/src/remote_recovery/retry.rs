@@ -57,6 +57,15 @@ impl Retry {
     fn due(&self, now: Instant) -> bool {
         self.enabled && self.next.is_some_and(|next| next <= now)
     }
+
+    pub(crate) fn start(&mut self, now: Instant) -> bool {
+        if !self.due(now) {
+            return false;
+        }
+        self.next = None;
+        self.started = Some(now);
+        true
+    }
 }
 
 /// The caller holds publication. An existing connection attempt will schedule any next retry.
@@ -176,13 +185,7 @@ pub(crate) fn tick(scenes: &[Arc<Scene>], now: Instant) {
         {
             if owner.is_some() {
                 entry.reconnect.schedule(now);
-                if entry.reconnect.due(now) {
-                    entry.reconnect.next = None;
-                    entry.reconnect.started = Some(now);
-                    true
-                } else {
-                    false
-                }
+                entry.reconnect.due(now)
             } else {
                 entry.reconnect.next = None;
                 false
@@ -194,7 +197,7 @@ pub(crate) fn tick(scenes: &[Arc<Scene>], now: Instant) {
             let workspace = Workspace {
                 scene: Arc::clone(scene),
             };
-            if let Err(error) = workspace.start_remote_connection(&host_id, false) {
+            if let Err(error) = workspace.start_remote_connection(&host_id, Some(now)) {
                 workspace.push_operation_error(error.to_string());
             }
         }
@@ -240,34 +243,43 @@ pub(crate) fn attempt<T>(
 mod tests {
     use super::*;
 
+    fn fixture() -> (
+        Workspace,
+        crate::RemoteTmuxAttachRequest,
+        Arc<crate::tests::ManualRefreshRuntime>,
+    ) {
+        let refresh = Arc::new(crate::tests::ManualRefreshRuntime::default());
+        let workspace = Workspace::application_with_services(
+            crate::TerminalAppearance::default(),
+            None,
+            Arc::new(crate::SystemLocalDiscovery::new()),
+            refresh.clone(),
+        );
+        let (source, request) = crate::tests::remote_kill_refresh_fixture();
+        let mut entry = source
+            .scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap()
+            .remove("ssh:studio")
+            .unwrap();
+        entry.reconnect.enable();
+        workspace
+            .scene
+            .runtime
+            .remote_hosts
+            .lock()
+            .unwrap()
+            .insert("ssh:studio".to_owned(), entry);
+        *workspace.scene.runtime.hosts.write().unwrap() = source.snapshot().hosts().to_vec();
+        (workspace, request, refresh)
+    }
+
     #[test]
     fn shared_recovery_obeys_the_deadline_and_cancellation_before_spawning() {
         for cancel in [None, Some("cancel"), Some("detach"), Some("close")] {
-            let refresh = Arc::new(crate::tests::ManualRefreshRuntime::default());
-            let workspace = Workspace::application_with_services(
-                crate::TerminalAppearance::default(),
-                None,
-                Arc::new(crate::SystemLocalDiscovery::new()),
-                refresh.clone(),
-            );
-            let (source, request) = crate::tests::remote_kill_refresh_fixture();
-            let mut entry = source
-                .scene
-                .runtime
-                .remote_hosts
-                .lock()
-                .unwrap()
-                .remove("ssh:studio")
-                .unwrap();
-            entry.reconnect.enable();
-            workspace
-                .scene
-                .runtime
-                .remote_hosts
-                .lock()
-                .unwrap()
-                .insert("ssh:studio".to_owned(), entry);
-            *workspace.scene.runtime.hosts.write().unwrap() = source.snapshot().hosts().to_vec();
+            let (workspace, request, refresh) = fixture();
             let other = workspace.open_scene();
             for scene in [&workspace.scene, &other.scene] {
                 *scene.interrupted_tmux.lock().unwrap() = Some(super::super::InterruptedTmux {
@@ -318,6 +330,81 @@ mod tests {
             );
             drop(work);
         }
+    }
+
+    #[test]
+    fn automatic_reservation_preserves_an_attachment_registered_after_selection() {
+        let (workspace, request, refresh) = fixture();
+        let other = workspace.open_scene();
+        let now = Instant::now();
+        let due = now + Duration::from_secs(1);
+        let _publication = workspace.scene.runtime.remote_publication.lock().unwrap();
+        let _navigation = lock_live_navigation(&workspace.scene).unwrap();
+        {
+            let mut entries = workspace.scene.runtime.remote_hosts.lock().unwrap();
+            let entry = entries.get_mut("ssh:studio").unwrap();
+            entry.reconnect.schedule(now);
+            assert!(entry.reconnect.due(due));
+            assert!(entry.cancellation.is_none() && entry.attachment_attempts.is_empty());
+        }
+        // Another window registers after the scheduler selects this due host.
+        let attachment = CancellationToken::new();
+        let navigation_generation = workspace
+            .scene
+            .runtime
+            .operation_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        crate::register_remote_attachment(
+            &workspace.scene.runtime,
+            other.scene.id,
+            "ssh:studio",
+            request.connection_generation,
+            &request.snapshot,
+            navigation_generation,
+            &attachment,
+        )
+        .unwrap();
+        workspace
+            .start_remote_connection("ssh:studio", Some(due))
+            .unwrap();
+        assert!(
+            !attachment.is_cancelled(),
+            "recovery cancelled another window's selection"
+        );
+        assert!(
+            refresh.work.lock().unwrap().is_empty(),
+            "reconnect must wait for attachment"
+        );
+
+        crate::clear_remote_attachment_registration(
+            &workspace.scene.runtime,
+            "ssh:studio",
+            navigation_generation,
+        );
+        workspace
+            .start_remote_connection("ssh:studio", Some(due))
+            .unwrap();
+        let work = refresh.work.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(
+            work.len(),
+            1,
+            "the due retry resumes without another backoff"
+        );
+        assert!(
+            crate::register_remote_attachment(
+                &workspace.scene.runtime,
+                other.scene.id,
+                "ssh:studio",
+                request.connection_generation,
+                &request.snapshot,
+                navigation_generation,
+                &attachment,
+            )
+            .is_err(),
+            "reservation invalidates requests captured before reconnect"
+        );
+        drop(work);
     }
 
     #[test]

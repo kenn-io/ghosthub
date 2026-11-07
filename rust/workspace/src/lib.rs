@@ -4830,15 +4830,21 @@ impl Workspace {
             // The connect fence above already holds the navigation guard.
             return self.refresh_locked();
         }
-        self.start_remote_connection(id, true)
+        self.start_remote_connection(id, None)
     }
 
-    // The caller holds publication and navigation, in that order.
+    // The caller holds publication and navigation, in that order. A retry time
+    // requests automatic recovery; None is an explicit connection request.
     #[allow(
         clippy::too_many_lines,
         reason = "the runtime/scene split lengthens shared-state paths without adding logic"
     )]
-    fn start_remote_connection(&self, id: &str, interactive: bool) -> Result<(), WorkspaceError> {
+    fn start_remote_connection(
+        &self,
+        id: &str,
+        retry_at: Option<Instant>,
+    ) -> Result<(), WorkspaceError> {
+        let interactive = retry_at.is_none();
         let generation = self
             .scene
             .runtime
@@ -4858,7 +4864,16 @@ impl Workspace {
                 let entry = entries
                     .get_mut(id)
                     .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
-                if interactive {
+                if let Some(now) = retry_at {
+                    // Attachment registration uses this same lock. Defer without
+                    // consuming the retry if another window has claimed the host.
+                    if entry.cancellation.is_some()
+                        || !entry.attachment_attempts.is_empty()
+                        || !entry.reconnect.start(now)
+                    {
+                        return Ok(());
+                    }
+                } else {
                     entry.reconnect.enable();
                 }
                 cancel_remote_constructive(entry);
