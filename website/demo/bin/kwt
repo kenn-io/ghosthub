@@ -211,6 +211,14 @@ case "${1:-}" in
   branches) branches_json ;;
   changes) changes_json "$@" ;;
   open) open_worktree "$@" ;;
+  agent-hook)
+    if [[ "${2:-}" =~ ^(status|install)$ && "${3:-}" == "--json" && "$#" -eq 3 ]]; then
+      echo '{"agents":[{"agent":"claude","display_name":"Claude Code","available":true,"installed":true,"current":true},{"agent":"codex","display_name":"Codex","available":true,"installed":true,"current":true}]}'
+    else
+      echo "faux kwt: unsupported agent-hook command" >&2
+      exit 64
+    fi
+    ;;
   *)
     echo "faux kwt: unsupported command: ${1:-<none>}" >&2
     exit 64

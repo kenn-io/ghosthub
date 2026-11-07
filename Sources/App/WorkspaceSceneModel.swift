@@ -171,6 +171,14 @@ final class WorkspaceSceneModel: ObservableObject {
             reconcileInventoryHosts()
         }
     }
+    /// Remembers finished agent turns the user has seen; replaceable in tests.
+    var agentAttentionStore: AgentAttentionStore = .shared
+    /// The session tmux last reported the active client shows; it can differ
+    /// from the selection after a switch made with tmux's own keys.
+    @Published private(set) var shownTmuxSessionIdentity: TmuxSessionIdentity?
+    private var shownTmuxSessionProbe: Task<Void, Never>?
+    /// Set when state changes during a probe, so it is checked again after.
+    private var shownTmuxSessionRecheck = false
     let sidebarSectionCache = WorkspaceSidebarSectionCache()
     private(set) var sidebarSnapshotRevision: UInt64 = 0
     private var tmuxDiscoveryEnabled = false
@@ -300,6 +308,10 @@ final class WorkspaceSceneModel: ObservableObject {
         [UUID: ConnectionState] = [:] {
         didSet {
             refreshConnectedBorrowedTmuxSessionIDs()
+            if let id = activeBorrowedTmuxHandle?.id,
+               oldValue[id] != borrowedTmuxConnectionStates[id] {
+                refreshShownTmuxSession()
+            }
         }
     }
     private(set) var connectedBorrowedTmuxSessionIDs:
@@ -325,8 +337,17 @@ final class WorkspaceSceneModel: ObservableObject {
         exhaustedCreatedTmuxSessionHandles.count
     }
     @Published private(set) var activeBorrowedTmuxSelection:
-        WorkspaceTmuxSessionSelection?
-    private var activeBorrowedTmuxHandle: BorrowedTmuxSessionHandle?
+        WorkspaceTmuxSessionSelection? {
+        didSet { refreshShownTmuxSession() }
+    }
+    private var activeBorrowedTmuxHandle: BorrowedTmuxSessionHandle? {
+        didSet {
+            if activeBorrowedTmuxHandle?.id != oldValue?.id {
+                shownTmuxSessionIdentity = nil
+            }
+            refreshShownTmuxSession()
+        }
+    }
     private(set) var activeBorrowedTmuxLaunchMode:
         TmuxAttachmentLaunchMode?
     @Published private(set) var activeBorrowedTmuxRecoveryState:
@@ -796,6 +817,7 @@ final class WorkspaceSceneModel: ObservableObject {
             tmuxSessionPreviewCoordinator.sceneWindowFocusDidChange(
                 isKey: isFocusedWindow
             )
+            refreshShownTmuxSession()
             guard isFocusedWindow else { return }
             syncTerminalConfig()
         }
@@ -1002,6 +1024,85 @@ final class WorkspaceSceneModel: ObservableObject {
     var defaultIdleThresholdSeconds: Int {
         workspaceConfiguration.notifications.idleThresholdSeconds
     }
+    /// Asks tmux which session the active client shows, publishes it, and
+    /// then marks that session's finished turn as seen if the window is in
+    /// front. The selection is not enough: switching sessions with tmux's own
+    /// keys changes what the client shows, and a new session can take a
+    /// renamed one's name. Runs when the attachment, selection, or focus
+    /// changes and after each tmux discovery for the client's host, so it
+    /// costs one tmux query per inventory refresh.
+    func refreshShownTmuxSession() {
+        guard shownTmuxSessionProbe == nil else {
+            shownTmuxSessionRecheck = true
+            return
+        }
+        shownTmuxSessionRecheck = false
+        guard let handle = activeTmuxHandleMatchingSelection(),
+              activeBorrowedTmuxSessionIsConnected,
+              nativeTmuxSessionCoordinator.attachedSessionIdentity(handle) != nil
+        else { return }
+        shownTmuxSessionProbe = Task { [weak self] in
+            guard let self else { return }
+            let shown = await nativeTmuxSessionCoordinator
+                .revalidateAttachedSessionIdentity(handle)
+            shownTmuxSessionProbe = nil
+            // A change during the probe may postdate tmux's answer, so
+            // only a fresh probe may publish or mark a turn seen.
+            if shownTmuxSessionRecheck {
+                refreshShownTmuxSession()
+            } else if activeBorrowedTmuxHandle == handle {
+                shownTmuxSessionIdentity = shown
+                acknowledgeShownAgentTurn()
+            }
+        }
+    }
+
+    /// The discovered session the active client shows, once tmux has said.
+    var shownTmuxSession: TmuxSessionSummary? {
+        guard let identity = shownTmuxSessionIdentity,
+              let handle = activeTmuxHandleMatchingSelection(),
+              let host = snapshot.host(id: handle.hostID)
+        else { return nil }
+        return tmuxSession(on: host, handle: handle, identity: identity)
+    }
+
+    /// A finished agent turn counts as seen once tmux reports its session
+    /// is what the connected active client of the key window shows.
+    private func acknowledgeShownAgentTurn() {
+        guard isFocusedWindow,
+              activeBorrowedTmuxSessionIsConnected,
+              let session = shownTmuxSession,
+              let hostID = activeBorrowedTmuxHandle?.hostID
+        else { return }
+        agentAttentionStore.acknowledge(session, hostID: hostID)
+    }
+
+    /// Switching sessions updates the selection before the handle, so the
+    /// handle counts only once it belongs to the selected session.
+    private func activeTmuxHandleMatchingSelection()
+        -> BorrowedTmuxSessionHandle? {
+        guard let selection = activeBorrowedTmuxSelection,
+              let handle = activeBorrowedTmuxHandle,
+              handle.hostID == selection.hostID,
+              handle.name == selection.name,
+              handle.socketName == selection.socketName
+        else { return nil }
+        return handle
+    }
+
+    private func tmuxSession(
+        on host: HostSummary,
+        handle: BorrowedTmuxSessionHandle,
+        identity: TmuxSessionIdentity
+    ) -> TmuxSessionSummary? {
+        host.tmuxSessions.first {
+            $0.socketName == handle.socketName
+                && $0.serverPID == identity.serverPID
+                && $0.sessionID == identity.sessionID
+                && $0.createdAt == identity.createdAt
+        }
+    }
+
     var workingTmuxSessionIDs: Set<String> {
         tmuxSessionActivityController?.workingSessionIDs ?? []
     }
@@ -4435,6 +4536,10 @@ final class WorkspaceSceneModel: ObservableObject {
             followTmuxRenames(hostID: hostID)
         }
         updateWorkspaceInventoryState()
+        if let hostID = activeBorrowedTmuxHandle?.hostID,
+           updatedHostIDs.contains(hostID) {
+            refreshShownTmuxSession()
+        }
     }
 
     private func applySharedInventoryProgress(
@@ -6073,6 +6178,9 @@ final class WorkspaceSceneModel: ObservableObject {
             applyDeferredTmuxPresentationsIfReady()
             followTmuxRenames(hostID: hostID)
             reconcileAlwaysLiveTmuxPresentations(hostID: hostID)
+            if activeBorrowedTmuxHandle?.hostID == hostID {
+                refreshShownTmuxSession()
+            }
         }
     }
 
@@ -7241,6 +7349,48 @@ final class WorkspaceSceneModel: ObservableObject {
             refreshKwtInventory()
             return .success(())
         case let .failure(error):
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
+    /// Reads or installs kwt agent hooks on this Mac (nil) or a POSIX SSH
+    /// host, provisioning the managed kwt there first.
+    func agentHooks(
+        _ action: KwtAgentHookClient.Action,
+        on host: SSHHost?
+    ) async -> Result<[AgentHookSetupStatus], HostProbeError> {
+        let target: CommandHost
+        if let host {
+            let destination = host.sshDestination.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard host.platform != .windows,
+                  let sshHost = CommandHostResolver.parseSSHDestination(destination)
+            else {
+                return .failure(.message("Enter a valid SSH destination."))
+            }
+            target = .ssh(SSHHostInfo(
+                user: sshHost.user,
+                hostname: sshHost.hostname,
+                port: sshHost.port,
+                platform: .posix,
+                compression: host.compression
+            ))
+        } else {
+            target = .local
+        }
+        do {
+            if var host {
+                host.sshDestination = host.sshDestination.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                try await ensureRemoteKwtForOperation(
+                    on: host,
+                    hostID: snapshot.hosts.first { $0.configKey == host.configKey }?.id
+                )
+            }
+            return try await .success(KwtAgentHookClient().run(action, on: target))
+        } catch {
             return .failure(.message(error.localizedDescription))
         }
     }
@@ -10845,6 +10995,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private func tmuxSurfaceBecameReady(
         _ handle: BorrowedTmuxSessionHandle
     ) {
+        refreshShownTmuxSession()
         guard let presentation = retainedTmuxPresentation(for: handle) else {
             return
         }

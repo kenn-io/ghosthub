@@ -1018,6 +1018,55 @@ in-flight probe; a probe cancelled after its host command launched drains
 within the probe's ten-second timeout and its result is discarded. This state
 is not saved to the database.
 
+### Agent attention
+
+A badge at the trailing edge of a tmux session's sidebar row shows what a
+coding agent in that session is doing. It replaces the recent-output dot.
+
+| Agent state | Badge | Shown |
+| --- | --- | --- |
+| Waiting for permission approval | Amber speech bubble, **Approval** | Until the agent moves on |
+| Asking the user a question | Purple speech bubble, **Input** | Until the agent moves on |
+| Finished its turn | Small green dot, **Done** | Until the user views the session |
+| Working | Green dot, **Working** | While the agent works |
+
+Speech bubbles fade in and out slowly, and the working dot pulses, unless
+Reduce Motion is on. The native window tab shows the same icon beside its
+shortcut for approval, input, and finished turns of the session the window's
+tmux client shows; it never shows Working.
+
+Agent hooks installed by kwt record the state. Settings → Hosts → **Agent
+Hooks** runs the host's managed kwt (`kwt agent-hook status --json` and
+`kwt agent-hook install --json`), which edits the user settings of each
+supported agent whose configuration directory exists on that host. Codex asks
+the user to trust new hooks once through `/hooks`.
+
+Each hook event writes the tmux pane option `@kwt_agent` as
+`<state> <unix-seconds> <agent>`, where state is `working`, `approval`,
+`input`, or `done`. Session start and end clear the option. Hooks outside tmux,
+and subagent events, do nothing. A failing hook never blocks the agent.
+
+POSIX discovery reads the option in the same command as `list-sessions` with
+`list-panes -a -f '#{@kwt_agent}'` and attaches each pane to its session by
+socket and session ID. Badges therefore follow tmux inventory refresh: when
+the app becomes active and every thirty seconds while it stays active. A
+failed read leaves sessions without agent state. Native
+Windows discovery does not read agent state.
+
+A session shows approval first, then input, then an unseen finished turn, then
+working. A finished turn is acknowledged when its session is the connected
+active presentation in the key window. Ghosthub asks tmux for the server PID,
+session ID, and creation time of the session the active client shows when the
+attachment, selection, or window focus changes and after each tmux discovery
+for that host, and acknowledges only after that answer. An answer that
+arrives after another of those changes is discarded and tmux is asked again,
+because it may describe the client before the change. A switch made with
+tmux's own keys, or a new session that takes a renamed session's name, is
+therefore never acknowledged in its place, and the tab follows the session
+the client shows. The acknowledgement records the newest `done` stamp under
+that identity. Acknowledgements persist in
+UserDefaults and keep the 512 most recent sessions.
+
 Pull-request imports are the one alternate-socket case. Kwt returns the named
 socket reserved for the workspace-specific server, and Ghosthub carries that
 identity with the worktree selection. Import does not start tmux or execute a

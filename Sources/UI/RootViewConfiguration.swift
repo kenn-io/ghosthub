@@ -30,6 +30,8 @@ public struct WorkspaceDisplayState {
     public let sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest?
     public let workingTmuxSessionIDs: Set<String>
+    /// Agent attention keyed by `AgentAttentionStore.endpointKey`.
+    public let agentAttentionByEndpoint: [String: AgentAttention]
     public let tmuxWindowCountsBySessionID: [String: Int]
     public let previewableTmuxSessionIDs: Set<String>
     public let sessionPreviewMode: SessionPreviewMode
@@ -57,6 +59,7 @@ public struct WorkspaceDisplayState {
         sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest? = nil,
         workingTmuxSessionIDs: Set<String> = [],
+        agentAttentionByEndpoint: [String: AgentAttention] = [:],
         tmuxWindowCountsBySessionID: [String: Int] = [:],
         previewableTmuxSessionIDs: Set<String> = [],
         sessionPreviewMode: SessionPreviewMode = .off
@@ -89,6 +92,7 @@ public struct WorkspaceDisplayState {
         self.sessionConnectionRecoveryRequest =
             sessionConnectionRecoveryRequest
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
+        self.agentAttentionByEndpoint = agentAttentionByEndpoint
         self.tmuxWindowCountsBySessionID = tmuxWindowCountsBySessionID
         self.previewableTmuxSessionIDs = previewableTmuxSessionIDs
         self.sessionPreviewMode = sessionPreviewMode

@@ -296,6 +296,36 @@ you have not opened, and terminal text never leaves the host: the probe
 returns only a checksum and size counters. On native Windows hosts, activity
 indicators require psmux 3.3.4 or newer.
 
+## Agents waiting for you
+
+**Unreleased.** A tmux session running a coding agent shows what the agent is
+doing at the right edge of its sidebar row:
+
+- **Approval** (amber bubble): the agent is waiting for permission.
+- **Input** (purple bubble): the agent asked you a question.
+- **Done** (green dot): the agent finished a turn you have not looked at.
+- **Working** (pulsing green dot): the agent is busy.
+
+The native tab whose current session needs you shows the same icon beside its
+shortcut. Hover a badge to see which agent it is.
+
+![Ghosthub sidebar with Approval, Input, Done, and Working badges on four tmux sessions](/docs/assets/guide-agent-attention.png)
+
+**Done** clears once you view that session in the front window. **Approval**
+and **Input** stay until the agent continues.
+
+To turn this on for a host:
+
+1. Open **Settings → Hosts** and select the local Mac or a remote host.
+2. Under **Agent Hooks**, click **Install Hooks**.
+3. In Codex, open `/hooks` once to trust the new hooks.
+
+Ghosthub installs hooks for each supported agent already set up on that host,
+including Claude Code, Codex, Gemini CLI, and Cursor. Badges refresh when you
+switch to Ghosthub and about every thirty seconds while it stays in front.
+Native Windows hosts and Herdr and Zellij sessions do not show agent
+badges yet.
+
 ## Reopen an exited standalone session
 
 If a standalone session exits while its presentation is still open, Ghosthub

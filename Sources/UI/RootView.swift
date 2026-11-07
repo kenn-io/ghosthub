@@ -720,6 +720,8 @@ public struct RootView: View {
             display.connectedTmuxSessionIDs,
             workingTmuxSessionIDs:
             display.workingTmuxSessionIDs,
+            agentAttentionByEndpoint:
+            display.agentAttentionByEndpoint,
             tmuxWindowCountsBySessionID:
             display.tmuxWindowCountsBySessionID,
             previewableTmuxSessionIDs:

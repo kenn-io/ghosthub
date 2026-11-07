@@ -671,7 +671,7 @@ struct TmuxBinaryResolverTests {
           printf 'tmux 3.6a\n'
           exit 0
         fi
-        if [ "\(defaultAvailable)" = true ] && [ "$2" = default ]; then
+        if [ "\(defaultAvailable)" = true ] && [ "$2" = default ] && [ "$3" = list-sessions ]; then
           printf 'GHOSTHUB_TMUX_SESSION\t\t1\t101\t$1\t1000\t80\t24\ton\t\tdesk\n'
           exit 0
         fi
@@ -711,6 +711,58 @@ struct TmuxBinaryResolverTests {
         } else {
             #expect(result == .failure(.shellFailed(status: 1)))
         }
+    }
+
+    @Test("a failed agent-state read keeps the discovered sessions")
+    func agentStateFailureKeepsSessions() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghosthub-tmux-discovery-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Both servers list their sessions, then exit before list-panes runs.
+        let tmux = directory.appendingPathComponent("tmux")
+        try """
+        #!/bin/sh
+        if [ "$1" = "-V" ]; then
+          printf 'tmux 3.6a\n'
+          exit 0
+        fi
+        if [ "$3" = list-sessions ]; then
+          socket=""; name=desk
+          if [ "$2" = kwt ]; then socket=kwt; name=repo--main; fi
+          printf 'GHOSTHUB_TMUX_SESSION\t%s\t1\t101\t$1\t1000\t80\t24\ton\t\t%s\n' "$socket" "$name"
+          exit 0
+        fi
+        printf 'no server running on /tmp/tmux-501/%s\n' "$2" >&2
+        exit 1
+        """.write(to: tmux, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: tmux.path
+        )
+
+        let shell = directory.appendingPathComponent("account-shell")
+        try """
+        #!/bin/sh
+        PATH=\(shellQuotedCommandArgument(directory.path)):/usr/bin:/bin
+        export PATH
+        exec /bin/sh -c "$2"
+        """.write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: shell.path
+        )
+
+        let sessions = try TmuxBinaryResolver(
+            loginShellProvider: { shell.path }
+        ).discoverSessions().get()
+
+        #expect(sessions.map(\.name) == ["desk", "repo--main"])
+        #expect(sessions.allSatisfy { $0.agentPanes.isEmpty })
     }
 
     @Test("nonzero exit maps to notFound")

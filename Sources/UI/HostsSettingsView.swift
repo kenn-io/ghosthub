@@ -248,6 +248,8 @@ public struct HostsSettingsView: View {
     let loadTailscalePeers: () async -> TailscalePeerLoadResult
     let installWindowsKwt:
         (SSHHost) async -> Result<Void, HostProbeError>
+    let loadAgentHooks: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
+    let installAgentHooks: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
 
     public init(
         sshHosts: Binding<[SSHHostDraft]>,
@@ -291,7 +293,15 @@ public struct HostsSettingsView: View {
         installWindowsKwt: @escaping (SSHHost) async -> Result<
             Void,
             HostProbeError
-        >
+        >,
+        loadAgentHooks: @escaping (SSHHost?) async -> Result<
+            [AgentHookSetupStatus],
+            HostProbeError
+        > = { _ in .success([]) },
+        installAgentHooks: @escaping (SSHHost?) async -> Result<
+            [AgentHookSetupStatus],
+            HostProbeError
+        > = { _ in .success([]) }
     ) {
         _sshHosts = sshHosts
         _selectedSSHHostDraftID = selectedSSHHostDraftID
@@ -318,6 +328,8 @@ public struct HostsSettingsView: View {
         self.registerRemoteProject = registerRemoteProject
         self.loadTailscalePeers = loadTailscalePeers
         self.installWindowsKwt = installWindowsKwt
+        self.loadAgentHooks = loadAgentHooks
+        self.installAgentHooks = installAgentHooks
     }
 
     public var body: some View {
@@ -717,6 +729,12 @@ public struct HostsSettingsView: View {
                                         .foregroundStyle(.green)
                                 }
                             }
+
+                            AgentHooksSettingsSection(
+                                host: draft.sshHost,
+                                load: loadAgentHooks,
+                                install: installAgentHooks
+                            )
                         }
                     } else {
                         settingsSection("Local Mac") {
@@ -748,6 +766,12 @@ public struct HostsSettingsView: View {
                                 )
                             }
                         }
+
+                        AgentHooksSettingsSection(
+                            host: nil,
+                            load: loadAgentHooks,
+                            install: installAgentHooks
+                        )
                     }
                 }
                 .frame(

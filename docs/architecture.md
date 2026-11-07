@@ -49,7 +49,10 @@ presence or discovery authority; the existing background activity sampler
 checks working sessions every five seconds and quiet sessions every twenty
 seconds. Detached ordinary worktree sessions use the positive count from
 current discovery. Other live presentations retain their running or agent
-glyph when no trustworthy count exists. Cached sessions do not
+glyph when no trustworthy count exists. Tmux sessions running a coding agent
+show a badge for approval, input, an unviewed finished turn, or work in
+progress from kwt agent-hook state on the pane; see
+[Agent attention](terminal-sessions.md#agent-attention). Cached sessions do not
 remain live while a host is unreachable. Kwt-owned sessions are hidden from the separate tmux session
 group by default, with a Worktrees setting that exposes those duplicate
 entries.

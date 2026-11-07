@@ -64,6 +64,7 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
     var activeWindowSize: TmuxGridSize?
     var previewClientSize: TmuxGridSize?
     var managed: Bool
+    var agentPanes: [TmuxPaneAgentState] = []
 
     var summary: TmuxSessionSummary {
         TmuxSessionSummary(
@@ -72,7 +73,8 @@ struct DiscoveredTmuxSession: Equatable, Sendable {
                 TmuxWindowSummary(id: "discovered-\($0)", index: $0, name: "")
             },
             serverPID: serverPID, sessionID: sessionID, createdAt: createdAt,
-            activeWindowSize: activeWindowSize, previewClientSize: previewClientSize
+            activeWindowSize: activeWindowSize, previewClientSize: previewClientSize,
+            agentPanes: agentPanes
         )
     }
 
@@ -360,6 +362,7 @@ struct TmuxBinaryResolver: Sendable {
             + "\"$ghosthub_tmux_path\" -V || exit $?"
 
     private static let discoveryPrefix = "GHOSTHUB_TMUX_SESSION"
+    private static let agentPrefix = "GHOSTHUB_TMUX_AGENT"
     private static let kwtFailureMarker = "GHOSTHUB_TMUX_KWT_UNAVAILABLE"
     private static let sessionPresentMarker =
         "GHOSTHUB_TMUX_SESSION_PRESENT"
@@ -371,6 +374,13 @@ struct TmuxBinaryResolver: Sendable {
             + "\t#{window_width}\t#{window_height}"
             + "\t#{status}"
             + "\t#{@ghosthub_owner}\t#{session_name}"
+    }
+
+    /// Panes carrying a state recorded by `kwt agent-hook`; the value is
+    /// last because only it may contain spaces.
+    private static func agentFormat(socketName: String?) -> String {
+        agentPrefix + "\t\(socketName ?? "")"
+            + "\t#{session_id}\t#{pane_id}\t#{@kwt_agent}"
     }
 
     private static let discoveryCommand: String = {
@@ -388,7 +398,16 @@ struct TmuxBinaryResolver: Sendable {
                 + shellQuotedCommandArgument(discoveryFormat(socketName: socketName))
                 + " 2>&1); ghosthub_tmux_status=$?; "
                 + "if [ \"$ghosthub_tmux_status\" -eq 0 ]; then "
-                + "printf '%s\\n' \"$ghosthub_tmux_output\"; else "
+                + "printf '%s\\n' \"$ghosthub_tmux_output\"; "
+                // Agent state is best effort: a failure here must not
+                // fail discovery of the sessions themselves.
+                + prefix + "\"$ghosthub_tmux_path\" -L "
+                + shellQuotedCommandArgument(socketName ?? "default")
+                + " list-panes -a -f "
+                + shellQuotedCommandArgument("#{@kwt_agent}")
+                + " -F "
+                + shellQuotedCommandArgument(agentFormat(socketName: socketName))
+                + " 2>/dev/null || :; else "
                 + "printf '%s\\n' \"$ghosthub_tmux_output\" >&2; "
                 + "case \"$ghosthub_tmux_output\" in "
                 + "*\"no server running on \"*|"
@@ -613,7 +632,7 @@ struct TmuxBinaryResolver: Sendable {
             break
         }
         let prefix = discoveryPrefix + "\t"
-        let sessions = result.stdout
+        let discovered = result.stdout
             .split(whereSeparator: \.isNewline)
             .compactMap { rawLine -> DiscoveredTmuxSession? in
                 let line = String(rawLine)
@@ -660,6 +679,10 @@ struct TmuxBinaryResolver: Sendable {
                     managed: !fields[9].isEmpty
                 )
             }
+        let sessions = attachingAgentPanes(
+            parseAgentPanes(result.stdout),
+            to: discovered
+        )
         let failurePrefix = kwtFailureMarker + "\t"
         if let failure = result.stdout.split(whereSeparator: \.isNewline)
             .last(where: { $0.hasPrefix(failurePrefix) }),
@@ -668,6 +691,53 @@ struct TmuxBinaryResolver: Sendable {
             return .failure(.kwtDiscoveryFailed(sessions: sessions, status: status))
         }
         return .success(sessions)
+    }
+
+    private struct AgentPaneKey: Hashable {
+        var socketName: String?
+        var sessionID: String
+    }
+
+    private static func parseAgentPanes(
+        _ stdout: String
+    ) -> [AgentPaneKey: [TmuxPaneAgentState]] {
+        let prefix = agentPrefix + "\t"
+        return stdout.split(whereSeparator: \.isNewline).reduce(into: [:]) {
+            panes, rawLine in
+            guard rawLine.hasPrefix(prefix) else { return }
+            let fields = rawLine.split(
+                separator: "\t",
+                maxSplits: 4,
+                omittingEmptySubsequences: false
+            )
+            guard fields.count == 5,
+                  !fields[2].isEmpty,
+                  let pane = TmuxPaneAgentState(
+                      paneID: String(fields[3]),
+                      optionValue: String(fields[4])
+                  )
+            else { return }
+            let key = AgentPaneKey(
+                socketName: fields[1].isEmpty ? nil : String(fields[1]),
+                sessionID: String(fields[2])
+            )
+            panes[key, default: []].append(pane)
+        }
+    }
+
+    private static func attachingAgentPanes(
+        _ panes: [AgentPaneKey: [TmuxPaneAgentState]],
+        to sessions: [DiscoveredTmuxSession]
+    ) -> [DiscoveredTmuxSession] {
+        guard !panes.isEmpty else { return sessions }
+        return sessions.map { session in
+            guard let sessionID = session.sessionID else { return session }
+            var session = session
+            session.agentPanes = panes[
+                AgentPaneKey(socketName: session.socketName, sessionID: sessionID)
+            ] ?? []
+            return session
+        }
     }
 
     private static func isSupported(

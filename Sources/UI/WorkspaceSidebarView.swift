@@ -201,6 +201,7 @@ struct WorkspaceSidebarView: View {
     let activeTmuxSessionIsConnected: Bool
     let connectedTmuxSessionIDs: Set<String>
     let workingTmuxSessionIDs: Set<String>
+    let agentAttentionByEndpoint: [String: AgentAttention]
     let tmuxWindowCountsBySessionID: [String: Int]
     let previewableTmuxSessionIDs: Set<String>
     let sessionPreviewMode: SessionPreviewMode
@@ -282,6 +283,7 @@ struct WorkspaceSidebarView: View {
         activeTmuxSessionIsConnected: Bool = false,
         connectedTmuxSessionIDs: Set<String> = [],
         workingTmuxSessionIDs: Set<String> = [],
+        agentAttentionByEndpoint: [String: AgentAttention] = [:],
         tmuxWindowCountsBySessionID: [String: Int] = [:],
         previewableTmuxSessionIDs: Set<String> = [],
         sessionPreviewMode: SessionPreviewMode = .off,
@@ -375,6 +377,7 @@ struct WorkspaceSidebarView: View {
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
         self.connectedTmuxSessionIDs = connectedTmuxSessionIDs
         self.workingTmuxSessionIDs = workingTmuxSessionIDs
+        self.agentAttentionByEndpoint = agentAttentionByEndpoint
         self.tmuxWindowCountsBySessionID = tmuxWindowCountsBySessionID
         self.previewableTmuxSessionIDs = previewableTmuxSessionIDs
         self.sessionPreviewMode = sessionPreviewMode
@@ -1030,6 +1033,13 @@ struct WorkspaceSidebarView: View {
         let isTmuxSessionWorking = tmuxSession.map {
             workingTmuxSessionIDs.contains($0.id)
         } ?? false
+        let agentAttention = tmuxSession.flatMap {
+            agentAttentionByEndpoint[AgentAttentionStore.endpointKey(
+                hostID: $0.hostID,
+                name: $0.name,
+                socketName: $0.socketName
+            )]
+        }
         let usesDirectKillAction: Bool
         if case .tmuxSession = row.target {
             usesDirectKillAction = true
@@ -1157,7 +1167,9 @@ struct WorkspaceSidebarView: View {
                         )
                     }
                     Spacer(minLength: 0)
-                    if isTmuxSessionWorking {
+                    if let agentAttention {
+                        AgentStateBadge(attention: agentAttention)
+                    } else if isTmuxSessionWorking {
                         tmuxSessionActivityIndicator
                     }
                     if isSelected, differentiateWithoutColor {
@@ -1215,7 +1227,9 @@ struct WorkspaceSidebarView: View {
                 WorkspaceAccessibilityModel.descriptor(
                     for: row,
                     isSelected: isSelected,
-                    hasRecentTmuxOutput: isTmuxSessionWorking,
+                    hasRecentTmuxOutput: isTmuxSessionWorking
+                        && agentAttention == nil,
+                    agentAttention: agentAttention,
                     isWorktreeFlagged: isWorktreeFlagged
                 )
             )

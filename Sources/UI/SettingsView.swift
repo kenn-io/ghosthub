@@ -58,6 +58,14 @@ public struct SettingsActions {
         (SSHHost) async -> Result<Void, HostProbeError> = { _ in
             .failure(.message("Windows kwt installation is unavailable."))
         }
+    var loadAgentHooks:
+        (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError> = { _ in
+            .failure(.message("Agent hooks are unavailable."))
+        }
+    var installAgentHooks:
+        (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError> = { _ in
+            .failure(.message("Agent hooks are unavailable."))
+        }
     var reloadTerminalConfig: () -> Void = {}
 
     public init(
@@ -127,6 +135,18 @@ public struct SettingsActions {
         > = { _ in
             .failure(.message("Windows kwt installation is unavailable."))
         },
+        loadAgentHooks: @escaping (SSHHost?) async -> Result<
+            [AgentHookSetupStatus],
+            HostProbeError
+        > = { _ in
+            .failure(.message("Agent hooks are unavailable."))
+        },
+        installAgentHooks: @escaping (SSHHost?) async -> Result<
+            [AgentHookSetupStatus],
+            HostProbeError
+        > = { _ in
+            .failure(.message("Agent hooks are unavailable."))
+        },
         reloadTerminalConfig: @escaping () -> Void = {}
     ) {
         self.refreshHosts = refreshHosts
@@ -148,6 +168,8 @@ public struct SettingsActions {
         self.installRemoteKwt = installRemoteKwt
         self.registerRemoteProject = registerRemoteProject
         self.installWindowsKwt = installWindowsKwt
+        self.loadAgentHooks = loadAgentHooks
+        self.installAgentHooks = installAgentHooks
         self.reloadTerminalConfig = reloadTerminalConfig
     }
 }
@@ -412,7 +434,9 @@ public struct SettingsView: View {
             installRemoteKwt: actions.installRemoteKwt,
             registerRemoteProject: actions.registerRemoteProject,
             loadTailscalePeers: actions.loadTailscalePeers,
-            installWindowsKwt: actions.installWindowsKwt
+            installWindowsKwt: actions.installWindowsKwt,
+            loadAgentHooks: actions.loadAgentHooks,
+            installAgentHooks: actions.installAgentHooks
         )
     }
 

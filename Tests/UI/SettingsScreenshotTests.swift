@@ -42,10 +42,21 @@ struct SettingsScreenshotTests {
             ),
         ])
         store.selectedDomain = domain
+        let agentHooks: [AgentHookSetupStatus] = [
+            AgentHookSetupStatus(
+                agent: "claude", displayName: "Claude Code",
+                available: true, installed: true, current: true
+            ),
+            AgentHookSetupStatus(
+                agent: "codex", displayName: "Codex",
+                available: true, installed: true, current: true
+            ),
+        ]
+        let actions = SettingsActions(loadAgentHooks: { _ in .success(agentHooks) })
         let controller = NSHostingController(
             rootView: Color.clear
                 .sheet(isPresented: .constant(true)) {
-                    SettingsView(store: store)
+                    SettingsView(store: store, actions: actions)
                         .defaultAppStorage(defaults)
                         .frame(width: 1040, height: 744)
                         .preferredColorScheme(.dark)

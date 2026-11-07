@@ -110,6 +110,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
     var onSettings: () -> Void
     var onNewWorktree: () -> Void
     var onRenameWindow: () -> Void
+    var tabAttention: AgentAttention?
     var onWindowChanged: (NSWindow?) -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -122,6 +123,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
         }
         view.onWindowChanged = onWindowChanged
         configureTitlebar(view)
+        view.setTabAttention(tabAttention)
         return view
     }
 
@@ -129,6 +131,7 @@ private struct WindowFocusTracker: NSViewRepresentable {
         guard let view = nsView as? FocusTrackingView else { return }
         view.onWindowChanged = onWindowChanged
         configureTitlebar(view)
+        view.setTabAttention(tabAttention)
     }
 
     private func configureTitlebar(_ view: FocusTrackingView) {
@@ -165,6 +168,10 @@ private struct WindowFocusTracker: NSViewRepresentable {
                 .eraseToAnyPublisher()
         )
         let titlebarController: CompactWorkspaceTitlebarController
+
+        func setTabAttention(_ attention: AgentAttention?) {
+            tabBadgeController.setAttention(attention)
+        }
 
         init(
             applicationDelegate: ApplicationDelegate,
@@ -730,6 +737,7 @@ struct WorkspaceWindow: View {
     @StateObject private var sceneModel: WorkspaceSceneModel
     @EnvironmentObject private var terminalRuntime: LibghosttyRuntime
     @ObservedObject private var settingsStore = SettingsStore.shared
+    @ObservedObject private var agentAttentionStore = AgentAttentionStore.shared
     @State private var visibleConfigReloadNotice:
         LibghosttyConfigReloadNotice?
     @State private var titlebarSidebarWidth =
@@ -800,6 +808,7 @@ struct WorkspaceWindow: View {
                 sceneModel.sessionConnectionRecoveryRequest,
                 workingTmuxSessionIDs:
                 sceneModel.workingTmuxSessionIDs,
+                agentAttentionByEndpoint: agentAttentionByEndpoint,
                 tmuxWindowCountsBySessionID:
                 sceneModel.tmuxWindowCountsBySessionID,
                 previewableTmuxSessionIDs:
@@ -951,6 +960,16 @@ struct WorkspaceWindow: View {
                                         .installWindowsKwt(
                                             on: host
                                         )
+                                },
+                                loadAgentHooks: { host in
+                                    await sceneModel.agentHooks(
+                                        .status, on: host
+                                    )
+                                },
+                                installAgentHooks: { host in
+                                    await sceneModel.agentHooks(
+                                        .install, on: host
+                                    )
                                 },
                                 reloadTerminalConfig: {
                                     sceneModel.reloadTerminalConfig()
@@ -1327,6 +1346,9 @@ struct WorkspaceWindow: View {
                     )
                 },
                 onRenameWindow: requestWindowTitleRename,
+                tabAttention: activeSessionAgentAttention.flatMap {
+                    $0.needsUser ? $0 : nil
+                },
                 onWindowChanged: { window in
                     sceneModel.workspaceWindow = window
                     updateRelaunchPlacement.bind(window)
@@ -1585,6 +1607,24 @@ struct WorkspaceWindow: View {
             selection: sceneModel.selection
         ) else { return false }
         return sceneModel.snapshot.canCreateWorktree(in: project)
+    }
+
+    private var agentAttentionByEndpoint: [String: AgentAttention] {
+        agentAttentionStore.attentionByEndpoint(in: sceneModel.snapshot)
+    }
+
+    /// Attention for the session this window is showing, for its tab: the
+    /// session tmux reports the client shows, or the selection until then.
+    private var activeSessionAgentAttention: AgentAttention? {
+        guard let selection = sceneModel.activeBorrowedTmuxSelection else {
+            return nil
+        }
+        let shown = sceneModel.shownTmuxSession
+        return agentAttentionByEndpoint[AgentAttentionStore.endpointKey(
+            hostID: selection.hostID,
+            name: shown?.name ?? selection.name,
+            socketName: shown?.socketName ?? selection.socketName
+        )]
     }
 
     private var automaticWindowTitle: String {
