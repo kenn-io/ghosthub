@@ -2,6 +2,12 @@ use super::*;
 
 impl Fixture {
     fn wait_for_automatic_recovery(&self) {
+        self.wait_during_recovery(|snapshot| {
+            matches!(snapshot.content(), WorkspaceContent::Terminal { .. })
+        });
+    }
+
+    fn wait_during_recovery(&self, mut condition: impl FnMut(&WorkspaceSnapshot) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             for event in self.workspace.drain_events().0 {
@@ -13,15 +19,14 @@ impl Fixture {
                     _ => {}
                 }
             }
-            if matches!(
-                self.workspace.snapshot().content(),
-                WorkspaceContent::Terminal { .. }
-            ) {
+            let snapshot = self.workspace.snapshot();
+            if condition(&snapshot) {
                 return;
             }
             assert!(
                 Instant::now() < deadline,
-                "automatic recovery did not reopen the terminal"
+                "automatic recovery did not reach the expected state: {:?}",
+                snapshot.hosts()
             );
             thread::sleep(Duration::from_millis(20));
         }
@@ -199,7 +204,7 @@ exec /usr/bin/tmux "$@"
     std::fs::write(home.join("block-tmux-attach"), "").unwrap();
     fixture.break_ssh_connections();
     fixture.wait_for_error("status 255");
-    fixture.wait(|snapshot| {
+    fixture.wait_during_recovery(|snapshot| {
         home.join("tmux-attach-started").exists()
             && matches!(snapshot.content(), WorkspaceContent::Terminal { .. })
     });

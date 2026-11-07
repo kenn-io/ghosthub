@@ -408,6 +408,78 @@ mod tests {
     }
 
     #[test]
+    fn automatic_reconnect_waits_for_creation_but_allows_reconciliation() {
+        for did_launch in [false, true] {
+            let (workspace, request, refresh) = fixture();
+            let other = workspace.open_scene();
+            let now = Instant::now();
+            let due = now + Duration::from_secs(1);
+            let _publication = workspace.scene.runtime.remote_publication.lock().unwrap();
+            let _navigation = lock_live_navigation(&workspace.scene).unwrap();
+            workspace
+                .scene
+                .runtime
+                .remote_hosts
+                .lock()
+                .unwrap()
+                .get_mut("ssh:studio")
+                .unwrap()
+                .reconnect
+                .schedule(now);
+            let cancellation = CancellationToken::new();
+            let navigation_generation = crate::runtime::next_operation_id(&workspace.scene.runtime);
+            let launched = crate::register_remote_constructive(
+                &workspace.scene.runtime,
+                other.scene.id,
+                "ssh:studio",
+                request.connection_generation,
+                &request.snapshot,
+                navigation_generation,
+                &cancellation,
+                crate::RemoteConstructiveTarget::Tmux {
+                    route_identity: request.snapshot.route_identity().to_owned(),
+                    executable: "/usr/bin/tmux".to_owned(),
+                    name: "build".to_owned(),
+                },
+            )
+            .unwrap();
+            launched.store(did_launch, Ordering::Release);
+            workspace
+                .start_remote_connection("ssh:studio", Some(due))
+                .unwrap();
+            assert!(!cancellation.is_cancelled(), "reconnect cancelled creation");
+            assert!(
+                refresh.work.lock().unwrap().is_empty(),
+                "creation must finish first"
+            );
+
+            // An unlaunched task releases its slot; an uncertain launch needs
+            // fresh inventory and must not prevent the reconnect supplying it.
+            crate::settle_remote_constructive_task(
+                &workspace.scene.runtime,
+                "ssh:studio",
+                navigation_generation,
+                false,
+            );
+            workspace
+                .start_remote_connection("ssh:studio", Some(due))
+                .unwrap();
+            let work = refresh.work.lock().unwrap().drain(..).collect::<Vec<_>>();
+            assert_eq!(work.len(), 1, "settled creation must release the due retry");
+            assert_eq!(
+                crate::runtime::pending_remote_constructive_target(
+                    &workspace.scene.runtime,
+                    "ssh:studio",
+                )
+                .is_some(),
+                did_launch,
+                "reconnect must preserve uncertain creation for reconciliation",
+            );
+            drop(work);
+        }
+    }
+
+    #[test]
     fn retries_back_off_and_explicit_retry_resets_the_wait() {
         let mut retry = Retry::default();
         let mut now = Instant::now();

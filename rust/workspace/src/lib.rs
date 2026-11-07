@@ -4865,10 +4865,14 @@ impl Workspace {
                     .get_mut(id)
                     .ok_or_else(|| WorkspaceError::new("SSH host is unavailable in this build"))?;
                 if let Some(now) = retry_at {
-                    // Attachment registration uses this same lock. Defer without
-                    // consuming the retry if another window has claimed the host.
+                    // Creation and attachment registration use this same lock.
+                    // An active operation must finish before automatic reconnect.
                     if entry.cancellation.is_some()
                         || !entry.attachment_attempts.is_empty()
+                        || matches!(
+                            entry.constructive_cancellation,
+                            Some(RemoteConstructiveState::Active { .. })
+                        )
                         || !entry.reconnect.start(now)
                     {
                         return Ok(());
