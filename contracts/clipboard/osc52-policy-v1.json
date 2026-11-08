@@ -66,9 +66,6 @@
       "expected": {
         "action": "reject",
         "reason": "too-large"
-      },
-      "known_gaps": {
-        "ghosthub-terminal": "The parsed engine enforces no OSC 52 size cap; alacritty accepts payloads of any length."
       }
     },
     {
@@ -78,9 +75,6 @@
       "expected": {
         "action": "reject",
         "reason": "unsupported-selection"
-      },
-      "known_gaps": {
-        "ghosthub-terminal": "alacritty maps 'p' to a primary-selection write instead of rejecting it."
       }
     },
     {
@@ -90,9 +84,6 @@
       "expected": {
         "action": "reject",
         "reason": "unsupported-selection"
-      },
-      "known_gaps": {
-        "ghosthub-terminal": "alacritty maps 's' to a primary-selection write instead of rejecting it."
       }
     },
     {
@@ -120,9 +111,6 @@
       "expected": {
         "action": "reject",
         "reason": "unsupported-selection"
-      },
-      "known_gaps": {
-        "ghosthub-terminal": "The vte dispatcher reads only the first selection byte and ignores the rest."
       }
     },
     {
@@ -214,10 +202,7 @@
         "action": "reject",
         "reason": "malformed"
       },
-      "notes": "Everything after the first separator is the payload; ';' is not in the base64 alphabet.",
-      "known_gaps": {
-        "ghosthub-terminal": "The vte dispatcher splits OSC parameters on ';' and decodes only the first payload segment."
-      }
+      "notes": "Everything after the first separator is the payload; ';' is not in the base64 alphabet."
     },
     {
       "id": "reject-double-question-mark",

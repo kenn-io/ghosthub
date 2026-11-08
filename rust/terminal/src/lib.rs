@@ -1,65 +1,26 @@
 //! Terminal engine and PTY client ownership.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::color::Colors;
-use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{
-    Color, CursorShape as VteCursorShape, CursorStyle as VteCursorStyle, Handler,
-    ModifyOtherKeys as VteModifyOtherKeys, NamedColor, NamedPrivateMode, PrivateMode, Processor,
-};
-use input::{KittyKeyboard, ModifyOtherKeys, MouseTracking, TerminalModes};
+use base64::Engine as _;
+use input::{MouseTracking, TerminalModes};
 use surface::{
-    Cell as SurfaceCell, CellStyle, Cursor, CursorShape, Damage, GridSize, PixelSize, Rgb,
-    SurfaceFrame, SurfaceStore,
+    Cell as SurfaceCell, Cursor, CursorShape, Damage, GridSize, PixelSize, Rgb, SurfaceFrame,
+    SurfaceStore,
 };
 
 mod pty;
 mod relay;
 #[cfg(unix)]
 mod unix_io;
+mod vt;
 mod windows_job;
 mod worker;
 
 pub use pty::WorkerError;
 pub use relay::{ByteRelayWorker, INPUT_BYTE_CAPACITY, RelayDisconnect, RelayOutput};
 pub use worker::{TerminalEvent, TerminalStartup, TerminalWorker};
-
-#[derive(Clone, Debug, Default)]
-struct EventCollector {
-    pending: Arc<Mutex<Vec<Event>>>,
-}
-
-impl EventListener for EventCollector {
-    fn send_event(&self, event: Event) {
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(event);
-    }
-}
-
-#[derive(Clone, Copy)]
-struct DimensionsValue(GridSize);
-
-impl Dimensions for DimensionsValue {
-    fn total_lines(&self) -> usize {
-        self.0.rows()
-    }
-
-    fn screen_lines(&self) -> usize {
-        self.0.rows()
-    }
-
-    fn columns(&self) -> usize {
-        self.0.columns()
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardTarget {
@@ -193,20 +154,15 @@ impl EngineOutput {
 }
 
 pub struct TerminalEngine {
-    parser: Processor,
-    damage_parser: Processor,
-    damage_boundary: StructuralBoundary,
+    vt: vt::Vt,
     entered_alternate_screen: bool,
-    term: Term<EventCollector>,
-    events: EventCollector,
     surface: Arc<SurfaceStore>,
+    rows: GridObservation,
     size: GridSize,
     generation: u64,
     resize_sequence: u64,
     pixel_size: PixelSize,
     clipboard_policy: ClipboardPolicy,
-    default_colors: DefaultColors,
-    config: Config,
 }
 
 impl TerminalEngine {
@@ -274,42 +230,37 @@ impl TerminalEngine {
         default_colors: DefaultColors,
         default_cursor_shape: CursorShape,
     ) -> Self {
-        let events = EventCollector::default();
-        let config = Config {
-            scrolling_history: 0,
-            default_cursor_style: vte_cursor_style(default_cursor_shape),
-            kitty_keyboard: true,
-            osc52: Osc52::CopyPaste,
-            ..Config::default()
-        };
-        let term = Term::new(config.clone(), &DimensionsValue(size), events.clone());
-        let surface = Arc::new(SurfaceStore::new(SurfaceFrame::blank(0, size)));
+        let mut vt = vt::Vt::new(size);
+        let mut colors = [0; 774];
+        for (index, rgb) in [default_colors.foreground(), default_colors.background()]
+            .into_iter()
+            .chain((0..=255).map(|index| indexed_color(index, default_colors)))
+            .enumerate()
+        {
+            colors[index * 3..index * 3 + 3].copy_from_slice(&[rgb.red, rgb.green, rgb.blue]);
+        }
+        vt.colors(&colors);
+        vt.cursor(default_cursor_shape);
         let mut engine = Self {
-            parser: Processor::new(),
-            damage_parser: Processor::new(),
-            damage_boundary: StructuralBoundary::default(),
+            vt,
             entered_alternate_screen: false,
-            term,
-            events,
-            surface,
+            surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(0, size))),
+            rows: GridObservation {
+                row_identities: Vec::new(),
+            },
             size,
             generation: 0,
             resize_sequence,
             pixel_size,
             clipboard_policy,
-            default_colors,
-            config,
         };
-        engine.publish_full();
-        engine.term.reset_damage();
+        engine.publish(true);
         engine
     }
 
     pub fn set_default_cursor_shape(&mut self, shape: CursorShape) {
-        self.config.default_cursor_style = vte_cursor_style(shape);
-        self.term.set_options(self.config.clone());
-        self.publish_full();
-        self.term.reset_damage();
+        self.vt.cursor(shape);
+        self.publish(true);
     }
 
     pub fn set_clipboard_policy(&mut self, policy: ClipboardPolicy) {
@@ -318,34 +269,14 @@ impl TerminalEngine {
 
     #[must_use]
     pub fn process(&mut self, bytes: &[u8]) -> EngineOutput {
-        let mut segment_start = 0;
-        for (index, byte) in bytes.iter().enumerate() {
-            self.damage_parser
-                .advance(&mut self.damage_boundary, std::slice::from_ref(byte));
-            self.entered_alternate_screen |= self.damage_boundary.take_alternate_screen_entry();
-            if !self.damage_boundary.take() {
-                continue;
-            }
-            if segment_start < index {
-                self.process_segment(&bytes[segment_start..index], false);
-            }
-            self.process_segment(&bytes[index..=index], true);
-            segment_start = index + 1;
-        }
-        if segment_start < bytes.len() {
-            self.process_segment(&bytes[segment_start..], false);
+        // Publish at line/escape boundaries to keep structural scrolling and
+        // alternate-screen entry visible even when a read contains an entire
+        // start/redraw/exit. libghostty alone parses the sequences themselves.
+        for segment in bytes.split_inclusive(|byte| *byte == b'\n') {
+            self.entered_alternate_screen |= self.vt.write(segment);
+            self.publish(false);
         }
         self.drain_events()
-    }
-
-    fn process_segment(&mut self, bytes: &[u8], observe_scroll: bool) {
-        let before = observe_scroll.then(|| capture_grid(&self.term, self.size));
-        self.parser.advance(&mut self.term, bytes);
-        let scroll = before.and_then(|before| {
-            let after = capture_grid(&self.term, self.size);
-            detect_scroll(&before, &after)
-        });
-        self.publish_damage(scroll);
     }
 
     #[must_use]
@@ -360,29 +291,20 @@ impl TerminalEngine {
 
     #[must_use]
     pub fn modes(&self) -> TerminalModes {
-        let mode = self.term.mode();
         TerminalModes {
-            application_cursor: mode.contains(TermMode::APP_CURSOR),
-            application_keypad: mode.contains(TermMode::APP_KEYPAD),
-            bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
-            mouse_tracking: if mode.contains(TermMode::MOUSE_MOTION) {
+            application_cursor: self.vt.mode(1),
+            application_keypad: self.vt.mode(66),
+            bracketed_paste: self.vt.mode(2004),
+            mouse_tracking: if self.vt.mode(1003) {
                 MouseTracking::Motion
-            } else if mode.contains(TermMode::MOUSE_DRAG) {
+            } else if self.vt.mode(1002) {
                 MouseTracking::Drag
-            } else if mode.contains(TermMode::MOUSE_REPORT_CLICK) {
+            } else if self.vt.mode(1000) {
                 MouseTracking::Click
             } else {
                 MouseTracking::None
             },
-            sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
-            modify_other_keys: self.damage_boundary.modify_other_keys,
-            kitty_keyboard: KittyKeyboard {
-                disambiguate_escape_codes: mode.contains(TermMode::DISAMBIGUATE_ESC_CODES),
-                report_event_types: mode.contains(TermMode::REPORT_EVENT_TYPES),
-                report_alternate_keys: mode.contains(TermMode::REPORT_ALTERNATE_KEYS),
-                report_all_keys_as_escape_codes: mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
-                report_associated_text: mode.contains(TermMode::REPORT_ASSOCIATED_TEXT),
-            },
+            sgr_mouse: self.vt.mode(1006),
         }
     }
 
@@ -390,263 +312,189 @@ impl TerminalEngine {
         self.entered_alternate_screen
     }
 
-    pub fn resize(&mut self, size: GridSize) {
-        self.resize_sequence = self.resize_sequence.saturating_add(1);
-        self.resize_with_metadata(size, self.resize_sequence, PixelSize::default());
+    #[must_use]
+    pub fn encode_input(&mut self, key: &input::KeyInput) -> input::EncodedInput {
+        if let input::KeyInput::Paste(text) = key {
+            input::encode_paste(text, self.modes().bracketed_paste)
+        } else {
+            input::EncodedInput::ready(self.vt.key(key))
+        }
     }
 
+    pub fn resize(&mut self, size: GridSize) {
+        self.resize_with_metadata(
+            size,
+            self.resize_sequence.saturating_add(1),
+            PixelSize::default(),
+        );
+    }
+
+    /// # Panics
+    /// Panics if either grid dimension exceeds libghostty's u16 limit.
     pub fn resize_with_metadata(
         &mut self,
         size: GridSize,
         resize_sequence: u64,
         pixel_size: PixelSize,
     ) {
-        self.term.resize(DimensionsValue(size));
+        let width =
+            u32::from(pixel_size.width) / u32::try_from(size.columns()).expect("columns fit u32");
+        let height =
+            u32::from(pixel_size.height) / u32::try_from(size.rows()).expect("rows fit u32");
+        self.vt.resize(size, width, height);
         self.size = size;
         self.resize_sequence = resize_sequence;
         self.pixel_size = pixel_size;
-        self.publish_full();
-        self.term.reset_damage();
+        self.publish(true);
     }
 
-    fn publish_full(&mut self) {
-        let damage = [Damage::Full];
-        let (patches, _) = self.collect_patches(&damage, 0..self.size.rows());
-        self.publish_patches(&damage, patches);
-    }
-
-    fn publish_damage(&mut self, scroll: Option<ScrollObservation>) {
-        let (damage, rows) = match self.term.damage() {
-            TermDamage::Full => match scroll {
-                Some(scroll) => {
-                    let mut damage = vec![Damage::Scroll {
-                        top: scroll.top,
-                        bottom: scroll.bottom,
-                        delta: scroll.delta,
-                    }];
-                    damage.extend(coalesce_rows(&scroll.dirty_rows));
-                    (damage, scroll.dirty_rows)
-                }
-                None => (vec![Damage::Full], (0..self.size.rows()).collect()),
-            },
-            TermDamage::Partial(entries) => {
-                let rows: Vec<_> = entries.map(|entry| entry.line).collect();
-                let damage = coalesce_rows(&rows);
-                (damage, rows)
-            }
+    fn publish(&mut self, force: bool) {
+        let (full, cursor) = self.vt.snapshot();
+        let mut rows = GridObservation {
+            row_identities: Vec::with_capacity(self.size.rows()),
         };
-        self.term.reset_damage();
-
-        if damage.is_empty() {
+        let mut rendered = Vec::new();
+        while let Some((id, dirty)) = self.vt.row() {
+            let row = rows.row_identities.len();
+            rows.row_identities.push(id);
+            if force || dirty {
+                let mut cells = Vec::with_capacity(self.size.columns());
+                while let Some(cell) = self.vt.cell() {
+                    cells.push(cell);
+                }
+                assert_eq!(cells.len(), self.size.columns());
+                rendered.push((row, cells));
+            }
+        }
+        self.vt.clean();
+        assert_eq!(rows.row_identities.len(), self.size.rows());
+        let scroll = if force {
+            None
+        } else {
+            detect_scroll(&self.rows, &rows)
+        };
+        self.rows = rows;
+        let damage = if force || (full && scroll.is_none()) {
+            vec![Damage::Full]
+        } else {
+            scroll.map_or_else(Vec::new, |scroll| {
+                vec![Damage::Scroll {
+                    top: scroll.top,
+                    bottom: scroll.bottom,
+                    delta: scroll.delta,
+                }]
+            })
+        };
+        let previous = self.surface.load();
+        let mut patches = Vec::new();
+        let mut changed = Vec::new();
+        for (row, cells) in rendered {
+            let old_row = previous_row_after_damage(row, &damage);
+            let mut row_changed = false;
+            for (column, cell) in cells.into_iter().enumerate() {
+                let differs = damage.contains(&Damage::Full)
+                    || old_row.map_or_else(
+                        || cell != SurfaceCell::default(),
+                        |old| cell != previous.row(old)[column],
+                    );
+                if differs {
+                    patches.push((row * self.size.columns() + column, cell));
+                    row_changed = true;
+                }
+            }
+            if row_changed {
+                changed.push(row);
+            }
+        }
+        let mut damage = damage;
+        if !damage.contains(&Damage::Full) {
+            damage.extend(coalesce_rows(&changed));
+        }
+        if damage.is_empty() && previous.cursor() == Some(cursor) {
             return;
         }
-        let (patches, changed_rows) = self.collect_patches(&damage, rows);
-        let mut effective_damage = damage
-            .iter()
-            .filter(|damage| matches!(damage, Damage::Full | Damage::Scroll { .. }))
-            .cloned()
-            .collect::<Vec<_>>();
-        effective_damage.extend(coalesce_rows(&changed_rows));
-        self.publish_patches(&effective_damage, patches);
+        self.publish_patches(&damage, &patches, cursor);
     }
 
-    fn collect_patches(
-        &self,
+    fn publish_patches(
+        &mut self,
         damage: &[Damage],
-        rows: impl IntoIterator<Item = usize>,
-    ) -> (Vec<(usize, SurfaceCell)>, Vec<usize>) {
-        let columns = self.size.columns();
-        let grid = self.term.grid();
-        let colors = self.term.colors();
-        let previous = self.surface.load();
-        let full = damage.contains(&Damage::Full);
-        let mut patches = Vec::new();
-        let mut changed_rows = Vec::new();
-        for row in rows {
-            let line = i32::try_from(row).expect("terminal row fits an i32");
-            let previous_row = previous_row_after_damage(row, damage);
-            let mut changed = false;
-            for column in 0..columns {
-                let cell = convert_cell(
-                    &grid[Line(line)][Column(column)],
-                    colors,
-                    self.default_colors,
-                );
-                let differs = if full {
-                    true
-                } else {
-                    previous_row.map_or_else(
-                        || cell != SurfaceCell::default(),
-                        |row| cell != previous.row(row)[column],
-                    )
-                };
-                if differs {
-                    patches.push((row * columns + column, cell));
-                    changed = true;
-                }
-            }
-            if changed {
-                changed_rows.push(row);
-            }
-        }
-        (patches, changed_rows)
-    }
-
-    fn publish_patches(&mut self, damage: &[Damage], patches: Vec<(usize, SurfaceCell)>) {
-        let renderable = self.term.renderable_content();
-        let cursor = Cursor {
-            row: usize::try_from(renderable.cursor.point.line.0).unwrap_or(0),
-            column: renderable.cursor.point.column.0,
-            visible: renderable.mode.contains(TermMode::SHOW_CURSOR)
-                && renderable.cursor.shape != VteCursorShape::Hidden,
-            shape: match renderable.cursor.shape {
-                VteCursorShape::Block | VteCursorShape::HollowBlock => CursorShape::Block,
-                VteCursorShape::Beam => CursorShape::Bar,
-                VteCursorShape::Underline => CursorShape::Underline,
-                VteCursorShape::Hidden => CursorShape::Hidden,
-            },
-        };
-        let resize_sequence = self.resize_sequence;
-        let pixel_size = self.pixel_size;
-
+        patches: &[(usize, SurfaceCell)],
+        cursor: Cursor,
+    ) {
         self.generation += 1;
         let _published = self
             .surface
-            .update(self.generation, self.size, damage, move |frame| {
-                for (index, cell) in &patches {
+            .update(self.generation, self.size, damage, |frame| {
+                for (index, cell) in patches {
                     *frame.cell_mut(*index) = cell.clone();
                 }
                 frame.set_cursor(Some(cursor));
-                frame.set_resize_metadata(resize_sequence, pixel_size);
+                frame.set_resize_metadata(self.resize_sequence, self.pixel_size);
             });
     }
 
-    fn drain_events(&self) -> EngineOutput {
-        let events = std::mem::take(
-            &mut *self
-                .events
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+    fn drain_events(&mut self) -> EngineOutput {
         let mut output = EngineOutput::default();
-        for event in events {
-            match event {
-                Event::PtyWrite(text) => output.pty_writes.push(text.into_bytes()),
-                Event::ClipboardStore(target, text) if self.clipboard_policy.allow_osc52_write => {
+        for event in self.vt.effects() {
+            if event.kind == 0 {
+                output.pty_writes.push(event.bytes);
+                continue;
+            }
+            let Some(body) = event.bytes.strip_prefix(b"52;") else {
+                continue;
+            };
+            let Some(separator) = body.iter().position(|byte| *byte == b';') else {
+                continue;
+            };
+            if !matches!(&body[..separator], b"" | b"c") {
+                continue;
+            }
+            let payload = &body[separator + 1..];
+            if payload == b"?" {
+                let terminator = if event.kind == 3 { "\x07" } else { "\x1b\\" };
+                let formatter: Arc<dyn Fn(&str) -> String + Send + Sync> = Arc::new(move |text| {
+                    format!(
+                        "\x1b]52;c;{}{terminator}",
+                        base64::engine::general_purpose::STANDARD.encode(text)
+                    )
+                });
+                if self.clipboard_policy.allow_osc52_read {
+                    output.clipboard_reads.push(ClipboardReadRequest {
+                        target: ClipboardTarget::Clipboard,
+                        formatter,
+                    });
+                } else {
+                    output.pty_writes.push(formatter("").into_bytes());
+                }
+            } else if self.clipboard_policy.allow_osc52_write {
+                // The same strict policy as the web surface: canonical base64,
+                // a one-MiB decoded limit, and valid UTF-8 on the clipboard.
+                let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(payload) else {
+                    continue;
+                };
+                if decoded.len() > 1024 * 1024 {
+                    continue;
+                }
+                if let Ok(text) = String::from_utf8(decoded) {
                     output.clipboard_writes.push(ClipboardWrite {
-                        target: convert_clipboard_target(target),
+                        target: ClipboardTarget::Clipboard,
                         text,
                     });
                 }
-                Event::ClipboardLoad(target, formatter)
-                    if self.clipboard_policy.allow_osc52_read =>
-                {
-                    output.clipboard_reads.push(ClipboardReadRequest {
-                        target: convert_clipboard_target(target),
-                        formatter,
-                    });
-                }
-                Event::ClipboardLoad(_, formatter) => {
-                    output.pty_writes.push(formatter("").into_bytes());
-                }
-                _ => {}
             }
         }
         output
     }
 }
 
-const fn vte_cursor_style(shape: CursorShape) -> VteCursorStyle {
-    VteCursorStyle {
-        shape: match shape {
-            CursorShape::Block => VteCursorShape::Block,
-            CursorShape::Bar => VteCursorShape::Beam,
-            CursorShape::Underline => VteCursorShape::Underline,
-            CursorShape::Hidden => VteCursorShape::Hidden,
-        },
-        blinking: false,
-    }
-}
-
 struct GridObservation {
-    row_identities: Vec<usize>,
+    row_identities: Vec<[u64; 2]>,
 }
-
 struct ScrollObservation {
     top: usize,
     bottom: usize,
     delta: i32,
-    dirty_rows: Vec<usize>,
-}
-
-#[derive(Default)]
-struct StructuralBoundary {
-    found: bool,
-    entered_alternate_screen: bool,
-    modify_other_keys: ModifyOtherKeys,
-}
-
-impl StructuralBoundary {
-    fn mark(&mut self) {
-        self.found = true;
-    }
-
-    fn take(&mut self) -> bool {
-        std::mem::take(&mut self.found)
-    }
-
-    fn take_alternate_screen_entry(&mut self) -> bool {
-        std::mem::take(&mut self.entered_alternate_screen)
-    }
-}
-
-impl Handler for StructuralBoundary {
-    fn set_modify_other_keys(&mut self, mode: VteModifyOtherKeys) {
-        self.modify_other_keys = match mode {
-            VteModifyOtherKeys::Reset => ModifyOtherKeys::Disabled,
-            VteModifyOtherKeys::EnableExceptWellDefined => ModifyOtherKeys::ExceptWellDefined,
-            VteModifyOtherKeys::EnableAll => ModifyOtherKeys::All,
-        };
-    }
-
-    fn reset_state(&mut self) {
-        self.modify_other_keys = ModifyOtherKeys::Disabled;
-    }
-
-    fn set_private_mode(&mut self, mode: PrivateMode) {
-        if mode == NamedPrivateMode::SwapScreenAndSetRestoreCursor.into() {
-            self.entered_alternate_screen = true;
-        }
-    }
-
-    fn linefeed(&mut self) {
-        self.mark();
-    }
-
-    fn newline(&mut self) {
-        self.mark();
-    }
-
-    fn scroll_up(&mut self, _rows: usize) {
-        self.mark();
-    }
-
-    fn scroll_down(&mut self, _rows: usize) {
-        self.mark();
-    }
-
-    fn insert_blank_lines(&mut self, _count: usize) {
-        self.mark();
-    }
-
-    fn delete_lines(&mut self, _count: usize) {
-        self.mark();
-    }
-
-    fn reverse_index(&mut self) {
-        self.mark();
-    }
 }
 
 fn previous_row_after_damage(row: usize, damage: &[Damage]) -> Option<usize> {
@@ -662,19 +510,6 @@ fn previous_row_after_damage(row: usize, damage: &[Damage]) -> Option<usize> {
             .ok()
             .filter(|row| *row >= top && *row < bottom)
     })
-}
-
-fn capture_grid(term: &Term<EventCollector>, size: GridSize) -> GridObservation {
-    let grid = term.grid();
-    let mut row_identities = Vec::with_capacity(size.rows());
-
-    for row in 0..size.rows() {
-        let line = i32::try_from(row).expect("terminal row fits an i32");
-        let grid_row = &grid[Line(line)];
-        row_identities.push(std::ptr::from_ref(grid_row).addr());
-    }
-
-    GridObservation { row_identities }
 }
 
 fn detect_scroll(before: &GridObservation, after: &GridObservation) -> Option<ScrollObservation> {
@@ -728,25 +563,7 @@ fn detect_scroll(before: &GridObservation, after: &GridObservation) -> Option<Sc
         return None;
     }
 
-    let dirty_rows: Vec<_> = if delta < 0 {
-        (bottom - distance..bottom).collect()
-    } else {
-        (top..top + distance).collect()
-    };
-
-    Some(ScrollObservation {
-        top,
-        bottom,
-        delta,
-        dirty_rows,
-    })
-}
-
-const fn convert_clipboard_target(target: ClipboardType) -> ClipboardTarget {
-    match target {
-        ClipboardType::Clipboard => ClipboardTarget::Clipboard,
-        ClipboardType::Selection => ClipboardTarget::Selection,
-    }
+    Some(ScrollObservation { top, bottom, delta })
 }
 
 fn coalesce_rows(rows: &[usize]) -> Vec<Damage> {
@@ -772,124 +589,6 @@ fn coalesce_rows(rows: &[usize]) -> Vec<Damage> {
         end: previous + 1,
     });
     damage
-}
-
-fn convert_cell(
-    cell: &alacritty_terminal::term::cell::Cell,
-    colors: &Colors,
-    default_colors: DefaultColors,
-) -> SurfaceCell {
-    #[cfg(test)]
-    CONVERTED_CELLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut text = if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-        String::new()
-    } else {
-        cell.c.to_string()
-    };
-    if let Some(zerowidth) = cell.zerowidth() {
-        text.extend(zerowidth);
-    }
-    let mut converted = SurfaceCell::plain(text);
-    converted.foreground = convert_color(cell.fg, colors, true, default_colors);
-    converted.background = convert_color(cell.bg, colors, false, default_colors);
-    if cell.flags.contains(Flags::BOLD) {
-        converted.style.insert(CellStyle::BOLD);
-    }
-    if cell.flags.contains(Flags::ITALIC) {
-        converted.style.insert(CellStyle::ITALIC);
-    }
-    if cell.flags.intersects(Flags::ALL_UNDERLINES) {
-        converted.style.insert(CellStyle::UNDERLINE);
-    }
-    if cell.flags.contains(Flags::INVERSE) {
-        converted.style.insert(CellStyle::INVERSE);
-    }
-    if cell.flags.contains(Flags::WIDE_CHAR) {
-        converted.style.insert(CellStyle::WIDE);
-    }
-    if cell.flags.contains(Flags::DIM) {
-        converted.style.insert(CellStyle::DIM);
-    }
-    if cell.flags.contains(Flags::HIDDEN) {
-        converted.style.insert(CellStyle::HIDDEN);
-    }
-    if cell.flags.contains(Flags::STRIKEOUT) {
-        converted.style.insert(CellStyle::STRIKE);
-    }
-    converted
-}
-
-fn convert_color(
-    color: Color,
-    colors: &Colors,
-    foreground: bool,
-    default_colors: DefaultColors,
-) -> Rgb {
-    let configured = match color {
-        Color::Spec(_) => None,
-        Color::Indexed(index) => colors[usize::from(index)],
-        Color::Named(named) => colors[named],
-    };
-    if let Some(color) = configured {
-        return Rgb::new(color.r, color.g, color.b);
-    }
-    match color {
-        Color::Spec(color) => Rgb::new(color.r, color.g, color.b),
-        Color::Indexed(index) => indexed_color(index, default_colors),
-        Color::Named(NamedColor::Foreground | NamedColor::BrightForeground) => {
-            default_colors.foreground()
-        }
-        Color::Named(NamedColor::Background | NamedColor::Cursor) => default_colors.background(),
-        Color::Named(NamedColor::DimForeground) => default_colors.foreground(),
-        Color::Named(named) if standard_named_index(named).is_some() => indexed_color(
-            standard_named_index(named).expect("standard color has an index"),
-            default_colors,
-        ),
-        Color::Named(named) => dim_named_color(named, default_colors).unwrap_or({
-            if foreground {
-                default_colors.foreground()
-            } else {
-                default_colors.background()
-            }
-        }),
-    }
-}
-
-fn standard_named_index(color: NamedColor) -> Option<u8> {
-    match color {
-        NamedColor::Black => Some(0),
-        NamedColor::Red => Some(1),
-        NamedColor::Green => Some(2),
-        NamedColor::Yellow => Some(3),
-        NamedColor::Blue => Some(4),
-        NamedColor::Magenta => Some(5),
-        NamedColor::Cyan => Some(6),
-        NamedColor::White => Some(7),
-        NamedColor::BrightBlack => Some(8),
-        NamedColor::BrightRed => Some(9),
-        NamedColor::BrightGreen => Some(10),
-        NamedColor::BrightYellow => Some(11),
-        NamedColor::BrightBlue => Some(12),
-        NamedColor::BrightMagenta => Some(13),
-        NamedColor::BrightCyan => Some(14),
-        NamedColor::BrightWhite => Some(15),
-        _ => None,
-    }
-}
-
-fn dim_named_color(color: NamedColor, default_colors: DefaultColors) -> Option<Rgb> {
-    let index = match color {
-        NamedColor::DimBlack => 0,
-        NamedColor::DimRed => 1,
-        NamedColor::DimGreen => 2,
-        NamedColor::DimYellow => 3,
-        NamedColor::DimBlue => 4,
-        NamedColor::DimMagenta => 5,
-        NamedColor::DimCyan => 6,
-        NamedColor::DimWhite => 7,
-        _ => return None,
-    };
-    Some(indexed_color(index, default_colors))
 }
 
 fn indexed_color(index: u8, default_colors: DefaultColors) -> Rgb {
@@ -954,18 +653,17 @@ fn indexed_color(index: u8, default_colors: DefaultColors) -> Rgb {
 }
 
 #[cfg(test)]
-static CONVERTED_CELLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static CONVERTED_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
-    use std::sync::atomic::Ordering;
 
     use surface::{GridSize, Rgb};
 
-    use super::{
-        CONVERTED_CELLS, DefaultColors, GridObservation, TermMode, TerminalEngine, detect_scroll,
-    };
+    use super::{CONVERTED_CELLS, DefaultColors, GridObservation, TerminalEngine, detect_scroll};
 
     #[test]
     fn configured_default_colors_apply_to_terminal_cells() {
@@ -1005,16 +703,18 @@ mod tests {
         let _output = engine.process(b"\x1b[?1049h\x1b[?1049l");
 
         assert!(engine.has_entered_alternate_screen());
-        assert!(!engine.term.mode().contains(TermMode::ALT_SCREEN));
+        assert!(!engine.vt.mode(1049));
     }
 
     #[test]
     fn row_identity_lookup_detects_a_partial_scroll_region() {
         let before = GridObservation {
-            row_identities: (0..10).collect(),
+            row_identities: (0..10).map(|value| [value, 0]).collect(),
         };
         let after = GridObservation {
-            row_identities: vec![0, 1, 3, 4, 5, 6, 7, 2, 8, 9],
+            row_identities: [0, 1, 3, 4, 5, 6, 7, 2, 8, 9]
+                .map(|value| [value, 0])
+                .to_vec(),
         };
 
         let scroll = detect_scroll(&before, &after).expect("partial scroll");
@@ -1022,11 +722,10 @@ mod tests {
         assert_eq!(scroll.top, 2);
         assert_eq!(scroll.bottom, 8);
         assert_eq!(scroll.delta, -1);
-        assert_eq!(scroll.dirty_rows, [7]);
     }
 
     #[test]
-    fn one_line_scroll_converts_only_incremental_rows() {
+    fn editing_one_row_converts_only_that_row() {
         let size = GridSize::new(80, 24).expect("valid grid");
         let mut engine = TerminalEngine::new(size);
         let mut initial = String::new();
@@ -1034,13 +733,13 @@ mod tests {
             write!(initial, "row-{row:02}\r\n").expect("write terminal fixture");
         }
         let _output = engine.process(initial.as_bytes());
-        CONVERTED_CELLS.store(0, Ordering::Relaxed);
+        CONVERTED_CELLS.set(0);
 
-        let _output = engine.process(b"next\r\n");
+        let _output = engine.process(b"\x1b[12;1Hnext");
 
         assert!(
-            CONVERTED_CELLS.load(Ordering::Relaxed) <= size.columns() * 2,
-            "one-line scroll converted the full grid"
+            CONVERTED_CELLS.get() <= size.columns() * 2,
+            "one-row edit converted the full grid"
         );
     }
 }

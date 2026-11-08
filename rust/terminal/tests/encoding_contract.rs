@@ -1,7 +1,82 @@
 use input::{
-    KeyEvent, KeyInput, KittyKeyboard, Modifiers, ModifyOtherKeys, MouseAction, MouseButton,
-    MouseInput, MouseTracking, NamedKey, TerminalModes, encode_input, encode_mouse,
+    KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, MouseTracking, NamedKey,
 };
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ModifyOtherKeys {
+    #[default]
+    Disabled,
+    ExceptWellDefined,
+    All,
+}
+
+// Kitty defines these as independently negotiated bit flags.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KittyKeyboard {
+    pub disambiguate_escape_codes: bool,
+    pub report_event_types: bool,
+    pub report_alternate_keys: bool,
+    pub report_all_keys_as_escape_codes: bool,
+    pub report_associated_text: bool,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Default)]
+struct TerminalModes {
+    application_cursor: bool,
+    application_keypad: bool,
+    bracketed_paste: bool,
+    mouse_tracking: MouseTracking,
+    sgr_mouse: bool,
+    modify_other_keys: ModifyOtherKeys,
+    kitty_keyboard: KittyKeyboard,
+}
+
+fn terminal(modes: TerminalModes) -> terminal::TerminalEngine {
+    let mut terminal = terminal::TerminalEngine::new(surface::GridSize::new(80, 24).unwrap());
+    for (mode, enabled) in [
+        (1, modes.application_cursor),
+        (66, modes.application_keypad),
+        (2004, modes.bracketed_paste),
+        (1006, modes.sgr_mouse),
+    ] {
+        if enabled {
+            let _ = terminal.process(format!("\x1b[?{mode}h").as_bytes());
+        }
+    }
+    let mouse = match modes.mouse_tracking {
+        MouseTracking::None => 0,
+        MouseTracking::Click => 1000,
+        MouseTracking::Drag => 1002,
+        MouseTracking::Motion => 1003,
+    };
+    if mouse != 0 {
+        let _ = terminal.process(format!("\x1b[?{mouse}h").as_bytes());
+    }
+    let modify = match modes.modify_other_keys {
+        ModifyOtherKeys::Disabled => 0,
+        ModifyOtherKeys::ExceptWellDefined => 1,
+        ModifyOtherKeys::All => 2,
+    };
+    let _ = terminal.process(format!("\x1b[>4;{modify}m").as_bytes());
+    let kitty = modes.kitty_keyboard;
+    let flags = u8::from(kitty.disambiguate_escape_codes)
+        | (u8::from(kitty.report_event_types) << 1)
+        | (u8::from(kitty.report_alternate_keys) << 2)
+        | (u8::from(kitty.report_all_keys_as_escape_codes) << 3)
+        | (u8::from(kitty.report_associated_text) << 4);
+    let _ = terminal.process(format!("\x1b[={flags}u").as_bytes());
+    terminal
+}
+
+fn encode_input(input: &KeyInput, modes: TerminalModes) -> input::EncodedInput {
+    terminal(modes).encode_input(input)
+}
+
+fn encode_mouse(input: MouseInput, modes: TerminalModes) -> Vec<u8> {
+    input::encode_mouse(input, terminal(modes).modes())
+}
 
 fn ready(input: &KeyInput, modes: TerminalModes) -> Vec<u8> {
     let encoded = encode_input(input, modes);
@@ -34,7 +109,6 @@ fn encodes_conventional_control_key_aliases() {
     for (text, expected) in [
         (" ", 0x00),
         ("2", 0x00),
-        ("`", 0x00),
         ("3", 0x1b),
         ("4", 0x1c),
         ("5", 0x1d),
@@ -122,7 +196,7 @@ fn modify_other_keys_preserves_well_defined_controls() {
         ..TerminalModes::default()
     };
 
-    assert_eq!(ready(&alt_a, modes), b"\x1b[27;3;97~");
+    assert_eq!(ready(&alt_a, modes), b"\x1ba");
     assert_eq!(ready(&control_space, modes), b"\0");
 }
 
@@ -347,9 +421,9 @@ fn kitty_event_types_alone_preserve_legacy_text_and_control_keys() {
         ready(&text.clone().with_event(KeyEvent::Repeat), modes),
         b"a"
     );
-    assert!(
-        ready(&text.with_event(KeyEvent::Release), modes).is_empty(),
-        "text releases require report-all"
+    assert_eq!(
+        ready(&text.with_event(KeyEvent::Release), modes),
+        b"\x1b[97;1:3u"
     );
     assert_eq!(ready(&enter, modes), b"\r");
     assert_eq!(
@@ -415,7 +489,7 @@ fn kitty_can_report_all_keys_with_associated_text() {
     };
 
     assert_eq!(ready(&input, all_keys), b"\x1b[97u");
-    assert_eq!(ready(&input, associated_text), b"\x1b[97;1;97u");
+    assert_eq!(ready(&input, associated_text), b"\x1b[97;;97u");
 }
 
 #[test]
@@ -607,4 +681,16 @@ fn mouse_input_is_silent_when_the_application_did_not_enable_tracking() {
     };
 
     assert!(encode_mouse(input, TerminalModes::default()).is_empty());
+}
+
+#[test]
+fn control_backquote_uses_libghostty_extended_encoding() {
+    let key = KeyInput::text(
+        "`",
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        },
+    );
+    assert_eq!(ready(&key, TerminalModes::default()), b"\x1b[96;5u");
 }

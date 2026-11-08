@@ -19,12 +19,16 @@ test-support = []
 libc.workspace = true
 
 [dependencies]
-alacritty_terminal.workspace = true
+base64 = "=0.22.1"
 crossbeam-channel.workspace = true
 ghosthub-input.workspace = true
 ghosthub-session.workspace = true
 ghosthub-surface.workspace = true
 portable-pty.workspace = true
+
+[build-dependencies]
+cc = "=1.4.0"
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [

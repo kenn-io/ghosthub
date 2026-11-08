@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, never, select};
-use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_input, encode_mouse};
+use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_mouse};
 use session::{
     AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce, RepairOrOpenPlan,
     ZellijAttachPlan, ZellijLaunchOnce,
@@ -1169,7 +1169,7 @@ fn process_ready_command(
             queue_write(pending_writes, WriteSource::Ui, shutdown, events, bytes)
         }
         Command::Key(input) => {
-            let encoded = encode_input(&input, engine.modes());
+            let encoded = engine.encode_input(&input);
             if encoded.requires_confirmation() {
                 *pending_paste = Some(encoded.clone());
                 emit_event(events, shutdown, TerminalEvent::ConfirmPaste(encoded))
@@ -1522,7 +1522,7 @@ fn emit_event(
 mod tests {
     use std::sync::Arc;
 
-    use input::{Modifiers, MouseAction, MouseButton, MouseInput, TerminalModes};
+    use input::{Modifiers, MouseAction, MouseButton, MouseInput};
 
     use super::*;
     use crate::ClipboardTarget;
@@ -1787,10 +1787,7 @@ mod tests {
             .enqueue(vec![0; WRITE_HIGH_WATER], WriteSource::Ui)
             .expect("saturate UI writes");
         assert!(!writes.accepts_ui_sources());
-        let encoded = encode_input(
-            &KeyInput::paste("echo approved\necho second"),
-            TerminalModes::default(),
-        );
+        let encoded = input::encode_paste("echo approved\necho second", false);
         assert!(encoded.requires_confirmation());
 
         let mut pending = Some(encoded.clone());
@@ -1810,10 +1807,7 @@ mod tests {
             "approval does not bypass backpressure"
         );
 
-        let cancel_input = encode_input(
-            &KeyInput::paste("echo cancelled\necho second"),
-            TerminalModes::default(),
-        );
+        let cancel_input = input::encode_paste("echo cancelled\necho second", false);
         let mut pending = Some(cancel_input);
         let mut approved = None;
         assert_eq!(

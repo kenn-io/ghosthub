@@ -668,7 +668,17 @@ zizmor:
 
 test: swift-test python-test
 
-.PHONY: rust-build
+.PHONY: rust-build bootstrap-libghostty-vt test-libghostty-vt-build
+bootstrap-libghostty-vt:
+	@$(UV) run --frozen $(PYTHON) tools/build_libghostty_vt.py $(if $(RUST_TARGET),--target $(RUST_TARGET))
+
+test-libghostty-vt-build:
+	@$(UV) run --frozen --group dev pytest tools/tests/test_build_libghostty_vt.py
+
+rust-build rust-test rust-lint: bootstrap-libghostty-vt
+rust-test-fonts-live rust-test-kwt-live rust-test-kwt-pr-live \
+rust-test-herdr-live rust-test-zellij-live rust-test-wsl-live \
+rust-test-ssh-live rust-test-ssh-pr-live: bootstrap-libghostty-vt
 ifeq ($(shell uname -s),Linux)
 rust-build: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
 rust-build: export GHOSTHUB_KWT_VARIANTS_DIR ?= $(shell realpath -m -- "$(KWT_VARIANTS_DIR)")

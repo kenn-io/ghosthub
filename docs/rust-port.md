@@ -81,20 +81,29 @@ Apache-2.0 license and are checked by the same allowlist.
 
 ### Verified dependency findings
 
-The pinned libghostty-vt C API provides key event encoding, including Kitty
-keyboard flags, modifyOtherKeys, cursor/keypad application modes, and Alt
-behavior. Its encoder takes those modes explicitly and does not require a
-Ghostty terminal handle. It also provides OSC/SGR parsing utilities and paste
-safety. The pinned public C API does not expose screen state, scrollback,
-reflow, resize, or owned render snapshots.
+The Rust application uses libghostty-vt 1.0 for terminal state, resize/reflow,
+render snapshots, and mode-aware keyboard encoding. `Vendor/libghostty-vt.version.json`
+pins the source and dependency archive checksums independently of the Swift
+application's libghostty revision. Both source archives are checked before
+extraction; compilation uses the bundled dependencies without network access.
+The Zig version is pinned alongside them. There is one terminal engine.
 
-Depending on Ghostty's internal Zig screen/page-list implementation would add
-an unstable internal API and Zig to the required Windows/Linux toolchain.
-Therefore the terminal-state gate evaluates the established pure-Rust
-alacritty_terminal and wezterm-term paths in parallel with any Ghostty shim.
-The backend is selected behind a capability-shaped TerminalEngine seam:
-bytes in, resize, modes queryable, semantic effects, and Rust-owned paint
-state out. No public crate or UI API presumes the outcome.
+`terminal::vt` owns the C handles on one terminal worker. A small C bridge
+compiles against the public headers; Rust copies cells and effects before
+publishing them through `SurfaceStore`. No library-owned pointer reaches GPUI
+or another thread. GPUI still owns drawing and fonts, while portable-pty owns
+Linux PTYs and Windows ConPTY. Kitty graphics are disabled until the renderer
+can present them. Multiplexers continue to own session history and layout.
+
+Linux links the static library. Windows builds the GNU-ABI DLL and links it
+through its import library from the native MSVC Rust application. Cargo stages
+`ghostty-vt.dll` beside the application and test executables. The Windows CI
+artifact includes both files and licenses; keep the DLL beside `ghosthub.exe`.
+Windows x86_64 CI runs the same engine contracts plus real ConPTY tests.
+Windows ARM64 can build the library but still needs separate runtime acceptance.
+The engine and native Windows CI require no WSL installation. The existing
+Windows host layer still uses WSL for local multiplexers and SSH leases;
+removing the SSH dependency on WSL remains separate Windows host work.
 
 Repository-root `KWT_REVISION` is the sole source of the exact audited kwt
 revision. That source uses KWT_HOME or the fixed $HOME/.config/kwt default. It
@@ -142,6 +151,19 @@ make rust-check
 xvfb-run -a make rust-test-fonts-live
 make rust-test-kwt-live
 ```
+
+Install the pinned Zig toolchain with `mise install` before building. The
+Make targets build libghostty-vt automatically. Before invoking Cargo directly,
+run `make bootstrap-libghostty-vt`. To stage a Windows library from Linux:
+
+```sh
+make bootstrap-libghostty-vt RUST_TARGET=x86_64-pc-windows-msvc
+```
+
+This cross-build produces the Windows DLL and import library. It does not
+establish Windows application runtime acceptance. CI uses
+`uv run tools/build_libghostty_vt.py --install-zig` to stage the checksum-pinned
+compiler under `.build` without changing the machine's installed toolchain.
 
 Install Go before building the helper. On Linux, `make rust-build` builds the
 revision from `KWT_REVISION` and embeds it in the application.
@@ -820,12 +842,12 @@ workspace re-exports; terminal owns every terminal-semantic decision:
 - terminal backend adaptation
 - surface buffer publication
 
-The selected VT backend remains private. If Ghostty key encoding is retained
-over a pure-Rust screen backend, its explicit modes make that composition
-correct, but its build and packaging cost still participates in the backend
-decision.
+The VT backend remains private. Keyboard events go through libghostty's
+encoder using the terminal's current modes. Paste approval and sanitization,
+clipboard policy, and SGR mouse routing remain Ghosthub-owned.
 
-Input fixtures take both the platform event and terminal mode state. They
+Input fixtures feed mode-setting sequences through the terminal before encoding
+platform events. They
 cover Kitty levels, modifyOtherKeys, cursor/keypad application modes,
 bracketed paste, AltGr as distinct from ordinary Ctrl+Alt, dead keys, and IME
 composition. The input vocabulary preserves the logical unmodified key, the
@@ -904,9 +926,12 @@ UI paints directly from its leased buffer and performs no full-grid conversion
 or copy per frame.
 
 Scroll is a first-class damage operation: shift a row range by a signed delta,
-then dirty only newly exposed rows and genuine in-place changes. A backend that
-turns sustained one-line shell scrolling into repeated full-grid comparison,
-copy, or repaint fails the selection gate.
+then dirty newly exposed rows and genuine in-place changes. libghostty 1.0
+conservatively marks every row dirty on viewport scrolling. The adapter
+compares those rows before publication and reuses unchanged owned cells, but
+it currently converts the visible grid on a scroll. Ordinary edits convert
+only dirty rows. This is a known performance limitation of the migration;
+the earlier engine's incremental scroll-conversion benchmark is not met.
 
 ### Resize authority
 
@@ -1054,11 +1079,14 @@ relay suspended, so a bounded spawn-to-assignment race remains accepted; a
 presentation becomes active only after membership is proven.
 
 The workspace changes `unsafe_code` from `forbid` to `deny` and adds
-`unsafe_op_in_unsafe_fn = "deny"`. Two Windows-only modules may use narrowly
+`unsafe_op_in_unsafe_fn = "deny"`. Windows-only modules may use narrowly
 scoped `allow` attributes: terminal wraps `CreateJobObjectW`,
 `SetInformationJobObject`, `AssignProcessToJobObject`, and `IsProcessInJob`
 behind a safe RAII API, while host wraps `GetSystemDirectoryW` to resolve the
-trusted WSL launcher. Every other module retains the workspace denial. The
+trusted WSL launcher. The private `terminal::vt` module also allows documented
+FFI calls and owns every libghostty allocation through destruction. It is
+`Send` so the worker can take ownership, and is deliberately not `Sync`.
+Other modules retain the workspace denial. The
 architecture harness verifies that every `ghosthub-*` workspace member opts
 into workspace lints so a new crate cannot silently escape that policy.
 
