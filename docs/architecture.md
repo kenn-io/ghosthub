@@ -6,8 +6,8 @@ Security guarantees and trusted-peer assumptions are defined separately in
 the [Threat Model](threat-model.md).
 
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
-native Windows and Linux applications in development use Rust and
-GPUI while preserving the same product and session model. Its crate
+native Windows and Linux applications in development use Rust, GPUI, and
+libghostty-vt while preserving the same product and session model. Its crate
 boundaries, dependency findings, platform roots, substrate gates, and delivery
 order are maintained in [Windows and Linux Rust Port](rust-port.md). The
 locked v1 contract for the loopback web UI served by the Rust application is

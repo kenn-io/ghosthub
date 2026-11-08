@@ -1,4 +1,4 @@
-use input::{ModifyOtherKeys, MouseTracking};
+use input::{KeyInput, Modifiers, MouseTracking, NamedKey};
 use surface::{CellStyle, CursorShape, Damage, GridSize, PixelSize, Rgb};
 use terminal::{ClipboardPolicy, ClipboardTarget, DefaultColors, TerminalEngine};
 
@@ -93,16 +93,31 @@ fn exposes_negotiated_keypad_and_extended_keyboard_modes() {
     let size = GridSize::new(4, 2).expect("valid grid");
     let mut engine = TerminalEngine::new(size);
 
-    let _output = engine.process(b"\x1b=\x1b[>4;2m\x1b[=31u");
+    let _output = engine.process(b"\x1b=\x1b[>4;2m\x1b[=1u");
 
-    let modes = engine.modes();
-    assert!(modes.application_keypad);
-    assert_eq!(modes.modify_other_keys, ModifyOtherKeys::All);
-    assert!(modes.kitty_keyboard.disambiguate_escape_codes);
-    assert!(modes.kitty_keyboard.report_event_types);
-    assert!(modes.kitty_keyboard.report_alternate_keys);
-    assert!(modes.kitty_keyboard.report_all_keys_as_escape_codes);
-    assert!(modes.kitty_keyboard.report_associated_text);
+    assert!(engine.modes().application_keypad);
+    assert_eq!(
+        engine
+            .encode_input(&KeyInput::named(
+                NamedKey::KeypadDigit(1),
+                Modifiers::default()
+            ))
+            .approve(),
+        b"\x1b[57400u",
+    );
+    let _ = engine.process(b"\x1b[=0u");
+    assert_eq!(
+        engine
+            .encode_input(&KeyInput::text(
+                "A",
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                }
+            ))
+            .approve(),
+        b"\x1b[27;2;65~",
+    );
 }
 
 #[test]
@@ -264,4 +279,50 @@ fn remote_osc_52_write_policy_updates_apply_to_later_output() {
     assert!(denied.clipboard_writes().is_empty());
     assert_eq!(allowed.clipboard_writes()[0].text, "World");
     assert!(denied_again.clipboard_writes().is_empty());
+}
+
+#[test]
+fn fragmented_clipboard_sequences_preserve_policy_and_following_output() {
+    let mut engine = TerminalEngine::new(GridSize::new(20, 2).unwrap());
+    let mut writes = Vec::new();
+    for byte in b"\x1b]52;x;SGVsbG8=\x1b\\\x1b]52;c;SGVsbG8=\x1b\\done" {
+        let output = engine.process(&[*byte]);
+        writes.extend_from_slice(output.clipboard_writes());
+    }
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].text, "Hello");
+    let frame = engine.surface().load();
+    assert_eq!(
+        frame
+            .row(0)
+            .iter()
+            .take(4)
+            .map(surface::Cell::text)
+            .collect::<String>(),
+        "done"
+    );
+}
+
+#[test]
+fn grapheme_frames_remain_owned_after_resize_and_engine_drop() {
+    let mut engine = TerminalEngine::new(GridSize::new(8, 3).unwrap());
+    let _ = engine.process(b"\x1b[?2027h");
+    for byte in "e\u{301}界👩\u{200d}💻".as_bytes() {
+        let _ = engine.process(&[*byte]);
+    }
+    let frame = engine.surface().load();
+    assert_eq!(frame.cell(0).text(), "e\u{301}");
+    assert_eq!(frame.cell(1).text(), "界");
+    assert_eq!(frame.cell(3).text(), "👩\u{200d}💻");
+    engine.resize(GridSize::new(12, 4).unwrap());
+    drop(engine);
+    assert_eq!(frame.cell(3).text(), "👩\u{200d}💻");
+    assert_eq!(frame.size(), GridSize::new(8, 3).unwrap());
+}
+
+#[test]
+fn libghostty_replies_report_the_current_cursor() {
+    let mut engine = TerminalEngine::new(GridSize::new(8, 3).unwrap());
+    let output = engine.process(b"abc\x1b[6n");
+    assert_eq!(output.pty_writes(), &[b"\x1b[1;4R".to_vec()]);
 }

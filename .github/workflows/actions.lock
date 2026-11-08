@@ -53,6 +53,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
+        - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
         - 'kenn-io/actions@6a8b4227ec7ce3c28c6b042b735781b1601211f4'

@@ -5,6 +5,11 @@ components. The adjacent files contain their license text and attribution.
 This inventory is maintained with Ghosthub's pinned Ghostty, Zig, GRDB, and kwt
 revisions and is copied verbatim into `Ghosthub.app/Contents/Resources/Licenses`.
 
+The Rust development application also uses libghostty-vt, pinned separately in
+`Vendor/libghostty-vt.version.json`. Its linked source includes libghostty,
+Highway, simdutf, Wuffs, uucode/Unicode data, and the Zig runtime. Their notices
+below accompany the Windows DLL and Linux static build.
+
 | Component | License file(s) |
 | --- | --- |
 | Ghostty / libghostty | `ghostty-MIT.txt` |

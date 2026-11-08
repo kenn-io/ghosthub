@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use contracts::{Manifest, PlatformTag};
-use input::{KeyInput, TerminalModes, encode_input};
+use input::encode_paste;
 use serde::Deserialize;
 
 const FIXTURE_ID: &str = "clipboard.paste.sanitize.v1";
@@ -45,14 +45,10 @@ fn paste_encoding_satisfies_the_shared_sanitization_contract() {
     assert!(!fixture.notes.is_empty());
 
     for case in fixture.cases {
-        let modes = TerminalModes {
-            bracketed_paste: case.bracketed_paste,
-            ..TerminalModes::default()
-        };
         // The confirmation gate is a native approval layer on top of the
         // shared contract; the contract governs the bytes that reach the PTY
         // once the paste goes through.
-        let actual = encode_input(&KeyInput::paste(case.input.clone()), modes).approve();
+        let actual = encode_paste(&case.input, case.bracketed_paste).approve();
 
         if case.known_gaps.contains_key(CONSUMER) {
             assert_ne!(

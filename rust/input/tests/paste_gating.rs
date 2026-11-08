@@ -3,14 +3,7 @@
 //! the delivered bytes and still gate the paste behind explicit approval,
 //! while ordinary multi-line or tabbed pastes flow through.
 
-use input::{KeyInput, TerminalModes, encode_input};
-
-fn bracketed() -> TerminalModes {
-    TerminalModes {
-        bracketed_paste: true,
-        ..TerminalModes::default()
-    }
-}
+use input::encode_paste;
 
 #[test]
 fn bracketed_pastes_gate_embedded_controls() {
@@ -24,8 +17,7 @@ fn bracketed_pastes_gate_embedded_controls() {
         "a\u{0085}b",
     ] {
         assert!(
-            encode_input(&KeyInput::paste(smuggled.to_owned()), bracketed())
-                .requires_confirmation(),
+            encode_paste(smuggled, true).requires_confirmation(),
             "an embedded control must gate the paste: {smuggled:?}"
         );
     }
@@ -35,7 +27,7 @@ fn bracketed_pastes_gate_embedded_controls() {
 fn bracketed_pastes_without_controls_flow_through() {
     for benign in ["hello", "one\r\ntwo", "one\ntwo", "col\tumn"] {
         assert!(
-            !encode_input(&KeyInput::paste(benign.to_owned()), bracketed()).requires_confirmation(),
+            !encode_paste(benign, true).requires_confirmation(),
             "ordinary text never requires confirmation: {benign:?}"
         );
     }

@@ -78,7 +78,7 @@ presentation-specific workers:
 - The shared layer owns command resolution, spawn containment (Job Objects on
   Windows), resize delivery, shutdown ordering, and child reaping. All
   launcher and process-lifetime behavior lives here exactly once.
-- `TerminalWorker` (native): PTY bytes → alacritty parser → surface
+- `TerminalWorker` (native): PTY bytes → libghostty parser → surface
   publication. Unchanged from today's worker semantics.
 - `ByteRelayWorker` (web): PTY bytes ↔ bounded per-connection queues, with no
   server-side VT parser of any kind.

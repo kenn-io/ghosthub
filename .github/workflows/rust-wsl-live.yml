@@ -71,6 +71,10 @@ jobs:
         with:
           workspaces: rust
 
+      - name: Build the terminal library
+        working-directory: .
+        run: uv run --frozen python tools/build_libghostty_vt.py --install-zig
+
       - name: Build the pinned WSL KWT helper
         shell: pwsh
         run: |

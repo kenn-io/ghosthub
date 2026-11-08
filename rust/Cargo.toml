@@ -23,7 +23,6 @@ publish = false
 rust-version = "1.96"
 
 [workspace.dependencies]
-alacritty_terminal = { version = "=0.26.0", default-features = false }
 arc-swap = "=1.9.2"
 axum = { version = "=0.8.9", default-features = false, features = [
     "http1",
