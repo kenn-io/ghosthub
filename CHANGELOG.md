@@ -5,6 +5,11 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-08
+
+See which coding agents need you, open terminals from the Herdr desktop app,
+and attach to Zellij 0.45 sessions directly.
+
 ### Added
 
 - Open terminals from the newer Herdr desktop app in Ghosthub on macOS,
@@ -555,7 +560,8 @@ local or remote hosts.
   automatically after lost connections, and navigate projects and worktrees
   managed by kwt.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/kenn-io/ghosthub/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kenn-io/ghosthub/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/kenn-io/ghosthub/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kenn-io/ghosthub/compare/v0.11.1...v0.11.2
