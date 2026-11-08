@@ -12,7 +12,7 @@ Expand a host in the sidebar to find its sessions:
 
 - **Tmux Sessions** lists tmux sessions that are not grouped under a project.
 - **Herdr TUI Sessions** lists running and stopped sessions from the older terminal app.
-- **Herdr Terminals** lists live desktop terminals (unreleased macOS builds).
+- **Herdr Terminals** lists live desktop terminals (macOS).
 - **Zellij Sessions** lists active Zellij sessions.
 - **Projects** lists Git worktrees and registered directories with tmux sessions.
 
@@ -88,7 +88,7 @@ lists only active sessions and does not expose resurrection as a workflow.
 
 ## Herdr desktop terminals
 
-Unreleased macOS builds can open live terminals from the newer
+Ghosthub on macOS can open live terminals from the newer
 [Herdr desktop app](https://github.com/herdrdev/herdr-app). This uses
 [herdr-core](https://github.com/herdrdev/herdr-core), which stores terminals
 separately from older Herdr TUI sessions. Windows and Linux builds do not yet
@@ -153,7 +153,7 @@ for the selected backend. Herdr TUI receives the complete terminal and continues
 to own its workspaces, tabs, panes, history, and key bindings. Herdr desktop
 attachments open individual terminals as described above.
 
-**Unreleased on macOS:** selecting an existing session with Zellij 0.45
+On macOS, selecting an existing session with Zellij 0.45
 attaches directly instead of opening its session chooser. Names beginning
 with `-` (except `-` alone), `help`, and `options` cannot be created or attached
 because Zellij reads them as options or commands. Existing sessions with
@@ -298,7 +298,7 @@ indicators require psmux 3.3.4 or newer.
 
 ## Agents waiting for you
 
-**Unreleased.** A tmux session running a coding agent shows what the agent is
+A tmux session running a coding agent shows what the agent is
 doing at the right edge of its sidebar row:
 
 - **Approval** (amber bubble): the agent is waiting for permission.
