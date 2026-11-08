@@ -3571,6 +3571,8 @@ impl RootView {
                 WorkspaceEvent::KwtWorktreeCreated {
                     target,
                     navigation_generation,
+                    // Keep reconnect deferred through the open request below.
+                    opening: _opening,
                 } => {
                     let open = WorktreeOpenTarget {
                         host_id: target.host_id().to_owned(),
@@ -3722,6 +3724,8 @@ impl RootView {
                         apply_new_worktree_failure(dialog, operation_id, &project_path, message);
                     }
                 }
+                // Recovery status follows the snapshot and disappears when its target clears.
+                WorkspaceEvent::RemoteSessionInterrupted(_) => {}
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
             }
         }

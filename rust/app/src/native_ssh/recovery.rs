@@ -1,16 +1,49 @@
 use super::*;
 
 impl Fixture {
+    fn wait_for_automatic_recovery(&self) {
+        self.wait_during_recovery(|snapshot| {
+            matches!(snapshot.content(), WorkspaceContent::Terminal { .. })
+        });
+    }
+
+    fn wait_during_recovery(&self, mut condition: impl FnMut(&WorkspaceSnapshot) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            for event in self.workspace.drain_events().0 {
+                match event {
+                    WorkspaceEvent::SshPrompt(_) => {
+                        panic!("automatic recovery opened an SSH prompt")
+                    }
+                    WorkspaceEvent::Error(error) => panic!("{error}"),
+                    _ => {}
+                }
+            }
+            let snapshot = self.workspace.snapshot();
+            if condition(&snapshot) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "automatic recovery did not reach the expected state: {:?}",
+                snapshot.hosts()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     pub(super) fn interrupt_ssh(&self) {
         self.break_ssh_connections();
         self.wait_for_error("status 255");
+        // These tests exercise explicit Refresh; stop the automatic retry first.
+        let _ = self.workspace.cancel_host_connection(&self.host_id);
         assert!(matches!(
             self.workspace.snapshot().content(),
             WorkspaceContent::Shell
         ));
     }
 
-    fn break_ssh_connections(&self) {
+    pub(super) fn break_ssh_connections(&self) {
         let listener = std::fs::read_to_string(self.root.join("sshd.pid")).unwrap();
         let listener = listener.trim();
         let mut connections = Vec::new();
@@ -37,6 +70,51 @@ impl Fixture {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "requires the isolated SSH fixture; run make rust-test-ssh-live"]
+fn transport_loss_automatically_restores_the_selected_tmux_session() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::recovery::transport_loss_automatically_restores_the_selected_tmux_session",
+    ) else {
+        return;
+    };
+    fixture.tmux(&[
+        "set-option",
+        "-as",
+        "terminal-overrides",
+        ",*:smcup@:rmcup@",
+    ]);
+    fixture.connect();
+    fixture.attach("review", "before-automatic-recovery");
+    for marker in ["first-automatic-recovery", "second-automatic-recovery"] {
+        fixture.break_ssh_connections();
+        fixture.wait_for_error("status 255");
+        fixture.wait_for_automatic_recovery();
+        assert!(
+            fixture.workspace.snapshot().notice().is_none(),
+            "recovery must clear its notice"
+        );
+        fixture.tmux_shell("review", marker);
+        fixture.wait(|_| {
+            !fixture
+                .workspace
+                .remote_attachment_pending(&fixture.host_id)
+        });
+        assert_eq!(
+            fixture
+                .workspace
+                .remote_reconnect_interval(&fixture.host_id),
+            Some(Duration::from_secs(1)),
+            "a restored terminal must give the next outage its initial delay"
+        );
+    }
+    assert!(
+        fixture
+            .terminal_text()
+            .contains("remote-review:before-automatic-recovery")
+    );
 }
 
 #[test]
@@ -122,18 +200,44 @@ exec /usr/bin/tmux "$@"
         .unwrap();
     fixture.connect();
     fixture.attach("review", "before-startup-failure");
-    fixture.interrupt_ssh();
     let home = fixture.root.join("home");
     std::fs::write(home.join("block-tmux-attach"), "").unwrap();
-    fixture.connect();
-    fixture.wait(|snapshot| {
+    fixture.break_ssh_connections();
+    fixture.wait_for_error("status 255");
+    fixture.wait_during_recovery(|snapshot| {
         home.join("tmux-attach-started").exists()
             && matches!(snapshot.content(), WorkspaceContent::Terminal { .. })
     });
-    fixture.interrupt_ssh();
+    assert_eq!(
+        fixture
+            .workspace
+            .remote_reconnect_interval(&fixture.host_id),
+        Some(Duration::from_secs(2)),
+        "launching SSH does not acknowledge tmux attachment"
+    );
+    fixture.break_ssh_connections();
+    fixture.wait_for_error("status 255");
+    assert_eq!(
+        fixture
+            .workspace
+            .remote_reconnect_interval(&fixture.host_id),
+        Some(Duration::from_secs(4)),
+        "failed terminal startup must keep increasing the retry interval"
+    );
     std::fs::remove_file(home.join("block-tmux-attach")).unwrap();
-    fixture.connect();
+    fixture.wait_for_automatic_recovery();
     fixture.tmux_shell("review", "resumed-after-startup-failure");
+    fixture.wait(|_| {
+        !fixture
+            .workspace
+            .remote_attachment_pending(&fixture.host_id)
+    });
+    assert_eq!(
+        fixture
+            .workspace
+            .remote_reconnect_interval(&fixture.host_id),
+        Some(Duration::from_secs(1)),
+    );
     assert!(
         fixture
             .terminal_text()
@@ -343,4 +447,147 @@ fn a_second_host_refresh_preserves_recovery_waiting_to_attach() {
     fixture.connect();
     std::fs::write(home.join("recovery-release"), "").unwrap();
     fixture.tmux_shell("review", "second-refresh-resumed-original");
+}
+
+#[test]
+#[ignore = "requires the isolated SSH fixture; run make rust-test-ssh-live"]
+fn automatic_recovery_retries_an_unavailable_server() {
+    let Some(fixture) =
+        Fixture::isolated("native_ssh::recovery::automatic_recovery_retries_an_unavailable_server")
+    else {
+        return;
+    };
+    fixture.connect();
+    fixture.attach("review", "before-outage");
+    let config_path = PathBuf::from(std::env::var_os("HOME").unwrap()).join(".ssh/config");
+    let original = std::fs::read_to_string(&config_path).unwrap();
+    let unavailable = original
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("Port ") {
+                "  Port 1"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&config_path, unavailable).unwrap();
+    fixture.break_ssh_connections();
+    fixture.wait_for_error("status 255");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let snapshot = fixture.workspace.snapshot();
+        let host = snapshot
+            .hosts()
+            .iter()
+            .find(|host| host.id() == fixture.host_id)
+            .unwrap();
+        if host.connection() == HostConnectionState::Unavailable
+            && host.diagnostic().is_some_and(|diagnostic| {
+                diagnostic.message().contains("port 1:")
+                    && diagnostic.message().contains("Connection refused")
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "automatic connection to Port 1 did not fail: {:?}",
+            host.diagnostic()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    std::fs::write(&config_path, original).unwrap();
+    fixture.wait_for_automatic_recovery();
+    fixture.tmux_shell("review", "after-outage");
+    assert!(
+        fixture
+            .terminal_text()
+            .contains("remote-review:before-outage")
+    );
+}
+
+#[test]
+#[ignore = "requires the isolated SSH fixture; run make rust-test-ssh-live"]
+fn automatic_recovery_waits_for_explicit_host_key_review() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::recovery::automatic_recovery_waits_for_explicit_host_key_review",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    fixture.attach("review", "before-review");
+    let known_hosts = PathBuf::from(std::env::var_os("HOME").unwrap()).join(".ssh/known_hosts");
+    std::fs::remove_file(known_hosts).unwrap();
+    fixture.break_ssh_connections();
+    fixture.wait_for_error("status 255");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        for event in fixture.workspace.drain_events().0 {
+            assert!(
+                !matches!(event, WorkspaceEvent::SshPrompt(_)),
+                "automatic SSH must wait for Retry before prompting"
+            );
+        }
+        let snapshot = fixture.workspace.snapshot();
+        let host = snapshot
+            .hosts()
+            .iter()
+            .find(|host| host.id() == fixture.host_id)
+            .unwrap();
+        if host.connection() == HostConnectionState::Unavailable
+            && host.diagnostic().is_some_and(|diagnostic| {
+                diagnostic.kind() == model::DiagnosticKind::PermissionDenied
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host-key review was not surfaced: {:?}",
+            host.diagnostic()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        fixture.connect(),
+        1,
+        "explicit Retry must present host-key review"
+    );
+    fixture.tmux_shell("review", "after-review");
+}
+
+#[test]
+#[ignore = "requires the isolated SSH fixture; run make rust-test-ssh-live"]
+fn automatic_recovery_respects_detach_in_another_window() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::recovery::automatic_recovery_respects_detach_in_another_window",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    fixture.attach("review", "before-loss");
+    let other = fixture.open_scene();
+    other.attach("notes 'one'", "other-before-loss");
+    fixture.break_ssh_connections();
+    fixture.wait_for_error("status 255");
+    other.wait_for_error("status 255");
+    fixture.workspace.detach();
+    other.wait_for_automatic_recovery();
+    other.tmux_shell("notes 'one'", "other-recovered");
+    assert!(
+        !fixture
+            .workspace
+            .remote_attachment_pending(&fixture.host_id)
+    );
+    assert!(matches!(
+        fixture.workspace.snapshot().content(),
+        WorkspaceContent::Shell
+    ));
+    assert!(
+        fixture
+            .tmux(&["list-clients", "-t", "=review", "-F", "#{client_pid}"])
+            .is_empty()
+    );
 }

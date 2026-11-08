@@ -349,16 +349,16 @@ The path matrix is:
 | Protected pull-request workspace | RepairOrOpen protected variant | Rerun exact kwt pr attach |
 
 No mutable creation boolean exists. Recovery cannot accept CreateOnce. The
-matrix describes the target lifecycle contract; automatic recovery and KWT
-repair during reconnect remain unimplemented.
+matrix describes the target lifecycle contract. Automatic recovery currently
+covers active ordinary SSH tmux clients; KWT repair during reconnect remains
+unimplemented.
 
 Local ordinary-client exit always ends the presentation. The Windows WSL MVP
 does not reconnect a local `wsl.exe` relay after client exit. After a selected
-remote tmux client exits with OpenSSH status 255, an explicit host
-reconnect can restore that exact session. Other exit statuses end the
-presentation. Recovery uses the selected session identity, not alternate-screen
-output, and survives SSH failures before the terminal starts. Automatic retries
-and backoff remain follow-up work.
+remote tmux client exits with OpenSSH status 255, automatic host reconnect can
+restore that exact session. Other exit statuses end the presentation. Recovery
+uses the selected session identity, not alternate-screen output, and survives
+SSH failures before the terminal starts.
 
 ### Shared local host boundary
 
@@ -423,19 +423,23 @@ Select **Connect** beside that host in the sidebar. Review any host-key or
 authentication prompt before continuing. Select a discovered session to open
 its terminal; switching tmux rows retains the previous presentation.
 
-If an active ordinary tmux terminal loses its SSH connection, select the host's
-**Refresh** or **Retry** button. After reconnect, Ghosthub reopens the same
-session on the same server, including if it was renamed. It does not create a
-missing session or open a replacement that reused the old name. Selecting
-another session, detaching, closing the window, or removing the host cancels
+If an active ordinary tmux terminal loses its SSH connection, Ghosthub retries
+automatically after 1, 2, 4, 8, 16, then 30 seconds, with a 15-second limit per
+automatic attempt. **Refresh** or **Retry** tries now and resets the backoff.
+After reconnect, Ghosthub reopens the same session on the same server, including
+if it was renamed. It does not create a missing session or open a replacement
+that reused the old name. Selecting another session, detaching, closing the
+window, or removing the host cancels
 that recovery. Failed connections and terminal startup attempts preserve it for
 a later retry. A reconnect that finishes before the old terminal reports its
-exit also restores the session.
+exit also restores the session. Authentication failures, changed SSH settings,
+and host-key prompts pause automatic attempts; choose **Retry** to review them.
+**Cancel** stops an in-progress connection and subsequent automatic attempts.
 
 This applies to the default tmux server and KWT's shared server. Retained
 inactive clients, protected PR worktrees, Herdr, and Zellij require an explicit
-session selection after transport loss. Background retry/backoff is not yet
-implemented.
+session selection after transport loss. Windows uses the same recovery policy
+through its WSL SSH host boundary; live recovery checks currently run on Linux.
 
 ![Native Linux Ghosthub after reconnecting to the original tmux shell](https://raw.githubusercontent.com/kenn-io/ghosthub/website-assets/guide-rust-ssh-reconnect.png)
 
@@ -505,6 +509,11 @@ multiple remotes have the same branch name. **Create** uses the pinned helper's
 guarded, non-launching operation, refreshes inventory, and opens the resulting
 worktree through the ordinary remote workspace path. Later navigation prevents
 automatic selection of that result.
+
+Successful remote creation and PR import reserve the subsequent attachment before
+releasing the KWT mutation. The completion event holds that reservation through
+the UI's open request, so automatic reconnect in another window waits for both.
+Discarding the event, later navigation, or scene closure releases the reservation.
 
 The branch listing and creation share the host's KWT operation reservation.
 Cancel releases the listing immediately; closing its owning scene cancels a
@@ -1468,7 +1477,7 @@ attachments queued in other windows resume after it settles. Reconnect cancels
 pending destructive commands; known successful removals tombstone the exact
 checkout before inventory reconciliation. Force removal of an ordinary SSH
 worktree requires a separate acknowledgement bound to its captured dirty
-state and identities. Automatic reconnect and application-state restoration
+state and identities. Retained-client reconnect and application-state restoration
 remain separate work. An absent control cannot silently fall back to WSL or
 unguarded SSH.
 

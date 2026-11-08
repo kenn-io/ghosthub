@@ -80,10 +80,14 @@ pub(crate) fn pump_once(runtime: &Runtime) -> bool {
     let _snapshot_write = begin_snapshot_write(runtime);
     monitor_remote_lease_liveness(runtime);
     let mut backlog = false;
-    for scene in live_scenes(runtime) {
-        let workspace = Workspace { scene };
+    let scenes = live_scenes(runtime);
+    for scene in &scenes {
+        let workspace = Workspace {
+            scene: Arc::clone(scene),
+        };
         backlog |= workspace.pump_scene();
     }
+    crate::remote_recovery::retry::tick(&scenes, std::time::Instant::now());
     backlog
 }
 
@@ -388,11 +392,11 @@ impl Workspace {
         clear_terminal_notice(&self.scene);
         self.restore_inventory_state();
         if let Some(error) = error {
-            emitted.push(WorkspaceEvent::Error(if recoverable {
-                format!("{error}. Refresh the host to reopen this session.")
+            emitted.push(if recoverable {
+                WorkspaceEvent::RemoteSessionInterrupted(error)
             } else {
-                error
-            }));
+                WorkspaceEvent::Error(error)
+            });
         }
         drop(navigation);
         if recoverable {
