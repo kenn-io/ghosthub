@@ -8,7 +8,8 @@ Packaged releases check the stable feed at
 
 ## Release a new version
 
-1. Update `RELEASE_VERSION` and add the matching dated `CHANGELOG.md` entry.
+1. Update `RELEASE_VERSION` and add the matching dated entry to
+   `website/docs/content/changelog.md`.
    Lead with what users and their agents can do. Review the public guides and
    [refresh screenshots](https://github.com/kenn-io/ghosthub/blob/main/website/README.md#product-screenshots) for accepted
    changes that alter the views they show.
@@ -398,7 +399,7 @@ No cross-repository token is required. The workflow uses its short-lived
 ## Candidate run
 
 Release preparation updates `RELEASE_VERSION` and adds the matching dated
-`CHANGELOG.md` section. Write the notes in plain language, starting with what
+section to `website/docs/content/changelog.md`. Write the notes in plain language, starting with what
 people can do or what now works better. Omit internal build and test work;
 keep technical details only when users need them to understand a limit or
 adjust their workflow. Every packaging entry point reads the version file by
@@ -478,7 +479,7 @@ appcast, and creates the matching GitHub release with:
 - `appcast.xml`
 
 The appcast contains only the current full DMG and embeds the exact dated
-`CHANGELOG.md` section for `RELEASE_APP_VERSION`, along with a link to the
+changelog section for `RELEASE_APP_VERSION`, along with a link to the
 tag-specific GitHub release. Appcast generation stops before signing when that
 section is missing, duplicated, empty, or malformed; it never publishes
 placeholder release notes. The tag workflow also runs this same changelog
