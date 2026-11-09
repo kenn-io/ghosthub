@@ -140,8 +140,9 @@ layer, as subject to direct iteration.
   change is correct.
 - If a turn touches release packaging, signing, notarization, or `.github/workflows/release.yml`, update `docs/release.md` in the same turn.
 - `RELEASE_VERSION` is the sole source of the current release version outside
-  dated `CHANGELOG.md` entries and immutable published tags. Preparing a
-  release updates only `RELEASE_VERSION` and `CHANGELOG.md`; Makefiles, shell
+  dated entries in `website/docs/content/changelog.md` and immutable
+  published tags. Preparing a release updates only `RELEASE_VERSION` and that
+  changelog; Makefiles, shell
   scripts, workflows, tests, and documentation must read that file or use an
   `X.Y.Z` placeholder, never duplicate the current version literal.
 - Write changelogs and release notes in plain language. Lead with what people

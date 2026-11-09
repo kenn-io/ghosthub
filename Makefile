@@ -775,8 +775,7 @@ docs-serve:
 	@cd docs && $(UV) run --frozen ./zensical-docs.sh serve
 
 site-docs-serve:
-	@cd website && bash scripts/sync-changelog.sh && \
-		./scripts/run-uv.sh run --project docs --frozen zensical serve --config-file zensical.toml
+	@cd website && ./scripts/run-uv.sh run --project docs --frozen zensical serve --config-file zensical.toml
 
 site-deploy:
 	@cd website && $(PNPM) build

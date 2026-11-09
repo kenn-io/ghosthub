@@ -4,13 +4,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'CHANGELOG.md'
       - 'website/**'
       - 'rust/web/assets/**'
       - '.github/workflows/website.yml'
   pull_request:
     paths:
-      - 'CHANGELOG.md'
       - 'website/**'
       - 'rust/web/assets/**'
       - '.github/workflows/website.yml'

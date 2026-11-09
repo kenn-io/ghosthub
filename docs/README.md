@@ -11,7 +11,7 @@ it. The root README introduces the product and links to those guides.
 | Product introduction and visual tour | `website/src/` | [ghosthub.ai](https://ghosthub.ai/) and `/overview/` |
 | User setup, tasks, limits, and troubleshooting | `website/docs/content/` | [ghosthub.ai/docs](https://ghosthub.ai/docs/) |
 | Architecture, development, operations, and release procedures | `docs/` | Separate engineering site built with `make docs-build` |
-| Release history | Root `CHANGELOG.md` | Copied into the public docs during the website build |
+| Release history | `website/docs/content/changelog.md` | [ghosthub.ai/docs/changelog](https://ghosthub.ai/docs/changelog/) and the release appcast notes |
 | Product screenshots | Orphan `website-assets` branch | Copied into both website and docs assets during the website build |
 
 Give each topic one owner. Keep exact steps and limits in that guide, and link

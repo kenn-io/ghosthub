@@ -30,7 +30,7 @@
   ·
   <a href="https://ghosthub.ai/docs/"><strong>Docs</strong></a>
   ·
-  <a href="CHANGELOG.md"><strong>Changelog</strong></a>
+  <a href="https://ghosthub.ai/docs/changelog/"><strong>Changelog</strong></a>
   ·
   <a href="https://discord.gg/nEB7VaAnU9"><strong>Discord</strong></a>
 </p>
@@ -98,7 +98,7 @@ Ending it requires a separate, confirmed **Kill Session…** or **Stop Session�
 action. See [Sessions](https://ghosthub.ai/docs/sessions/).
 
 This README and the website docs follow `main`. The
-[Unreleased changelog](CHANGELOG.md#unreleased) identifies changes newer than
+[Unreleased changelog](website/docs/content/changelog.md#unreleased) identifies changes newer than
 the latest stable release. Read about
 [stable and nightly builds](https://ghosthub.ai/docs/getting-started/#release-and-nightly-builds)
 before trying them.

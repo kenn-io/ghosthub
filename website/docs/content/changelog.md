@@ -1,3 +1,8 @@
+---
+description: User-facing changes in each Ghosthub release.
+icon: lucide/history
+---
+
 # Changelog
 
 Notable user-facing changes to Ghosthub are recorded here. Internal build,
