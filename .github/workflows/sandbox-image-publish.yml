@@ -24,7 +24,7 @@ jobs:
     if: >-
       github.repository == 'kenn-io/ghosthub' &&
       vars.SANDBOX_PROMOTION_APP_ID != ''
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -47,7 +47,7 @@ jobs:
   prepare:
     name: Prepare candidate artifact
     needs: check
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     outputs:
@@ -84,7 +84,7 @@ jobs:
   publish:
     name: Publish candidate
     needs: prepare
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: sandbox-image-package-writer
     permissions:
       contents: read

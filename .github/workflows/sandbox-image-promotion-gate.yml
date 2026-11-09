@@ -37,7 +37,7 @@ jobs:
       github.repository == 'kenn-io/ghosthub' &&
       github.ref == 'refs/heads/main' &&
       vars.SANDBOX_PROMOTION_APP_ID != ''
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: sandbox-image-promotion-status
     permissions:
       actions: read # zizmor: ignore[undocumented-permissions] fence prior merge-group authorizations
@@ -153,7 +153,7 @@ jobs:
       github.repository == 'kenn-io/ghosthub' &&
       github.ref == 'refs/heads/main' &&
       vars.SANDBOX_PROMOTION_APP_ID != ''
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: sandbox-image-promotion-status
     permissions:
       actions: read # zizmor: ignore[undocumented-permissions] authenticate completed promotion runs
@@ -333,7 +333,7 @@ jobs:
       github.ref == 'refs/heads/main' &&
       vars.SANDBOX_PROMOTION_APP_ID != ''
     needs: [fence, audit]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: sandbox-image-promotion-status
     permissions:
       actions: read # zizmor: ignore[undocumented-permissions] authenticate completed promotion runs

@@ -11,7 +11,7 @@ jobs:
   verify:
     name: Verify inert evidence
     if: github.repository == 'kenn-io/ghosthub' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pull-requests: read # zizmor: ignore[undocumented-permissions] bind evidence to one open pull request
@@ -42,7 +42,7 @@ jobs:
     name: Prepare approved promotion
     if: github.repository == 'kenn-io/ghosthub' && github.ref == 'refs/heads/main'
     needs: verify
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: sandbox-image-promotion-status
     permissions:
       actions: read # zizmor: ignore[undocumented-permissions] inspect authority and completed workflows
@@ -126,7 +126,7 @@ jobs:
     name: Approve and retag digest
     if: github.repository == 'kenn-io/ghosthub' && github.ref == 'refs/heads/main'
     needs: plan
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: sandbox-image-production
     permissions: {}
     concurrency:

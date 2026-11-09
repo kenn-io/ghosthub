@@ -16,7 +16,7 @@ concurrency:
 jobs:
   sequoia-release:
     name: Sequoia release bundle (Apple Silicon)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       LIBGHOSTTY_XCFRAMEWORK_TARGET: native
