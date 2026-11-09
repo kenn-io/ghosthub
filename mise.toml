@@ -4,5 +4,5 @@
 [tools]
 zig = "0.17.0"
 go = "latest"
-prek = "0.5.7"
-swiftformat = "0.63.1"
+prek = "0.5.9"
+swiftformat = "0.64.5"
