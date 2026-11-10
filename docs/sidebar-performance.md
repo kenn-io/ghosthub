@@ -66,7 +66,9 @@ mouse-click measurement. Baseline sampling found substantial SwiftUI
 accessibility focus and responder-traversal work.
 
 Across ten tmux selections, row evaluations fell from 1,111/5,511 at 100/500
-sessions to 165 at both sizes. Worktree disclosure row evaluations fell from
+sessions to 165 at both sizes. Single-line session rows later fit more rows
+in the same viewport, so ten selections now evaluate 253 rows at both sizes;
+the gate allows 300. Worktree disclosure row evaluations fell from
 312/1,512 to 105; worktree selections fell from 2,120/10,120 to 740.
 
 The Changes fixture hosts a 320 × 700 sidebar with enhanced accessibility. It

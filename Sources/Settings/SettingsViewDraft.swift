@@ -34,6 +34,10 @@ public struct SettingsViewDraft: Equatable {
     public var hideMouseWhileTyping: Bool
     public var copySelectionToClipboard: Bool
     public var sessionPreviewMode: SessionPreviewMode
+    public var sidebar: SidebarPreferences
+    /// The sidebar header menu can change the sort while Settings is open;
+    /// Done keeps that choice unless this draft changed the sort itself.
+    private var loadedSidebarSessionSort: SidebarSessionSort
     public var hideRootCheckout: Bool
     public var showHiddenWorktreesByDefault: Bool
     public var hideKwtManagedSessions: Bool
@@ -68,6 +72,8 @@ public struct SettingsViewDraft: Equatable {
         hideMouseWhileTyping = terminal.hideMouseWhileTyping
         copySelectionToClipboard = terminal.copySelectionToClipboard
         sessionPreviewMode = store.sessionPreviewMode
+        sidebar = store.sidebarPreferences
+        loadedSidebarSessionSort = store.sidebarPreferences.sessionSort
         hideRootCheckout = store.worktreePreferences.hideRootCheckout
         showHiddenWorktreesByDefault = store.worktreePreferences
             .showHiddenWorktreesByDefault
@@ -129,6 +135,11 @@ public struct SettingsViewDraft: Equatable {
         store.setHideMouseWhileTyping(hideMouseWhileTyping)
         store.setCopySelectionToClipboard(copySelectionToClipboard)
         store.setSessionPreviewMode(sessionPreviewMode)
+        var sidebarToPersist = sidebar
+        if sidebar.sessionSort == loadedSidebarSessionSort {
+            sidebarToPersist.sessionSort = store.sidebarPreferences.sessionSort
+        }
+        store.setSidebarPreferences(sidebarToPersist)
         store.setHideRootCheckout(hideRootCheckout)
         store.setShowHiddenWorktreesByDefault(
             showHiddenWorktreesByDefault

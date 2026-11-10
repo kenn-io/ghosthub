@@ -65,12 +65,8 @@ public struct RootView: View {
     private var hostOrderRawValue = WorkspaceSidebarOrderStorage.defaultHostOrder
     @AppStorage(WorkspaceSidebarOrderStorage.worktreeKey)
     private var worktreeOrderRawValue = ""
-    @AppStorage(WorkspaceSidebarOrderStorage.tmuxSessionKey)
-    private var tmuxSessionOrderRawValue = ""
-    @AppStorage(WorkspaceSidebarOrderStorage.herdrSessionKey)
-    private var herdrSessionOrderRawValue = ""
-    @AppStorage(WorkspaceSidebarOrderStorage.zellijSessionKey)
-    private var zellijSessionOrderRawValue = ""
+    @AppStorage(WorkspaceSidebarOrderStorage.sessionKey)
+    private var sessionOrderRawValue = ""
 
     public init(
         display: WorkspaceDisplayState,
@@ -812,9 +808,11 @@ public struct RootView: View {
             display.isWorkspaceInventoryRefreshComplete,
             hostOrderRawValue: $hostOrderRawValue,
             worktreeOrderRawValue: $worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: $tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: $herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: $zellijSessionOrderRawValue,
+            sessionOrderRawValue: $sessionOrderRawValue,
+            sidebarPreferences: settingsStore.sidebarPreferences,
+            onSetSessionSort: { sort in
+                settingsStore.setSidebarSessionSort(sort)
+            },
             onWorktreeFlagFailure: { worktree, message in
                 presentNonWorktreeWorkspaceAlert(.worktreeFlagFailure(
                     worktree: worktree.name, message: message
@@ -2019,11 +2017,9 @@ public struct RootView: View {
             tmuxSessionVisibility: tmuxSessionVisibility,
             supportsSettings: content.settingsSheetBuilder != nil,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+            sessionOrderRawValue: sessionOrderRawValue,
             availableApplicationShortcuts:
             display.availableApplicationShortcuts,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: zellijSessionOrderRawValue,
             pendingHerdrSessions: display.pendingHerdrSessions,
             shortcuts: settingsStore.shortcutPreferences.resolved
         )

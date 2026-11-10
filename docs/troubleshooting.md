@@ -132,8 +132,9 @@ command -v herdr
 herdr session list --json
 ```
 
-Running and stopped sessions appear under **Herdr Sessions**. A stopped row is
-dimmed and labeled **Stopped**; choose **Restart** to restore its saved shape
+Running and stopped sessions appear in the host's session list with a
+**herdr tui** label. A stopped row is dimmed, marked **stopped**, and listed
+last; choose **Restart** to restore its saved shape
 with new processes. Malformed
 JSON, a failing Herdr command, or an SSH failure adds a host-scoped warning;
 use its **Retry** action after correcting the command or connection. Herdr is

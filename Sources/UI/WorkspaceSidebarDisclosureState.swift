@@ -1,9 +1,9 @@
 import Foundation
 
-/// Window-local disclosure overrides for the sidebar hierarchy. Hosts and tmux
-/// sessions are visible by default, while project groups and individual
-/// projects begin collapsed so a large worktree inventory does not hide the
-/// rest of the fleet.
+/// Window-local disclosure overrides for the sidebar hierarchy. Hosts are
+/// expanded by default, while project groups and individual projects begin
+/// collapsed so a large worktree inventory does not hide the rest of the
+/// fleet.
 struct WorkspaceSidebarDisclosureState: Equatable {
     private(set) var collapsedKeys: Set<String> = []
     private(set) var expandedKeys: Set<String> = []
@@ -32,30 +32,10 @@ struct WorkspaceSidebarDisclosureState: Equatable {
 
     private static func isExpandedByDefault(_ key: String) -> Bool {
         key.hasPrefix("host:")
-            || key.hasPrefix("sessions:")
-            || key.hasPrefix("herdr-sessions:")
-            || key.hasPrefix("herdr-terminals:")
-            || key.hasPrefix("zellij-sessions:")
     }
 
     static func host(_ hostID: UUID) -> String {
         "host:\(hostID.uuidString)"
-    }
-
-    static func sessions(_ hostID: UUID) -> String {
-        "sessions:\(hostID.uuidString)"
-    }
-
-    static func herdrSessions(_ hostID: UUID) -> String {
-        "herdr-sessions:\(hostID.uuidString)"
-    }
-
-    static func herdrTerminals(_ hostID: UUID) -> String {
-        "herdr-terminals:\(hostID.uuidString)"
-    }
-
-    static func zellijSessions(_ hostID: UUID) -> String {
-        "zellij-sessions:\(hostID.uuidString)"
     }
 
     static func projects(_ hostID: UUID) -> String {

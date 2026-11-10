@@ -117,7 +117,7 @@ struct TmuxSessionPreviewMountModifier: ViewModifier {
 }
 
 struct WorkspaceSessionActionPresentation: Equatable {
-    static let controlWidth: CGFloat = 30
+    static let controlWidth: CGFloat = 28
 
     let isVisible: Bool
     let reservedWidth: CGFloat
@@ -234,24 +234,6 @@ struct WorktreeStatusCluster: View {
             || status.syncAhead != nil
             || status.syncBehind != nil
             || status.isRunning
-    }
-}
-
-struct WorktreeRowLine: View {
-    let title: String
-    let status: WorktreeRowStatus
-    var titleColor = Color.primary
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(titleColor)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-            WorktreeStatusCluster(status: status)
-        }
     }
 }
 
@@ -410,94 +392,5 @@ struct WorkspaceWorktreeDisclosurePresentation: Equatable {
             level: rowIndentLevel
         )
         contentIndentLevel = 0
-    }
-}
-
-enum WorkspaceSidebarInventorySection: Hashable {
-    case tmuxSessions
-    case herdrSessions
-    case herdrTerminals
-    case zellijSessions
-    case projects
-}
-
-struct WorkspaceSidebarSectionAction {
-    let accessibilityIdentifier: String
-    let accessibilityLabel: String
-    let help: String
-    let perform: () -> Void
-}
-
-enum WorkspaceSidebarSectionActionModel {
-    static func isVisible(
-        _ section: WorkspaceSidebarInventorySection,
-        host: HostSummary,
-        hasProjects: Bool
-    ) -> Bool {
-        switch section {
-        case .tmuxSessions:
-            true
-        case .herdrSessions:
-            host.herdrAvailable || host.herdrSessions.contains { $0.backend == .tui }
-        case .herdrTerminals:
-            host.herdrSessions.contains { $0.backend == .core }
-        case .zellijSessions:
-            host.zellijAvailable
-        case .projects:
-            hasProjects || host.canRegisterProjects
-        }
-    }
-
-    static func action(
-        for section: WorkspaceSidebarInventorySection,
-        host: HostSummary,
-        onNewTmuxSession: @escaping (HostSummary) -> Void,
-        onNewHerdrSession: @escaping (HostSummary) -> Void,
-        onNewZellijSession: @escaping (HostSummary) -> Void,
-        onAddProject: @escaping (HostSummary) -> Void
-    ) -> WorkspaceSidebarSectionAction? {
-        switch section {
-        case .tmuxSessions:
-            return WorkspaceSidebarSectionAction(
-                accessibilityIdentifier:
-                "sidebar-section-action-tmux-\(host.id.uuidString)",
-                accessibilityLabel:
-                "New tmux session on \(host.sidebarTitle)",
-                help: "New tmux session…",
-                perform: { onNewTmuxSession(host) }
-            )
-        case .herdrSessions:
-            guard host.herdrAvailable else { return nil }
-            return WorkspaceSidebarSectionAction(
-                accessibilityIdentifier:
-                "sidebar-section-action-herdr-\(host.id.uuidString)",
-                accessibilityLabel:
-                "New Herdr TUI session on \(host.sidebarTitle)",
-                help: "New Herdr TUI session…",
-                perform: { onNewHerdrSession(host) }
-            )
-        case .herdrTerminals:
-            return nil
-        case .zellijSessions:
-            guard host.zellijAvailable else { return nil }
-            return WorkspaceSidebarSectionAction(
-                accessibilityIdentifier:
-                "sidebar-section-action-zellij-\(host.id.uuidString)",
-                accessibilityLabel:
-                "New Zellij session on \(host.sidebarTitle)",
-                help: "New Zellij session…",
-                perform: { onNewZellijSession(host) }
-            )
-        case .projects:
-            guard host.canRegisterProjects else { return nil }
-            return WorkspaceSidebarSectionAction(
-                accessibilityIdentifier:
-                "sidebar-section-action-projects-\(host.id.uuidString)",
-                accessibilityLabel:
-                "Add project on \(host.sidebarTitle)",
-                help: "Add Project…",
-                perform: { onAddProject(host) }
-            )
-        }
     }
 }

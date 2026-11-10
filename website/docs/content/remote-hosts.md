@@ -33,7 +33,7 @@ Ghosthub follows OpenSSH configuration for users, ports, identity files,
 agents, host-key policies, and supported jump routing.
 
 If the Herdr CLI is also installed on the remote host, Ghosthub silently adds
-its running and stopped sessions under **Herdr Sessions**. It still uses Ghosthub's OpenSSH
+its running and stopped sessions to the host's session list. It still uses Ghosthub's OpenSSH
 trust, authentication, pooling, and reconnect path rather than Herdr's remote
 transport.
 

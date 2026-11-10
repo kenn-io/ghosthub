@@ -48,7 +48,7 @@ struct WorkspaceAccessibilityModelTests {
                 hasRecentTmuxOutput: true
             ),
             label: "docbank",
-            value: "2 windows, Recent tmux output, Selected",
+            value: "tmux session, 2 windows, Recent tmux output, Selected",
             hint: "Attach to this tmux session."
         )
     }
@@ -83,7 +83,7 @@ struct WorkspaceAccessibilityModelTests {
                 isSelected: false
             ),
             label: "review",
-            value: "Stopped",
+            value: "Herdr TUI session, Stopped",
             hint: "Restart and attach to this Herdr TUI session."
         )
     }

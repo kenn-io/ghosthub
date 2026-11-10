@@ -34,13 +34,17 @@ reconnect is always a fresh attachment.
   live Herdr core terminal, or active Zellij session on a host. Core terminal
   support is currently macOS-only.
 
-The sidebar is a host-wide session navigator. Its **Projects** group shows
-repository hierarchies followed by flat registered-directory rows. It also
-shows directly discovered tmux sessions, running or stopped Herdr TUI sessions,
-live Herdr core terminals in **Herdr Terminals**, separately from **Herdr TUI Sessions**,
-and active Zellij sessions on each host, including sessions that were not
-created by Ghosthub or kwt. The four inventories are independent; kwt worktrees and directory workspaces
-remain tmux-backed. Users may hide matching standalone tmux sessions
+The sidebar is a host-wide session navigator. Hosts are its only grouping
+level. Under each host, one session list shows directly discovered tmux
+sessions, running or stopped Herdr TUI sessions, live Herdr core terminals, and
+active Zellij sessions, including sessions that were not created by Ghosthub or
+kwt. A backend label on each row (a chip, colored text, or a dot, chosen in
+**Settings → Sidebar**) tells the backends apart. The list follows one saved
+manual order or a sort by name, backend, or agent attention; stopped Herdr
+sessions always sit last. A quiet **Projects** group below the sessions shows
+repository hierarchies followed by flat registered-directory rows. The four
+inventories are independent; kwt worktrees and directory workspaces remain
+tmux-backed. Users may hide matching standalone tmux sessions
 from navigation with case-sensitive wildcard patterns; discovery retains the
 complete inventory so a kwt-owned session confirmed by current discovery is
 indicated on its worktree or directory row. A connected tmux presentation
@@ -53,9 +57,8 @@ glyph when no trustworthy count exists. Tmux sessions running a coding agent
 show a badge for approval, input, an unviewed finished turn, or work in
 progress from kwt agent-hook state on the pane; see
 [Agent attention](terminal-sessions.md#agent-attention). Cached sessions do not
-remain live while a host is unreachable. Kwt-owned sessions are hidden from the separate tmux session
-group by default, with a Worktrees setting that exposes those duplicate
-entries.
+remain live while a host is unreachable. Kwt-owned sessions are hidden from the host session list by
+default, with a Sidebar setting that exposes those duplicate entries.
 
 The macOS app does not display CPU or memory usage and does not periodically
 sample local process trees. Tmux working indicators and window counts come
@@ -109,8 +112,8 @@ merging; Ghosthub does not render a custom tab strip or project tmux windows
 into native UI.
 
 Sidebar hierarchy expansion belongs to each open scene. Expanding or collapsing
-a host, session group, Projects group, or project never changes another window.
-New scenes start with hosts and session groups expanded and projects collapsed.
+a host, Projects group, or project never changes another window.
+New scenes start with hosts expanded and projects collapsed.
 The parsed disclosure sets remain in view state across sidebar hiding and focus
 changes; they are not app-wide preferences or part of restored scene descriptors.
 Saved row ordering and explicit Settings preferences remain app-wide.

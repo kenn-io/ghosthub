@@ -90,7 +90,7 @@ struct ActivationWorkGateTests {
         #expect(counts.sidebarSectionComputations == 0)
     }
 
-    @Test("collapsing a sidebar group affects only its window")
+    @Test("expanding a sidebar group affects only its window")
     func sidebarDisclosureIsWindowLocal() throws {
         let app = NSApplication.shared
         let wasEnhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
@@ -98,17 +98,17 @@ struct ActivationWorkGateTests {
         defer { app.setValue(wasEnhanced, forKey: "accessibilityEnhancedUserInterface") }
         let gate = GateEnvironment()
         defer { gate.close() }
-        let identifier = "sidebar-section-disclosure-sessions:\(gate.snapshot.hosts[0].id.uuidString)"
+        let identifier = "sidebar-section-disclosure-projects:\(gate.snapshot.hosts[0].id.uuidString)"
         let first = try #require(accessibilityElement(identifier, in: gate.hostingViews[0]))
         let second = try #require(accessibilityElement(identifier, in: gate.hostingViews[1]))
-        #expect(first.value(forKey: "accessibilityValue") as? String == "Expanded")
-        #expect(second.value(forKey: "accessibilityValue") as? String == "Expanded")
+        #expect(first.value(forKey: "accessibilityValue") as? String == "Collapsed")
+        #expect(second.value(forKey: "accessibilityValue") as? String == "Collapsed")
 
         _ = first.perform(NSSelectorFromString("accessibilityPerformPress"))
         gate.activateWindow(1)
 
-        #expect(first.value(forKey: "accessibilityValue") as? String == "Collapsed")
-        #expect(second.value(forKey: "accessibilityValue") as? String == "Expanded")
+        #expect(first.value(forKey: "accessibilityValue") as? String == "Expanded")
+        #expect(second.value(forKey: "accessibilityValue") as? String == "Collapsed")
     }
 
     @Test("session selection builds only rows near the viewport", arguments: [100, 500])
@@ -128,7 +128,9 @@ struct ActivationWorkGateTests {
             "SIDEBAR rows=\(sessionCount) selection_ms p50=\(samples[4]) p95=\(samples[9]) rows_built=\(counts.sidebarRowEvaluations) drag_items=\(counts.sidebarDragItems)"
         )
         #expect(counts.sidebarRowEvaluations > 0)
-        #expect(counts.sidebarRowEvaluations <= 250)
+        // About one viewport of 28 pt rows per selection; independent of
+        // the session count.
+        #expect(counts.sidebarRowEvaluations <= 300)
         #expect(counts.sidebarSectionComputations == 0)
         #expect(counts.sidebarDragItems <= sessionCount * 20)
 

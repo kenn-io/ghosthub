@@ -5,6 +5,8 @@ extension SettingsDomain {
         switch self {
         case .appearance:
             return "paintbrush"
+        case .sidebar:
+            return "sidebar.left"
         case .terminal:
             return "cursorarrow.motionlines"
         case .keyboard:

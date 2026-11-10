@@ -50,6 +50,44 @@ struct SettingsViewDraftTests {
         #expect(draft.shortcutOverrides == store.shortcutPreferences.overrides)
     }
 
+    @Test("sidebar layout choices persist and survive a store reload")
+    func sidebarPreferencesPersist() {
+        let suite = "ghosthub.settings.draft.\(UUID().uuidString)"
+        let store = makeStore(suiteName: suite)
+        #expect(store.sidebarPreferences == SidebarPreferences())
+
+        var draft = SettingsViewDraft(store: store)
+        draft.sidebar = SidebarPreferences(
+            sessionSort: .attention,
+            backendLabelStyle: .dot,
+            rowHeight: .compact
+        )
+        let result = draft.persist(to: store)
+
+        #expect(!result.shouldReloadTerminalConfig)
+        #expect(store.sidebarPreferences == draft.sidebar)
+        #expect(makeStore(suiteName: suite).sidebarPreferences == draft.sidebar)
+    }
+
+    @Test("closing Settings keeps a sort chosen from the sidebar meanwhile")
+    func sidebarSortFromHeaderSurvivesSettings() {
+        let store = makeStore()
+        var untouched = SettingsViewDraft(store: store)
+        var changed = SettingsViewDraft(store: store)
+
+        // The sidebar's sort menu changes the store while Settings is open.
+        store.setSidebarSessionSort(.name)
+        untouched.sidebar.rowHeight = .compact
+        _ = untouched.persist(to: store)
+        #expect(store.sidebarPreferences.sessionSort == .name)
+        #expect(store.sidebarPreferences.rowHeight == .compact)
+
+        // A sort the user picked in Settings itself still wins.
+        changed.sidebar.sessionSort = .backend
+        _ = changed.persist(to: store)
+        #expect(store.sidebarPreferences.sessionSort == .backend)
+    }
+
     @Test("session preview mode persists without reloading libghostty")
     func sessionPreviewModeDoesNotReloadTerminalConfig() {
         let store = makeStore()
@@ -283,12 +321,12 @@ struct SettingsViewDraftTests {
         #expect(selected.name == "New EPYC")
     }
 
-    private func makeStore() -> SettingsStore {
+    private func makeStore(
+        suiteName: String = "ghosthub.settings.draft.\(UUID().uuidString)"
+    ) -> SettingsStore {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let defaults = UserDefaults(
-            suiteName: "ghosthub.settings.draft.\(UUID().uuidString)"
-        )!
+        let defaults = UserDefaults(suiteName: suiteName)!
         return SettingsStore(
             configPipeline: LibghosttyConfigPipeline(
                 paths: LibghosttyConfigPaths(configDirectory: tempRoot)

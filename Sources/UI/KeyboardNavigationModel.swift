@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubSettings
 import GhosthubWorkspace
 
 public struct KeyboardNavigationContext: Sendable {
@@ -7,9 +8,9 @@ public struct KeyboardNavigationContext: Sendable {
     public var visibility: WorktreeVisibility
     public var tmuxSessionVisibility: TmuxSessionVisibility
     public var worktreeOrderRawValue: String
-    public var tmuxSessionOrderRawValue: String
-    public var herdrSessionOrderRawValue: String
-    public var zellijSessionOrderRawValue: String
+    public var sessionOrderRawValue: String
+    public var sessionSort: SidebarSessionSort
+    public var agentAttentionByEndpoint: [String: AgentAttention]
 
     public init(
         snapshot: WorkspaceSnapshot,
@@ -17,18 +18,18 @@ public struct KeyboardNavigationContext: Sendable {
         visibility: WorktreeVisibility = .default,
         tmuxSessionVisibility: TmuxSessionVisibility = .init(),
         worktreeOrderRawValue: String = "",
-        tmuxSessionOrderRawValue: String = "",
-        herdrSessionOrderRawValue: String = "",
-        zellijSessionOrderRawValue: String = ""
+        sessionOrderRawValue: String = "",
+        sessionSort: SidebarSessionSort = .manual,
+        agentAttentionByEndpoint: [String: AgentAttention] = [:]
     ) {
         self.snapshot = snapshot
         self.sidebarSections = sidebarSections
         self.visibility = visibility
         self.tmuxSessionVisibility = tmuxSessionVisibility
         self.worktreeOrderRawValue = worktreeOrderRawValue
-        self.tmuxSessionOrderRawValue = tmuxSessionOrderRawValue
-        self.herdrSessionOrderRawValue = herdrSessionOrderRawValue
-        self.zellijSessionOrderRawValue = zellijSessionOrderRawValue
+        self.sessionOrderRawValue = sessionOrderRawValue
+        self.sessionSort = sessionSort
+        self.agentAttentionByEndpoint = agentAttentionByEndpoint
     }
 }
 
@@ -43,9 +44,9 @@ public enum KeyboardNavigationModel {
                 visibility: context.visibility,
                 tmuxSessionVisibility: context.tmuxSessionVisibility,
                 worktreeOrderRawValue: context.worktreeOrderRawValue,
-                tmuxSessionOrderRawValue: context.tmuxSessionOrderRawValue,
-                herdrSessionOrderRawValue: context.herdrSessionOrderRawValue,
-                zellijSessionOrderRawValue: context.zellijSessionOrderRawValue
+                sessionOrderRawValue: context.sessionOrderRawValue,
+                sessionSort: context.sessionSort,
+                agentAttentionByEndpoint: context.agentAttentionByEndpoint
             )
 
         switch currentTarget {
@@ -69,31 +70,15 @@ public enum KeyboardNavigationModel {
                     return targets
                 }
             }
-        case .tmuxSession:
+        case .tmuxSession, .herdrSession, .zellijSession:
+            // Sessions share one list per host; stopped Herdr sessions are
+            // skipped because opening one restarts it.
             for section in sections {
-                if let targets = matchingTargets(
-                    in: section.tmuxSessionRows,
-                    currentTarget: currentTarget
-                ) {
-                    return targets
-                }
-            }
-        case let .herdrSession(_, _, backend):
-            for section in sections {
-                let running = section.herdrRows(for: backend).filter {
-                    $0.herdrSessionState == .running
+                let openable = section.sessionRows.filter {
+                    $0.herdrSessionState != .stopped
                 }
                 if let targets = matchingTargets(
-                    in: running,
-                    currentTarget: currentTarget
-                ) {
-                    return targets
-                }
-            }
-        case .zellijSession:
-            for section in sections {
-                if let targets = matchingTargets(
-                    in: section.zellijSessionRows,
+                    in: openable,
                     currentTarget: currentTarget
                 ) {
                     return targets

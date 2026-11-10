@@ -12,19 +12,20 @@ still control the windows, tabs, and panes inside their sessions.
 
 ## Use the sidebar
 
-The sidebar shows standalone tmux sessions, running and stopped Herdr sessions,
-active Zellij sessions, projects,
-and worktrees under each host. Select an item to attach. Moving among tmux
+Each host in the sidebar shows one list of standalone tmux, Zellij, and Herdr
+sessions, each labeled with its backend, followed by its projects and
+worktrees. Select an item to attach. Moving among tmux
 targets hides the previous terminal without detaching its local or SSH client;
 moving away from Herdr or Zellij detaches only its presentation and leaves its server
-running. Stopped Herdr rows are dimmed and labeled **Stopped**. Expand a host
+running. Stopped Herdr rows are dimmed, marked **stopped**, and listed last. Expand a host
 to see its current inventory and connection diagnostics.
 
-Each open window or tab keeps its own expanded and collapsed groups. Expanding
-a host or project in one window leaves other windows as you arranged them.
-New windows start with hosts and session groups expanded and projects collapsed.
+Each open window or tab keeps its own expanded and collapsed hosts and
+projects. Expanding a host or project in one window leaves other windows as
+you arranged them. New windows start with hosts expanded and projects
+collapsed.
 
-![Ghosthub sidebar with host and session groups](/docs/assets/guide-sessions.png)
+![Ghosthub sidebar with a labeled session list under each host](/docs/assets/guide-sessions.png)
 
 Press ++cmd+b++ to hide or show the sidebar. Hiding it gives the terminal
 the full window while preserving its session attachment.
@@ -109,7 +110,8 @@ number so that builds sharing a release version are distinguishable.
 To arrange whole host sections, see [Reorder hosts](remote-hosts.md#reorder-hosts).
 That guide covers the shared order in the sidebar and **Settings → Hosts**.
 
-Drag worktrees within a project, or reorder standalone tmux, Herdr, and Zellij sessions
-within their host groups. The insertion line previews the destination. Ghosthub
+Drag worktrees within a project, or drag sessions within their host's session
+list while the sort is **Manual**; see
+[Arrange the session list](sessions.md#arrange-the-session-list). The insertion line previews the destination. Ghosthub
 remembers this display order without changing anything in Git, kwt, tmux,
 Herdr, or Zellij.

@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubSettings
 import GhosthubWorkspace
 
 @MainActor
@@ -11,9 +12,9 @@ public final class WorkspaceSidebarSectionCache {
         var liveTmuxWindowCounts: [String: Int]
         var hostOrderRawValue: String
         var worktreeOrderRawValue: String
-        var tmuxSessionOrderRawValue: String
-        var herdrSessionOrderRawValue: String
-        var zellijSessionOrderRawValue: String
+        var sessionOrderRawValue: String
+        var sessionSort: SidebarSessionSort
+        var agentAttentionByEndpoint: [String: AgentAttention]
     }
 
     private var cached: (input: Input, sections: [WorkspaceSidebarSection])?
@@ -29,10 +30,14 @@ public final class WorkspaceSidebarSectionCache {
         liveTmuxWindowCounts: [String: Int] = [:],
         hostOrderRawValue: String = "",
         worktreeOrderRawValue: String = "",
-        tmuxSessionOrderRawValue: String = "",
-        herdrSessionOrderRawValue: String = "",
-        zellijSessionOrderRawValue: String = ""
+        sessionOrderRawValue: String = "",
+        sessionSort: SidebarSessionSort = .manual,
+        agentAttentionByEndpoint: [String: AgentAttention] = [:]
     ) -> [WorkspaceSidebarSection] {
+        // Attention only orders rows in the attention sort; ignoring it
+        // otherwise keeps agent state changes from rebuilding the sidebar.
+        let attention = sessionSort == .attention
+            ? agentAttentionByEndpoint : [:]
         let input = Input(
             snapshotRevision: snapshotRevision,
             visibility: visibility,
@@ -41,9 +46,9 @@ public final class WorkspaceSidebarSectionCache {
             liveTmuxWindowCounts: liveTmuxWindowCounts,
             hostOrderRawValue: hostOrderRawValue,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: zellijSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue,
+            sessionSort: sessionSort,
+            agentAttentionByEndpoint: attention
         )
         if let cached, cached.input == input {
             return cached.sections
@@ -57,9 +62,9 @@ public final class WorkspaceSidebarSectionCache {
             liveTmuxWindowCounts: liveTmuxWindowCounts,
             hostOrderRawValue: hostOrderRawValue,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: zellijSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue,
+            sessionSort: sessionSort,
+            agentAttentionByEndpoint: attention
         )
         cached = (input, sections)
         return sections

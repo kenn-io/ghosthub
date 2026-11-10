@@ -42,6 +42,9 @@ enum WorkspaceAccessibilityModel {
         isWorktreeFlagged: Bool = false
     ) -> WorkspaceAccessibilityDescriptor {
         var values: [String] = []
+        if let backend = row.sessionBackend {
+            values.append(backend.title)
+        }
         if let agentAttention {
             values.append(agentAttention.label)
         }

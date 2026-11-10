@@ -71,7 +71,7 @@ registration even if its checkout folder has already been deleted. This does
 not delete the repository, any worktree directory, or any tmux session. If an
 imported pull-request worktree still has a live session on its protected tmux
 server, kill that session before removing the project. Ordinary sessions that
-remain live are still available under the host's **Tmux Sessions** group.
+remain live are still available in the host's session list.
 
 ![Ghosthub showing the Remove Project action and its non-destructive confirmation](/docs/assets/guide-project-removal.png)
 
@@ -96,7 +96,7 @@ registered directory owns one workspace session.
 Select the row to let kwt create or repair its configured layout and attach the
 ordinary tmux client. Removing the registration with `kwt workspace remove`
 does not end a live session; after refresh, that session remains available
-under **Tmux Sessions**.
+in the host's session list.
 
 ## Open a project checkout
 
@@ -124,9 +124,9 @@ while the host is unreachable.
 ![Ghosthub showing a compact tmux window count on a worktree row](/docs/assets/guide-worktree-window-counts.png)
 
 By default, a live kwt-managed session appears only on its worktree row instead
-of being duplicated under **Tmux Sessions**. Open **Settings → Worktrees** and
-turn off **Hide kwt-managed sessions from Tmux Sessions** if you want both
-entries visible.
+of being duplicated in the host's session list. Open **Settings → Sidebar** and
+turn off **Hide sessions that belong to a worktree** if you want both entries
+visible.
 
 ## Flag worktrees
 

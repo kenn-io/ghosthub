@@ -196,12 +196,11 @@ extension WorkspaceSceneModel {
         )
         let worktreeOrderRawValue = WorkspaceSidebarOrderStorage
             .worktreeRawValue()
-        let tmuxSessionOrderRawValue = WorkspaceSidebarOrderStorage
-            .tmuxSessionRawValue()
-        let herdrSessionOrderRawValue = WorkspaceSidebarOrderStorage
-            .herdrSessionRawValue()
-        let zellijSessionOrderRawValue = WorkspaceSidebarOrderStorage
-            .zellijSessionRawValue()
+        let sessionOrderRawValue = WorkspaceSidebarOrderStorage
+            .sessionRawValue()
+        let sessionSort = SettingsStore.shared.sidebarPreferences.sessionSort
+        let agentAttentionByEndpoint = agentAttentionStore
+            .attentionByEndpoint(in: snapshot)
         let sidebarSections = sidebarSectionCache.sections(
             in: snapshot,
             snapshotRevision: sidebarSnapshotRevision,
@@ -211,9 +210,9 @@ extension WorkspaceSceneModel {
             liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
             hostOrderRawValue: WorkspaceSidebarOrderStorage.hostRawValue(),
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: zellijSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue,
+            sessionSort: sessionSort,
+            agentAttentionByEndpoint: agentAttentionByEndpoint
         )
         return KeyboardNavigationContext(
             snapshot: snapshot,
@@ -221,9 +220,9 @@ extension WorkspaceSceneModel {
             visibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: zellijSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue,
+            sessionSort: sessionSort,
+            agentAttentionByEndpoint: agentAttentionByEndpoint
         )
     }
 

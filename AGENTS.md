@@ -35,11 +35,14 @@ Worktrees are optional; Ghosthub remains fully useful without them.
 - **Middleman:** Sessions created by Middleman remain discoverable because they are ordinary sessions on a host tmux server. Ghosthub does not use Middleman as session authority.
 - **Console Panel:** A host-scoped persistent terminal area (e.g., for `roborev`) that is independent of the active worktree.
 
-The sidebar separates **Herdr Terminals** from **Herdr TUI Sessions**. Core
-terminal names use the explicit name or desktop space and tab (`where`), while
-attachment identity stays host, backend, and address. Creation, lifecycle, and
-split controls belong to the TUI; sibling navigation stays within each group.
-See [Native Herdr attachment](docs/terminal-sessions.md#native-herdr-attachment).
+The sidebar lists every session on a host in one list, with a backend label
+on each row. Herdr desktop terminals and Herdr TUI sessions carry different
+labels. Core terminal names use the explicit name or desktop space and tab
+(`where`), while attachment identity stays host, backend, and address.
+Creation, lifecycle, and split controls belong to the TUI. Sibling navigation
+walks the host's whole session list in sidebar order and skips stopped Herdr
+sessions. See
+[Native Herdr attachment](docs/terminal-sessions.md#native-herdr-attachment).
 
 Ghosthub is alpha software. Treat the entire app, including its persistence
 layer, as subject to direct iteration.
