@@ -767,8 +767,11 @@ that command boundary supports native Windows paths.
 On macOS and Linux, the account login shell initializes the command
 environment, while Ghosthub's own inventory and discovery commands execute
 under the host's POSIX `/bin/sh`; non-POSIX account shells such as fish are not
-asked to interpret those commands. Windows commands execute through encoded
-noninteractive PowerShell.
+asked to interpret those commands. A login shell that is not interactive skips
+`~/.zshrc`, so after login initialization that `/bin/sh` appends any existing
+Homebrew, MacPorts, Linuxbrew, and Nix binary directories missing from PATH;
+the account's own PATH order still wins. Windows commands execute through
+encoded noninteractive PowerShell.
 Direct tmux discovery queries both the default server and kwt's named `kwt`
 server. Session identity includes the socket throughout sidebar navigation,
 attachment, reconnect, and lifecycle actions; equal names on different servers

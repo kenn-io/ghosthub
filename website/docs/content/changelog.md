@@ -10,6 +10,13 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Fixed
+
+- Ghosthub now finds tmux, kwt, Herdr, and Zellij installed with Homebrew,
+  MacPorts, Linuxbrew, or Nix even when only `~/.zshrc` adds them to PATH.
+  Remote Macs no longer report tmux as missing when you can run it in an
+  ordinary SSH session.
+
 ## [0.13.0] - 2026-11-08
 
 See which coding agents need you, open terminals from the Herdr desktop app,

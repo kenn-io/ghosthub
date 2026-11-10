@@ -21,9 +21,10 @@ enum TmuxBinaryError: Error, Equatable, LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case let .notFound(shell):
-            return "tmux was not found on the PATH of your login shell"
-                + " (\(shell)). Install tmux (e.g. `brew install tmux`)"
-                + " and reopen the worktree terminal."
+            return "tmux was not found on the login shell PATH (\(shell))."
+                + " Ghosthub reads login startup files such as ~/.zprofile,"
+                + " not ~/.zshrc. Add tmux's directory to PATH in"
+                + " ~/.zprofile or install tmux, then reopen the terminal."
         case let .shellFailed(status):
             return "The login shell exited with status \(status) while"
                 + " locating tmux. Check your shell startup files."

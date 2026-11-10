@@ -20,6 +20,20 @@ authentication prompt naming the failing host or ProxyJump hop.
 Ghosthub does not support opaque `ProxyCommand` routes or a jump host that
 itself uses another proxy.
 
+## Ghosthub says tmux was not found
+
+Ghosthub runs commands through your account's login shell, which reads
+`~/.zprofile` but not `~/.zshrc`. It also checks the usual Homebrew, MacPorts,
+Linuxbrew, and Nix folders. If tmux lives somewhere else, see what Ghosthub
+sees from your Mac:
+
+```sh
+ssh devbox 'zsh -lc "command -v tmux"'
+```
+
+If that prints nothing, add tmux's directory to PATH in `~/.zprofile` on that
+host, or install tmux. Then reopen the terminal; no restart is needed.
+
 ## A remote host connects but shows no sessions
 
 Confirm tmux is installed on the remote host:

@@ -215,9 +215,11 @@ public struct RemoteHostDiagnostic: Codable, Equatable, Sendable, Identifiable {
         RemoteHostDiagnostic(
             code: .missingTmux,
             severity: .error,
-            summary: "tmux is not installed.",
+            summary: "tmux was not found.",
             recoverySuggestion:
-            "Install tmux on the remote host, then test the connection again."
+            "Install tmux on the remote host, or add its directory to PATH in"
+                + " ~/.zprofile (Ghosthub does not read ~/.zshrc), then test"
+                + " the connection again."
         )
     }
 
