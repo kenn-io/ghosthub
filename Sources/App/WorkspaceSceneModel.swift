@@ -8809,6 +8809,10 @@ final class WorkspaceSceneModel: ObservableObject {
         if activeBorrowedZellijSelection == selection,
            let handle = activeBorrowedZellijHandle,
            nativeZellijSessionCoordinator.attachmentClosure(handle) == nil {
+            // The surface stays on screen, so its appear-time focus does not
+            // rerun. A Herdr open superseded by this return may have cleared
+            // the window's first responder while it validated.
+            nativeZellijSessionCoordinator.requestKeyboardFocus(handle: handle)
             return
         }
         cancelPendingRestoration()
