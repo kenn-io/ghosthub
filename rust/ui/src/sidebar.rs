@@ -341,7 +341,7 @@ impl Render for SidebarTooltip {
     }
 }
 
-fn tooltip(text: String, cx: &mut App) -> gpui::AnyView {
+pub(super) fn tooltip(text: String, cx: &mut App) -> gpui::AnyView {
     cx.new(|_| SidebarTooltip(text)).into()
 }
 
@@ -395,16 +395,34 @@ impl RootView {
                 (!actions.is_empty()).then(|| group.clone()),
             ));
         if !actions.is_empty() {
-            element = element.child(div().absolute().right_1().child(
-                Self::session_action_menu_button(
-                    0,
-                    order_id(&selection),
-                    selection.clone(),
-                    actions,
-                    group,
-                    cx,
-                ),
-            ));
+            let context_selection = selection.clone();
+            let context_actions = actions.clone();
+            element = element
+                .on_mouse_down(
+                    GpuiMouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        this.open_session_action_menu(
+                            context_selection.clone(),
+                            context_actions.clone(),
+                            event.position,
+                            window,
+                            cx,
+                        );
+                    }),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .right_1()
+                        .child(Self::session_action_menu_button(
+                            0,
+                            order_id(&selection),
+                            selection.clone(),
+                            actions,
+                            group,
+                            cx,
+                        )),
+                );
         }
         if preferences.session_sort == SidebarSort::Manual {
             let target = selection.clone();

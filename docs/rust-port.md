@@ -811,8 +811,12 @@ or Herdr inventory. Exited entries that Zellij could resurrect are deliberately
 excluded.
 
 The sidebar lists Zellij alongside tmux and Herdr TUI sessions, with a backend
-label on each row. The host’s **+** menu offers creation for each available
-backend. Opening an active row consumes an attach-only plan for `zellij attach <exact-name>`.
+label on each row. The host’s visible **+** menu offers creation for each
+available backend and **Add Project…**. Right-click a session or select its
+hover **…** button to detach or end it. Herdr offers Stop for running sessions
+and Restart or Delete for stopped sessions; its default session cannot be
+deleted. Destructive actions keep their confirmation dialogs. Opening an
+active Zellij row consumes an attach-only plan for `zellij attach <exact-name>`.
 Creation consumes a non-cloneable one-shot launch for
 `zellij --session=<exact-name>`. Both run as ordinary local PTY clients, share the
 retained-presentation switcher with tmux and Herdr, and never replay creation

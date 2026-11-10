@@ -270,7 +270,8 @@ impl RootView {
                     .text_size(px(13.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(div().size(px(6.0)).rounded_full().bg(rgb(0x62_c07a)))
-                    .child("Studio"),
+                    .child(div().flex_1().child("Studio"))
+                    .child(div().w(px(28.0)).text_center().child("+")),
             );
         for row in sessions(&host, None, &[], preferences) {
             preview = preview.child(

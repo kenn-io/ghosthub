@@ -3175,20 +3175,25 @@ impl RootView {
             cx.notify();
             return;
         }
-        let result = match draft.kind {
-            NewSessionKind::Tmux => {
-                self.workspace
-                    .create_session(&draft.host_id, &draft.endpoint, &draft.name)
-            }
-            NewSessionKind::Herdr => {
-                self.workspace
-                    .create_herdr_session(&draft.host_id, &draft.endpoint, &draft.name)
-            }
-            NewSessionKind::Zellij => {
-                self.workspace
-                    .create_zellij_session(&draft.host_id, &draft.endpoint, &draft.name)
-            }
-        };
+        let result = self
+            .workspace
+            .select_host(&draft.host_id)
+            .and_then(|()| match draft.kind {
+                NewSessionKind::Tmux => {
+                    self.workspace
+                        .create_session(&draft.host_id, &draft.endpoint, &draft.name)
+                }
+                NewSessionKind::Herdr => self.workspace.create_herdr_session(
+                    &draft.host_id,
+                    &draft.endpoint,
+                    &draft.name,
+                ),
+                NewSessionKind::Zellij => self.workspace.create_zellij_session(
+                    &draft.host_id,
+                    &draft.endpoint,
+                    &draft.name,
+                ),
+            });
         match result {
             Ok(()) => {
                 self.new_session = None;
@@ -4592,6 +4597,7 @@ impl RootView {
 
         Some(
             div()
+                .occlude()
                 .absolute()
                 .inset_0()
                 .flex()
@@ -5100,6 +5106,7 @@ impl RootView {
 
         Some(
             div()
+                .occlude()
                 .absolute()
                 .inset_0()
                 .flex()
@@ -6725,6 +6732,7 @@ impl RootView {
         let title = kill_confirmation_title(confirmation.selection());
         let description = kill_confirmation_description(confirmation.selection());
         div()
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
@@ -6833,6 +6841,7 @@ impl RootView {
     ) -> gpui::AnyElement {
         let (verb, title, description) = herdr_lifecycle_copy(confirmation);
         div()
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
@@ -6934,6 +6943,26 @@ impl RootView {
         Some(self.herdr_lifecycle_overlay(&confirmation, cx))
     }
 
+    fn open_session_action_menu(
+        &mut self,
+        selection: SessionSelection,
+        actions: Vec<SessionRowAction>,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_menu = None;
+        self.session_action_menu = Some(SessionActionMenu {
+            selection,
+            actions,
+            anchor_x: position.x.into(),
+            anchor_y: position.y.into(),
+        });
+        window.focus(&self.sidebar_menu_focus);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     fn session_action_menu_overlay(
         &self,
         window: &Window,
@@ -6950,6 +6979,7 @@ impl RootView {
         );
         let mut items = div()
             .id("session-action-menu")
+            .track_focus(&self.sidebar_menu_focus)
             .absolute()
             .left(px(left))
             .top(px(top))
@@ -6960,7 +6990,15 @@ impl RootView {
             .border_color(rgb(0x36_3c48))
             .bg(rgb(0x1b_1f27))
             .shadow_lg()
-            .on_mouse_down(GpuiMouseButton::Left, |_, _, cx| cx.stop_propagation());
+            .on_mouse_down(GpuiMouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.session_action_menu = None;
+                    window.focus(&this.focus);
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }));
         for action in menu.actions {
             items = items.child(Self::session_action_menu_item(
                 menu.selection.clone(),
@@ -6970,12 +7008,14 @@ impl RootView {
         }
         Some(
             div()
+                .occlude()
                 .absolute()
                 .inset_0()
                 .on_mouse_down(
                     GpuiMouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
+                    cx.listener(|this, _, window, cx| {
                         this.session_action_menu = None;
+                        window.focus(&this.focus);
                         cx.notify();
                     }),
                 )
@@ -6991,18 +7031,18 @@ impl RootView {
     ) -> gpui::AnyElement {
         let (id, label, color) = match &action {
             SessionRowAction::Detach => ("session-action-detach", "Detach", 0x87_b9e8),
-            SessionRowAction::KillSession => ("session-action-kill", "Kill", 0xd6_747a),
+            SessionRowAction::KillSession => ("session-action-kill", "Kill Session…", 0xd6_747a),
             SessionRowAction::RemoveWorktree(_) => {
                 ("worktree-action-remove", "Remove Worktree", 0xd6_747a)
             }
             SessionRowAction::Herdr(HerdrRowAction::Stop) => {
-                ("herdr-action-stop", "Stop", 0xd6_747a)
+                ("herdr-action-stop", "Stop Session…", 0xd6_747a)
             }
             SessionRowAction::Herdr(HerdrRowAction::Restart) => {
                 ("herdr-action-restart", "Restart", 0x87_b9e8)
             }
             SessionRowAction::Herdr(HerdrRowAction::Delete) => {
-                ("herdr-action-delete", "Delete", 0xd6_747a)
+                ("herdr-action-delete", "Delete Session…", 0xd6_747a)
             }
         };
         div()
@@ -7020,6 +7060,7 @@ impl RootView {
             .child(label)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.session_action_menu = None;
+                window.focus(&this.focus);
                 match &action {
                     SessionRowAction::Detach => this.detach_session(window, cx),
                     SessionRowAction::KillSession => this.request_session_kill(&selection, cx),
@@ -7300,26 +7341,6 @@ impl RootView {
             .bg(rgb(if is_selected { 0x18_1b22 } else { 0x14_171d }))
             .child(
                 div()
-                    .id(gpui::SharedString::from(format!("collapse-{}", host.id())))
-                    .w(px(20.0))
-                    .h(px(28.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .flex_none()
-                    .cursor_pointer()
-                    .text_color(rgb(0x6f_7682))
-                    .child(if collapsed { "▸" } else { "▾" })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.collapsed_hosts.remove(&collapse_id) {
-                            this.collapsed_hosts.insert(collapse_id.clone());
-                        }
-                        cx.stop_propagation();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
                     .size(px(7.0))
                     .flex_none()
                     .rounded_full()
@@ -7370,6 +7391,30 @@ impl RootView {
                 })),
         );
         host_header
+            .child(
+                div()
+                    .id(gpui::SharedString::from(format!("collapse-{}", host.id())))
+                    .w(px(20.0))
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .flex_none()
+                    .cursor_pointer()
+                    .text_color(rgb(0x6f_7682))
+                    .when(!collapsed, |el| {
+                        el.opacity(0.0)
+                            .group_hover(format!("host-{}", host.id()), |style| style.opacity(1.0))
+                    })
+                    .child(if collapsed { "▸" } else { "▾" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.collapsed_hosts.remove(&collapse_id) {
+                            this.collapsed_hosts.insert(collapse_id.clone());
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    })),
+            )
             .child(Self::host_create_button(host, cx))
             .into_any_element()
     }
@@ -7851,19 +7896,18 @@ impl RootView {
             .text_color(rgb(0x9b_a2ae))
             .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xe1_e5ec)))
             .child("…")
-            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                let position = event.position();
-                let x: f32 = position.x.into();
-                let y: f32 = position.y.into();
-                this.session_action_menu = Some(SessionActionMenu {
-                    selection: selection.clone(),
-                    actions: actions.clone(),
-                    anchor_x: x,
-                    anchor_y: y,
-                });
-                cx.stop_propagation();
-                cx.notify();
-            }))
+            .tooltip(|_, cx| sidebar::tooltip("Session actions".to_owned(), cx))
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    this.open_session_action_menu(
+                        selection.clone(),
+                        actions.clone(),
+                        event.position(),
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .into_any_element()
     }
 

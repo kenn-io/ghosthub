@@ -88,10 +88,8 @@ impl RootView {
             .cursor_pointer()
             .text_color(rgb(0xad_b8c8))
             .child("+")
-            .opacity(0.0)
-            .group_hover(format!("host-{}", host.id()), |style| style.opacity(1.0))
             .hover(|style| style.bg(rgb(0x25_2d39)))
-            .tooltip(|_, cx| tooltip("New session".to_owned(), cx))
+            .tooltip(|_, cx| tooltip("New session or project".to_owned(), cx))
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                     this.open_sidebar_menu(
@@ -140,13 +138,16 @@ impl RootView {
                 let Some(host) = snapshot.hosts().iter().find(|host| host.id() == host_id) else {
                     return;
                 };
-                let Some(kind) = BACKENDS.get(index) else {
-                    return;
-                };
-                if creation_reason(host, *kind).is_some() {
+                if let Some(kind) = BACKENDS.get(index) {
+                    if creation_reason(host, *kind).is_some() {
+                        return;
+                    }
+                    self.open_new_session(&host_id, host.endpoint(), *kind, window, cx);
+                } else if index == BACKENDS.len() && host.can_add_kwt_project() {
+                    self.open_add_project(&host_id, host.endpoint(), window, cx);
+                } else {
                     return;
                 }
-                self.open_new_session(&host_id, host.endpoint(), *kind, window, cx);
             }
         }
         self.sidebar_menu = None;
@@ -181,7 +182,7 @@ impl RootView {
                 .collect(),
             SidebarMenu::Create(id) => {
                 let host = snapshot.hosts().iter().find(|host| host.id() == id)?;
-                BACKENDS
+                let mut options: Vec<_> = BACKENDS
                     .iter()
                     .map(|kind| {
                         (
@@ -189,16 +190,28 @@ impl RootView {
                             creation_reason(host, *kind),
                         )
                     })
-                    .collect()
+                    .collect();
+                let reason = if host.can_add_kwt_project() {
+                    None
+                } else if !host.accepts_session_actions() {
+                    Some("Connect this host to add a project.".to_owned())
+                } else if host.kwt_mutating() {
+                    Some("Wait for the current project operation to finish.".to_owned())
+                } else {
+                    Some("KWT is unavailable on this host.".to_owned())
+                };
+                options.push(("Add Project…".to_owned(), reason));
+                options
             }
         };
+        let count = options.len();
         let (left, top) = popup_position(
             point.x.into(),
             point.y.into(),
             window.bounds().size.width.into(),
             window.bounds().size.height.into(),
             224.0,
-            98.0,
+            8.0 + 30.0 * f32::from(u16::try_from(count).expect("sidebar menu size")),
         );
         let mut items = div()
             .id("sidebar-menu")
@@ -214,14 +227,16 @@ impl RootView {
             .bg(rgb(0x1b_1f27))
             .shadow_lg()
             .on_mouse_down(GpuiMouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "escape" => {
                         this.sidebar_menu = None;
                         window.focus(&this.focus);
                     }
-                    "up" => this.sidebar_menu_index = (this.sidebar_menu_index + 2) % 3,
-                    "down" | "tab" => this.sidebar_menu_index = (this.sidebar_menu_index + 1) % 3,
+                    "up" => this.sidebar_menu_index = (this.sidebar_menu_index + count - 1) % count,
+                    "down" | "tab" => {
+                        this.sidebar_menu_index = (this.sidebar_menu_index + 1) % count;
+                    }
                     "enter" | "space" => {
                         this.choose_sidebar_menu(this.sidebar_menu_index, window, cx);
                     }

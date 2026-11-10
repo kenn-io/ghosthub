@@ -1,6 +1,72 @@
 use super::*;
 
 #[test]
+fn mixed_backend_rows_keep_their_own_lifecycle_actions() {
+    let host = HostItem::ssh(
+        "studio",
+        "Studio",
+        "studio.example",
+        HostConnectionState::Ready,
+        vec![workspace::SessionItem::new("review", 0)],
+        None,
+    )
+    .with_zellij_sessions(vec![workspace::SessionItem::new("review", 0)])
+    .with_herdr_sessions(vec![
+        workspace::HerdrSessionItem::new("review", false, HerdrSessionState::Running),
+        workspace::HerdrSessionItem::new("notes", false, HerdrSessionState::Stopped),
+        workspace::HerdrSessionItem::new("default", true, HerdrSessionState::Stopped),
+    ]);
+    let active = SessionSelection::herdr("studio", "studio.example", "review");
+    let rows = sessions(&host, Some(&active), &[], &SidebarPreferences::default());
+    let actions: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.selection().kind(),
+                row.selection().session(),
+                row.actions(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actions,
+        vec![
+            (
+                workspace::SessionKind::Tmux,
+                "review",
+                vec![SessionRowAction::KillSession]
+            ),
+            (
+                workspace::SessionKind::Zellij,
+                "review",
+                vec![SessionRowAction::KillSession]
+            ),
+            (
+                workspace::SessionKind::Herdr,
+                "review",
+                vec![
+                    SessionRowAction::Detach,
+                    SessionRowAction::Herdr(HerdrRowAction::Stop)
+                ]
+            ),
+            (
+                workspace::SessionKind::Herdr,
+                "default",
+                vec![SessionRowAction::Herdr(HerdrRowAction::Restart)]
+            ),
+            (
+                workspace::SessionKind::Herdr,
+                "notes",
+                vec![
+                    SessionRowAction::Herdr(HerdrRowAction::Restart),
+                    SessionRowAction::Herdr(HerdrRowAction::Delete)
+                ]
+            ),
+        ]
+    );
+}
+
+#[test]
 fn control_tab_remains_representable_when_session_navigation_is_unavailable() {
     for shift in [false, true] {
         let mut key = gpui::Keystroke {
