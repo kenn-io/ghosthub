@@ -410,6 +410,60 @@ struct WorkspaceApplicationShortcutTests {
         await model.shutdown()
     }
 
+    @Test("back-to-back sibling shortcuts across Herdr open the final session")
+    func siblingShortcutsCrossHerdrBeforeItOpens() async throws {
+        // Default order is Zellij, then Herdr. From the second Zellij
+        // session, Next lands on Herdr and the following Next wraps to the
+        // first Zellij session before the Herdr open has started.
+        let host = HostSummary(
+            id: UUID(),
+            configKey: "local",
+            name: "This Mac",
+            kind: .selfHost,
+            platform: .macOS,
+            herdrSessions: [
+                HerdrSessionSummary(name: "agent", isDefault: false, state: .running),
+            ],
+            herdrAvailable: true,
+            zellijSessions: [
+                ZellijSessionSummary(name: "alpha"),
+                ZellijSessionSummary(name: "beta"),
+            ],
+            zellijAvailable: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeModel(
+            database: .inMemory(),
+            localHostID: host.id,
+            snapshot: WorkspaceSnapshot(hosts: [host], projects: [], worktrees: []),
+            nativeHerdrSurfaceStore: store,
+            nativeZellijSurfaceStore: store,
+            nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
+            herdrSessionDiscovery: { _ in .available(host.herdrSessions) },
+            zellijSessionValidationDiscovery: { _, _ in
+                .available(["alpha", "beta"])
+            }
+        )
+        let alpha = WorkspaceZellijSessionSelection(hostID: host.id, name: "alpha")
+        let beta = WorkspaceZellijSessionSelection(hostID: host.id, name: "beta")
+        model.openBorrowedZellijSession(beta)
+        await waitUntilMainActor {
+            model.activeBorrowedZellijSelection == beta
+        }
+        model.isFocusedWindow = true
+
+        #expect(model.performApplicationShortcut(.nextSibling))
+        #expect(model.performApplicationShortcut(.nextSibling))
+        await waitUntilMainActor {
+            model.activeBorrowedZellijSelection == alpha
+        }
+
+        #expect(model.activeBorrowedZellijSelection == alpha)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        await model.shutdown()
+    }
+
     @Test("menu sibling navigation uses its captured scene")
     func menuSiblingNavigation() async throws {
         let host = HostSummary.fixture()

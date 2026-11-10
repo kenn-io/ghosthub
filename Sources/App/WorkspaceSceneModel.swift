@@ -9410,6 +9410,9 @@ final class WorkspaceSceneModel: ObservableObject {
     func openBorrowedHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
+        // A sibling shortcut can be superseded before its task first runs.
+        // Stop before touching the newer navigation's pending open or focus.
+        try Task.checkCancellation()
         invalidateZellijPresentationIntent()
         cancelPendingTmuxPreviewActivations()
         let activityGeneration = try captureSceneActivity()
