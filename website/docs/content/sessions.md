@@ -77,9 +77,9 @@ until discovery succeeds again.
 
 ## Create a standalone session
 
-1. Point at the target host's name in the sidebar.
-2. Select the **+** that appears, then choose **New tmux Session…**,
-   **New Zellij Session…**, or **New Herdr Session…**.
+1. Select the **+** at the right end of the target host's row in the sidebar.
+2. Choose **New tmux Session…**, **New Zellij Session…**, or
+   **New Herdr Session…**.
 3. Enter a session name.
 
 A backend that is not available on the host stays in the menu, dimmed. Hover

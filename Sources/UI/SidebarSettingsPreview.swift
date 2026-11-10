@@ -86,8 +86,13 @@ struct SidebarSettingsPreview: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
             Spacer(minLength: 0)
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
+                .accessibilityHidden(true)
         }
-        .padding(.leading, 18)
+        .padding(.horizontal, 4)
         .frame(height: 26)
     }
 

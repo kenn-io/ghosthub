@@ -560,27 +560,10 @@ struct WorkspaceSidebarView: View {
             activeHerdrSession: activeHerdrSession,
             activeZellijSession: activeZellijSession
         )
-        return HStack(spacing: 4) {
-            Button {
-                toggle(disclosureKey)
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 14, height: 26)
-                    .contentShape(Rectangle())
-                    .opacity(isHovered || !expanded ? 1 : 0)
-            }
-            .buttonStyle(.plain)
-            .workspaceAccessibility(
-                WorkspaceAccessibilityModel.disclosureDescriptor(
-                    title: host.sidebarTitle,
-                    isExpanded: expanded
-                )
-            )
-            .accessibilityIdentifier("sidebar-host-disclosure-\(host.id.uuidString)")
-
+        // The status dot and name sit flush with the sidebar title. The
+        // disclosure chevron trails the name, as in macOS sidebar sections,
+        // and the + menu stays visible so session creation is discoverable.
+        return HStack(spacing: 2) {
             Button {
                 onNavigateAwayFromSession()
                 selection.select(
@@ -638,8 +621,27 @@ struct WorkspaceSidebarView: View {
                 )
             }
 
+            Button {
+                toggle(disclosureKey)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 18, height: 22)
+                    .contentShape(Rectangle())
+                    .opacity(isHovered || !expanded ? 1 : 0)
+            }
+            .buttonStyle(.plain)
+            .workspaceAccessibility(
+                WorkspaceAccessibilityModel.disclosureDescriptor(
+                    title: host.sidebarTitle,
+                    isExpanded: expanded
+                )
+            )
+            .accessibilityIdentifier("sidebar-host-disclosure-\(host.id.uuidString)")
+
             hostMenuButton(host)
-                .opacity(isHovered ? 1 : 0)
         }
         .onHover { hovering in
             if hovering {
@@ -689,7 +691,7 @@ struct WorkspaceSidebarView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .help("New session or project…")
+        .help("New tmux, Zellij, or Herdr session, or add a project")
         .accessibilityIdentifier("sidebar-host-menu-\(host.id.uuidString)")
     }
 

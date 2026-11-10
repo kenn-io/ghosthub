@@ -83,8 +83,7 @@ server. Sessions started by a shell or agent appear here too; see
 
 ## Create a session
 
-1. Point at your Mac's name in the sidebar and select the **+** that
-   appears.
+1. Select the **+** at the right end of your Mac's row in the sidebar.
 2. Choose **New tmux Session…** or, when available, **New Zellij Session…** or
    **New Herdr Session…**.
 3. Enter a session name and create it.
