@@ -125,7 +125,7 @@ struct AccountCommandRunner: Sendable {
     ) -> AccountCommandOutput {
         processRunner(
             loginShellProvider(),
-            ["-lc", accountShellCommand(command)],
+            ["-lc", postLoginShellCommand(command)],
             timeout,
             environmentOverrides
         )

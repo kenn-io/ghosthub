@@ -68,8 +68,37 @@ public func powerShellKwtAvailabilityPrelude(
     """
 }
 
+/// Package-manager binary directories that interactive startup files such as
+/// `~/.zshrc` often put on PATH. A login shell that is not interactive skips
+/// those files, so commands Ghosthub runs would miss Homebrew's tmux.
+private let loginPathFallbackDirectories = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+    "/home/linuxbrew/.linuxbrew/bin",
+    "$HOME/.nix-profile/bin",
+    "/run/current-system/sw/bin",
+]
+
+/// Appends each existing fallback directory missing from PATH, after the
+/// login shell has initialized it, so the account's own PATH order wins.
+private let loginPathFallbackPrelude =
+    "for ghosthub_path_dir in "
+        + loginPathFallbackDirectories.map { "\"\($0)\"" }
+        .joined(separator: " ")
+        + "; do case \":$PATH:\" in *\":$ghosthub_path_dir:\"*) ;; "
+        + "*) if [ -d \"$ghosthub_path_dir\" ]; then "
+        + "PATH=\"${PATH:+$PATH:}$ghosthub_path_dir\"; fi ;; esac; done; "
+        + "unset ghosthub_path_dir; export PATH; "
+
+/// Runs a POSIX command under `/bin/sh` inside an already-started account
+/// login shell, with package-manager PATH fallbacks applied.
+public func postLoginShellCommand(_ command: String) -> String {
+    accountShellCommand(loginPathFallbackPrelude + command)
+}
+
 private func accountLoginCommand(_ command: String) -> String {
-    let posixCommand = accountShellCommand(command)
+    let posixCommand = postLoginShellCommand(command)
     return "exec \"${SHELL:-/bin/sh}\" -lc "
         + shellQuotedCommandArgument(posixCommand)
 }
