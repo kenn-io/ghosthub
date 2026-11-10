@@ -15,8 +15,8 @@ Packaged releases check the stable feed at
    changes that alter the views they show.
 2. Validate the changes and merge the release preparation pull request with
    the repository owner's authorization.
-3. Run the [signed candidate](#candidate-run) from `main` and complete its
-   installation checks before creating a release tag.
+3. Run the [signed candidate](#candidate-run) from `main` and verify it on a
+   Mac that has never built Ghosthub before creating a release tag.
 4. [Publish the tag](#publishing) from that same clean `main` revision. The
    workflow rebuilds, signs, and notarizes the app before publishing the DMG,
    checksums, and Sparkle update feed.
@@ -431,34 +431,30 @@ the production Sparkle private key, generate an appcast, create a tag, or
 create a GitHub release. Both checksum files name the DMG by basename, so they
 remain valid after download.
 
-Download the candidate and verify either checksum from the directory that
-contains the three artifact files:
+Download the candidate artifact and verify it on an Apple Silicon Mac that
+has never built Ghosthub, so no local build or signing state can hide a
+packaging problem. The check runs headless, so an SSH session is enough:
 
 ```bash
 version="$(tr -d '[:space:]' < RELEASE_VERSION)"
-shasum -a 256 -c "Ghosthub_${version}_macos_arm64.dmg.sha256"
-shasum -a 256 -c SHA256SUMS
+gh run download <run-id> --repo kenn-io/ghosthub --dir candidate
+scp -r candidate tools/verify_release_candidate.sh <clean-mac>:
+ssh <clean-mac> "sh verify_release_candidate.sh candidate/* $version"
 ```
 
-Inspect the run and install the candidate on a Mac where Ghosthub has not been
-locally built. Verify at minimum:
+`tools/verify_release_candidate.sh` checks both checksum files, quarantines the
+DMG like a browser download, then requires the stapled notarization ticket,
+Gatekeeper acceptance of the DMG and app as `Notarized Developer ID`, a strict
+deep signature, bundle identifier `com.ghosthub`, team `2YMZH84KR8`, the
+`RELEASE_VERSION` app version, and a bundled kwt helper that runs. It prints
+`PASS` only when all of them hold. These are the same gates the
+[Homebrew tap](#homebrew-tap) applies before it updates the cask.
 
-- Gatekeeper opens the app without a quarantine override.
-- About Ghosthub reports the version in `RELEASE_VERSION`, Kenn Software LLC
-  copyright, and the Apache License 2.0 notice.
-- Local kwt projects and worktrees load without a system kwt on `PATH`.
-- Existing local tmux sessions remain discoverable and attach normally.
-- A configured SSH host discovers and attaches tmux without managed kwt.
-- A configured macOS or Linux host automatically receives the correct pinned
-  kwt helper during inventory, while any system `kwt` remains untouched.
-- A configured Windows host does not install its unsigned kwt helper
-  automatically.
-- On a fresh macOS or Linux host, Add Project registers an absolute existing
-  checkout through managed kwt and makes its worktrees available without a
-  filesystem scan.
-- **Check for Updates…** opens Sparkle's native UI without a configuration or
-  signature error. A complete end-to-end installation requires a later release
-  than the first version that embeds Sparkle.
+Also open the candidate and use it by hand when the release changes
+packaging, signing, the bundled kwt helpers, or Sparkle. Check that About
+reports the version and license, local and SSH tmux sessions attach, managed
+kwt installs on a remote host, and **Check for Updates…** opens without an
+error. Other releases rely on the automated check and the test suites.
 
 ## Publishing
 
