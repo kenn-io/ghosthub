@@ -57,9 +57,10 @@ Session row, left to right:
 - **Stopped** marker for stopped Herdr TUI sessions. The row text is dimmed.
 - **Agent badge**, unchanged in color, symbol, and motion.
 - **Backend label**, the fixed last column (see Backend label).
-- **Actions (⋯)** on hover, selection, or focus. It replaces the backend label
+- **Actions (⋯)** on hover or keyboard focus. It replaces the backend label
   in the same slot so the row never shifts. It opens the same actions as the
-  row's context menu.
+  row's context menu. A selected row keeps its backend label until hovered;
+  today's always-visible action button on the selected row goes away.
 
 Worktree row: preview chevron, branch name, agent badge, then the existing
 git status (diff `+N −N`, ahead/behind, PR number, checks glyph) on the same
