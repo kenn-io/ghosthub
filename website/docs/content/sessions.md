@@ -436,6 +436,33 @@ configuration, updates, resurrection data, and process behavior.
 
 ## Rust source builds
 
+### Sidebar and settings
+
+The Rust development build for Linux and Windows shows tmux, Zellij, and
+Herdr TUI sessions in one list per host. Use the host’s **+** menu to create a
+session. Each row keeps its backend label and **…** menu. A collapsed host
+keeps its terminals open.
+
+Choose **Manual**, **Name**, or **Backend** beside **Workspaces** to sort the
+list. In Manual mode, drag sessions into your preferred order, including
+across backends on the same host. Stopped Herdr sessions stay at the bottom.
+With a session open, **Ctrl-Tab** and **Ctrl-Shift-Tab** follow the displayed
+session order and skip stopped sessions.
+
+![The Rust sidebar with tmux, Zellij, and Herdr TUI sessions on Linux](/docs/assets/guide-rust-sidebar.png)
+
+Open the gear button, then **Sidebar**, to choose Chip, Text, or Dot backend
+labels and Regular or Compact rows. You can also hide worktree sessions from
+the session list or hide root checkouts under Projects. The preview updates
+as you choose; changes save immediately and apply to every open window.
+
+![Sidebar settings and the live preview in the Rust application on Linux](/docs/assets/guide-rust-sidebar-settings.png)
+
+Agent attention, Herdr desktop terminals, hidden-worktree filtering, and
+worktree diff/PR/check indicators are still being added to the Rust port.
+
+### Session controls
+
 The unreleased Rust/Linux source build also supports local tmux, Herdr, and
 Zellij sessions, plus creating, opening, and ending tmux sessions on connected
 SSH hosts. Open a remote tmux row’s **…** menu and choose **Kill**, then

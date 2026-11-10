@@ -4,6 +4,9 @@
 #[allow(unsafe_code)]
 mod windows_key;
 
+mod sidebar;
+use sidebar::menus::SidebarMenu;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,7 +29,7 @@ use workspace::{
 };
 
 pub const WINDOW_TITLE: &str = "Ghosthub";
-const APP_NAVIGATION_WIDTH: f32 = 224.0;
+const APP_NAVIGATION_WIDTH: f32 = 264.0;
 const APP_TITLEBAR_HEIGHT: f32 = 32.0;
 const APP_CHROME_BACKGROUND: u32 = 0x0f_1116;
 const APP_CHROME_FOREGROUND: u32 = 0xd8_de_e9;
@@ -38,8 +41,6 @@ const UI_MONOSPACE_FONT: &str = if cfg!(target_os = "linux") {
 const NAVIGATION_HEADER_HEIGHT: f32 = 32.0;
 const HOST_ROW_HEIGHT: f32 = 28.0;
 const SESSION_GROUP_ROW_HEIGHT: f32 = 24.0;
-const SESSION_ROW_HEIGHT: f32 = 27.0;
-const SESSION_GROUP_BACKGROUND: u32 = 0x12_151b;
 const SESSION_GROUP_TEXT: u32 = 0x86_8e9b;
 const SESSION_GROUP_INSET: f32 = 12.0;
 const SESSION_ROW_INSET: f32 = 18.0;
@@ -57,7 +58,7 @@ const INPUT_BUFFER_FULL_DIAGNOSTIC: &str =
     "Terminal input buffer is full; wait for pending input to be delivered.";
 const TERMINAL_NOTICE_DURATION: Duration = Duration::from_secs(5);
 
-actions!(ghosthub, [ToggleSidebar]);
+actions!(ghosthub, [ToggleSidebar, NextSession, PreviousSession]);
 
 #[must_use]
 pub fn headline_text(status: &PortStatus) -> String {
@@ -376,7 +377,11 @@ pub struct RootView {
     pointer: TerminalPointer,
     terminal_pointer_visibility: TerminalPointerVisibility,
     sidebar_visible: bool,
-    collapsed_session_groups: HashSet<SessionGroupKey>,
+    collapsed_hosts: HashSet<String>,
+    sidebar_menu: Option<(SidebarMenu, gpui::Point<gpui::Pixels>)>,
+    sidebar_menu_index: usize,
+    sidebar_menu_focus: FocusHandle,
+    sidebar_preview_revision: u64,
     new_session: Option<NewSessionDraft>,
     project_dialog: Option<ProjectDialog>,
     settings_dialog: Option<SettingsDialog>,
@@ -433,43 +438,6 @@ impl TransientNotice {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum SessionGroup {
-    Tmux,
-    Herdr,
-    Zellij,
-}
-
-impl SessionGroup {
-    const fn element_id(self) -> &'static str {
-        match self {
-            Self::Tmux => "toggle-tmux-sessions",
-            Self::Herdr => "toggle-herdr-sessions",
-            Self::Zellij => "toggle-zellij-sessions",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct SessionGroupKey {
-    host_id: String,
-    group: SessionGroup,
-}
-
-fn toggle_session_group_state(
-    collapsed: &mut HashSet<SessionGroupKey>,
-    host_id: &str,
-    group: SessionGroup,
-) {
-    let key = SessionGroupKey {
-        host_id: host_id.to_owned(),
-        group,
-    };
-    if !collapsed.remove(&key) {
-        collapsed.insert(key);
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SshField {
     Name,
@@ -507,16 +475,18 @@ impl SshField {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettingsPane {
     Appearance,
+    Sidebar,
     Terminal,
     Hosts,
 }
 
 impl SettingsPane {
-    const ALL: [Self; 3] = [Self::Appearance, Self::Terminal, Self::Hosts];
+    const ALL: [Self; 4] = [Self::Appearance, Self::Sidebar, Self::Terminal, Self::Hosts];
 
     const fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::Sidebar => "Sidebar",
             Self::Terminal => "Terminal",
             Self::Hosts => "Hosts",
         }
@@ -525,6 +495,7 @@ impl SettingsPane {
     const fn subtitle(self) -> &'static str {
         match self {
             Self::Appearance => "Choose a terminal theme and installed monospace font.",
+            Self::Sidebar => "",
             Self::Terminal => "Control cursor, pointer, and remote clipboard behavior.",
             Self::Hosts => "Connect the machines and tmux sessions in your SSH network.",
         }
@@ -532,10 +503,11 @@ impl SettingsPane {
 
     const fn adjacent(self, reverse: bool) -> Option<Self> {
         match (self, reverse) {
-            (Self::Appearance, false) | (Self::Hosts, true) => Some(Self::Terminal),
+            (Self::Sidebar, false) | (Self::Hosts, true) => Some(Self::Terminal),
+            (Self::Appearance, false) | (Self::Terminal, true) => Some(Self::Sidebar),
             (Self::Terminal, false) => Some(Self::Hosts),
             (Self::Hosts, false) | (Self::Appearance, true) => None,
-            (Self::Terminal, true) => Some(Self::Appearance),
+            (Self::Sidebar, true) => Some(Self::Appearance),
         }
     }
 }
@@ -682,6 +654,7 @@ impl SshHostEditor {
 struct SettingsDialog {
     pane: SettingsPane,
     sidebar_focus: Option<SettingsPane>,
+    sidebar_field: usize,
     appearance_editor: AppearanceEditor,
     terminal_editor: TerminalEditor,
     selected_host_id: Option<String>,
@@ -701,6 +674,7 @@ impl SettingsDialog {
         Self {
             pane: SettingsPane::Appearance,
             sidebar_focus: Some(SettingsPane::Appearance),
+            sidebar_field: 0,
             appearance_editor: AppearanceEditor::new(appearance, font_families),
             terminal_editor: TerminalEditor::new(terminal),
             selected_host_id: selected.map(|host| host.id().to_owned()),
@@ -713,6 +687,14 @@ impl SettingsDialog {
 
 fn focus_settings_detail(dialog: &mut SettingsDialog, reverse: bool) -> bool {
     match dialog.pane {
+        SettingsPane::Sidebar => {
+            dialog.sidebar_field = if reverse {
+                sidebar::settings::FIELD_COUNT - 1
+            } else {
+                0
+            };
+            true
+        }
         SettingsPane::Appearance => {
             let custom = dialog.appearance_editor.draft.theme == TerminalTheme::Custom;
             dialog.appearance_editor.field = if reverse && custom {
@@ -763,6 +745,21 @@ fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
     }
 
     match dialog.pane {
+        SettingsPane::Sidebar => {
+            if (reverse && dialog.sidebar_field == 0)
+                || (!reverse && dialog.sidebar_field == sidebar::settings::FIELD_COUNT - 1)
+            {
+                dialog.sidebar_focus = Some(if reverse {
+                    SettingsPane::Hosts
+                } else {
+                    SettingsPane::Appearance
+                });
+            } else if reverse {
+                dialog.sidebar_field -= 1;
+            } else {
+                dialog.sidebar_field += 1;
+            }
+        }
         SettingsPane::Appearance => {
             let custom = dialog.appearance_editor.draft.theme == TerminalTheme::Custom;
             let first = AppearanceField::Theme;
@@ -1036,24 +1033,6 @@ enum NewSessionKind {
     Tmux,
     Herdr,
     Zellij,
-}
-
-impl NewSessionKind {
-    const fn group(self) -> SessionGroup {
-        match self {
-            Self::Tmux => SessionGroup::Tmux,
-            Self::Herdr => SessionGroup::Herdr,
-            Self::Zellij => SessionGroup::Zellij,
-        }
-    }
-
-    const fn group_title(self) -> &'static str {
-        match self {
-            Self::Tmux => "TMUX SESSIONS",
-            Self::Herdr => "HERDR SESSIONS",
-            Self::Zellij => "ZELLIJ SESSIONS",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1879,7 +1858,11 @@ impl RootView {
             pointer: TerminalPointer::default(),
             terminal_pointer_visibility: TerminalPointerVisibility::Visible,
             sidebar_visible: true,
-            collapsed_session_groups: HashSet::new(),
+            collapsed_hosts: HashSet::new(),
+            sidebar_menu: None,
+            sidebar_menu_index: 0,
+            sidebar_menu_focus: cx.focus_handle(),
+            sidebar_preview_revision: 0,
             new_session: None,
             project_dialog: None,
             settings_dialog: None,
@@ -2031,6 +2014,7 @@ impl RootView {
             font_families,
         ));
         self.session_action_menu = None;
+        self.sidebar_menu = None;
         window.focus(&self.settings_focus);
         cx.notify();
     }
@@ -2415,6 +2399,10 @@ impl RootView {
         {
             cx.notify();
             cx.stop_propagation();
+            return;
+        }
+        if detail_pane == Some(SettingsPane::Sidebar) && key != "tab" {
+            self.edit_sidebar_setting(event, cx);
             return;
         }
         if detail_pane == Some(SettingsPane::Terminal)
@@ -3757,9 +3745,12 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        if is_toggle_sidebar_shortcut(keystroke) {
+        if is_toggle_sidebar_shortcut(keystroke)
+            || (is_session_navigation_shortcut(keystroke)
+                && self.session_navigation_target(false).is_some())
+        {
             // The application key binding owns this chord. Leave propagation
-            // intact so GPUI dispatches ToggleSidebar, but never enqueue it as
+            // intact so GPUI dispatches the action, but never enqueue it as
             // terminal input.
             if event.is_held {
                 cx.stop_propagation();
@@ -3816,7 +3807,10 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        if is_paste_shortcut(&event.keystroke) || is_toggle_sidebar_shortcut(&event.keystroke) {
+        if is_paste_shortcut(&event.keystroke)
+            || is_toggle_sidebar_shortcut(&event.keystroke)
+            || is_session_navigation_shortcut(&event.keystroke)
+        {
             cx.stop_propagation();
         }
     }
@@ -6452,6 +6446,7 @@ impl RootView {
         let detail = match pane {
             SettingsPane::Appearance => self.settings_appearance_editor(cx),
             SettingsPane::Terminal => self.settings_terminal_editor(cx),
+            SettingsPane::Sidebar => self.settings_sidebar_editor(cx),
             SettingsPane::Hosts => div()
                 .flex_1()
                 .min_h_0()
@@ -6477,18 +6472,21 @@ impl RootView {
                             .font_weight(FontWeight::BOLD)
                             .child(pane.title()),
                     )
-                    .child(
-                        div()
-                            .pt_1()
-                            .text_sm()
-                            .text_color(rgb(0x8f_96_a3))
-                            .child(pane.subtitle()),
-                    ),
+                    .when(!pane.subtitle().is_empty(), |element| {
+                        element.child(
+                            div()
+                                .pt_1()
+                                .text_sm()
+                                .text_color(rgb(0x8f_96_a3))
+                                .child(pane.subtitle()),
+                        )
+                    }),
             );
         let confirmation = self.settings_remove_confirmation(cx);
 
         Some(
             div()
+                .occlude()
                 .absolute()
                 .inset_0()
                 .bg(rgba(0x00_00_00_80))
@@ -7202,7 +7200,8 @@ impl RootView {
                     .text_xs()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0xa5_ac_b8))
-                    .child("WORKSPACES"),
+                    .child(div().flex_1().child("Workspaces"))
+                    .child(self.sidebar_sort_button(cx)),
             )
             .child(body)
             .into_any_element()
@@ -7217,56 +7216,64 @@ impl RootView {
         retained: &[SessionSelection],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let mut host_tree =
-            div()
-                .flex()
-                .flex_col()
-                .child(Self::host_header(host_index, host, is_selected, cx));
-
-        let sessions = tree_sessions(host, active, retained);
-        let herdr_sessions = tree_herdr_sessions(host, active, retained);
-        let zellij_sessions = tree_zellij_sessions(host, active, retained);
-        let groups = session_group_visibility(host, &herdr_sessions, &zellij_sessions);
-        if groups.tmux {
-            host_tree = host_tree.child(
-                self.session_tree(
-                    host_index,
-                    host,
-                    &sessions,
-                    NewSessionKind::Tmux,
-                    host.tmux_diagnostic()
-                        .map(|diagnostic| diagnostic.message().to_owned()),
-                    cx,
-                ),
+        let mut tree = div().flex().flex_col().mb_2().child(self.host_header(
+            host_index,
+            host,
+            is_selected,
+            cx,
+        ));
+        if self.collapsed_hosts.contains(host.id()) {
+            return tree.into_any_element();
+        }
+        let preferences = self.workspace.configured_sidebar();
+        let rows = sidebar::sessions(host, active, retained, &preferences);
+        for row in &rows {
+            tree = tree.child(Self::flat_session_row(row, &preferences, cx));
+        }
+        if rows.is_empty() && host.connection() == HostConnectionState::Ready {
+            tree = tree.child(
+                div()
+                    .px_4()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(0x73_7a87))
+                    .child("No sessions"),
             );
         }
-        if groups.herdr {
-            host_tree = host_tree.child(self.herdr_tree(host_index, host, &herdr_sessions, cx));
-        }
-        if groups.zellij {
-            host_tree = host_tree.child(
-                self.session_tree(
+        for (id, diagnostic) in [
+            ("retry-tmux", host.tmux_diagnostic()),
+            ("retry-herdr", host.herdr_diagnostic()),
+            ("retry-zellij", host.zellij_diagnostic()),
+        ] {
+            if let Some(diagnostic) = diagnostic {
+                tree = tree.child(Self::capability_diagnostic_row(
                     host_index,
-                    host,
-                    &zellij_sessions,
-                    NewSessionKind::Zellij,
-                    host.zellij_diagnostic()
-                        .map(|diagnostic| diagnostic.message().to_owned()),
+                    host.id(),
+                    id,
+                    diagnostic.message().to_owned(),
                     cx,
-                ),
-            );
+                ));
+            }
         }
         if host.kwt_available()
             || !host.projects().is_empty()
             || !host.directory_workspaces().is_empty()
             || host.kwt_diagnostic().is_some()
         {
-            host_tree = host_tree.child(Self::project_tree(host_index, host, active, retained, cx));
+            tree = tree.child(Self::project_tree(
+                host_index,
+                host,
+                active,
+                retained,
+                &preferences,
+                cx,
+            ));
         }
-        host_tree.into_any_element()
+        tree.into_any_element()
     }
 
     fn host_header(
+        &self,
         host_index: usize,
         host: &HostItem,
         is_selected: bool,
@@ -7278,8 +7285,11 @@ impl RootView {
             HostConnectionState::Disconnected => 0x8f_96_a3,
             HostConnectionState::Unavailable => 0xd0_65_65,
         };
+        let collapse_id = host.id().to_owned();
+        let collapsed = self.collapsed_hosts.contains(host.id());
         let mut host_header = div()
             .id(("host", host_index))
+            .group(format!("host-{}", host.id()))
             .h(px(HOST_ROW_HEIGHT))
             .flex()
             .items_center()
@@ -7290,11 +7300,23 @@ impl RootView {
             .bg(rgb(if is_selected { 0x18_1b22 } else { 0x14_171d }))
             .child(
                 div()
-                    .w(px(12.0))
+                    .id(gpui::SharedString::from(format!("collapse-{}", host.id())))
+                    .w(px(20.0))
+                    .h(px(28.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .flex_none()
-                    .text_center()
+                    .cursor_pointer()
                     .text_color(rgb(0x6f_7682))
-                    .child("▾"),
+                    .child(if collapsed { "▸" } else { "▾" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.collapsed_hosts.remove(&collapse_id) {
+                            this.collapsed_hosts.insert(collapse_id.clone());
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
+                    })),
             )
             .child(
                 div()
@@ -7347,138 +7369,8 @@ impl RootView {
                     | HostHeaderAction::Retry => this.connect_host(&host_id, cx),
                 })),
         );
-        host_header.into_any_element()
-    }
-
-    fn session_tree(
-        &self,
-        host_index: usize,
-        host: &HostItem,
-        sessions: &[TreeSession],
-        create_kind: NewSessionKind,
-        diagnostic: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let group = create_kind.group();
-        let group_key = SessionGroupKey {
-            host_id: host.id().to_owned(),
-            group,
-        };
-        let collapsed = self.collapsed_session_groups.contains(&group_key);
-        let mut tree = div().w_full().flex().flex_col().child({
-            let mut header = div()
-                .h(px(SESSION_GROUP_ROW_HEIGHT))
-                .flex()
-                .items_center()
-                .pl(px(SESSION_GROUP_INSET))
-                .pr_1()
-                .bg(rgb(SESSION_GROUP_BACKGROUND))
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(SESSION_GROUP_TEXT))
-                .child(Self::session_group_toggle(
-                    host_index,
-                    host.id(),
-                    group,
-                    collapsed,
-                    cx,
-                ))
-                .child(div().flex_1().child(create_kind.group_title()));
-            if session_creation_available(host, create_kind) {
-                let host_id = host.id().to_owned();
-                let endpoint = host.endpoint().to_owned();
-                header = header.child(
-                    div()
-                        .id((
-                            if create_kind == NewSessionKind::Tmux {
-                                "create-tmux-session"
-                            } else {
-                                "create-zellij-session"
-                            },
-                            host_index,
-                        ))
-                        .size(px(22.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .text_sm()
-                        .text_color(rgb(0x8f_96_a3))
-                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                        .child("+")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_new_session(&host_id, &endpoint, create_kind, window, cx);
-                        })),
-                );
-            }
-            header
-        });
-        if collapsed {
-            return tree.into_any_element();
-        }
-        if let Some(message) = diagnostic {
-            let retry_id = match create_kind {
-                NewSessionKind::Tmux => "retry-tmux",
-                NewSessionKind::Herdr => "retry-herdr",
-                NewSessionKind::Zellij => "retry-zellij",
-            };
-            tree = tree.child(Self::capability_diagnostic_row(
-                host_index,
-                host.id(),
-                retry_id,
-                message,
-                cx,
-            ));
-        } else if sessions.is_empty() {
-            tree = tree.child(
-                div()
-                    .h(px(SESSION_ROW_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .pl(px(SESSION_ROW_INSET))
-                    .text_xs()
-                    .text_color(rgb(0x73_7a87))
-                    .child("No sessions"),
-            );
-        }
-        for (session_index, session) in sessions.iter().enumerate() {
-            tree = tree.child(Self::tree_session_row(
-                host_index,
-                session_index,
-                session,
-                cx,
-            ));
-        }
-        tree.into_any_element()
-    }
-
-    fn session_group_toggle(
-        host_index: usize,
-        host_id: &str,
-        group: SessionGroup,
-        collapsed: bool,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let host_id = host_id.to_owned();
-        div()
-            .id((group.element_id(), host_index))
-            .size(px(20.0))
-            .mr_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_sm()
-            .cursor_pointer()
-            .text_xs()
-            .text_color(rgb(0x8f_96_a3))
-            .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-            .child(if collapsed { "▸" } else { "▾" })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                toggle_session_group_state(&mut this.collapsed_session_groups, &host_id, group);
-                this.session_action_menu = None;
-                cx.notify();
-            }))
+        host_header
+            .child(Self::host_create_button(host, cx))
             .into_any_element()
     }
 
@@ -7488,6 +7380,7 @@ impl RootView {
         host: &HostItem,
         active: Option<&SessionSelection>,
         retained: &[SessionSelection],
+        preferences: &workspace::SidebarPreferences,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let can_add = host.can_add_kwt_project();
@@ -7499,11 +7392,10 @@ impl RootView {
                 .items_center()
                 .pl(px(SESSION_GROUP_INSET))
                 .pr_1()
-                .bg(rgb(SESSION_GROUP_BACKGROUND))
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(SESSION_GROUP_TEXT))
-                .child(div().flex_1().child("PROJECTS"));
+                .child(div().flex_1().child("Projects"));
             if host.kwt_refreshing() {
                 header = header.child(
                     div()
@@ -7551,7 +7443,7 @@ impl RootView {
             let host_id = host.id().to_owned();
             let endpoint = host.endpoint().to_owned();
             let mut row = div()
-                .h(px(SESSION_ROW_HEIGHT))
+                .h(px(sidebar::row_height(preferences)))
                 .flex()
                 .items_center()
                 .gap_1()
@@ -7630,6 +7522,9 @@ impl RootView {
             }
             tree = tree.child(row);
             for (worktree_index, worktree) in project.worktrees().iter().enumerate() {
+                if worktree.is_main() && preferences.hide_root_checkout {
+                    continue;
+                }
                 let selection = SessionSelection::kwt_workspace(
                     host.id(),
                     host.endpoint(),
@@ -7701,12 +7596,18 @@ impl RootView {
                     can_kill,
                     repair_open_target,
                     remove_target,
+                    preferences,
                     cx,
                 ));
             }
         }
         tree.children(Self::directory_workspace_rows(
-            host_index, host, active, retained, cx,
+            host_index,
+            host,
+            active,
+            retained,
+            preferences,
+            cx,
         ))
         .into_any_element()
     }
@@ -7716,6 +7617,7 @@ impl RootView {
         host: &HostItem,
         active: Option<&SessionSelection>,
         retained: &[SessionSelection],
+        preferences: &workspace::SidebarPreferences,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
         let mut rows = Vec::new();
@@ -7782,6 +7684,7 @@ impl RootView {
                 can_kill,
                 None,
                 None,
+                preferences,
                 cx,
             ));
         }
@@ -7800,6 +7703,7 @@ impl RootView {
         can_kill: bool,
         worktree_target: Option<WorktreeOpenTarget>,
         remove_target: Option<WorktreeRemoveTarget>,
+        preferences: &workspace::SidebarPreferences,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let is_active = presence.is_active();
@@ -7811,18 +7715,24 @@ impl RootView {
                 format!("{project_index}-{worktree_index}"),
             ))
             .group(row_group.clone())
+            .ml_1()
             .mr_1()
-            .h(px(SESSION_ROW_HEIGHT))
+            .h(px(sidebar::row_height(preferences)))
             .flex()
             .items_center()
             .gap_1()
             .pl(px(NESTED_SESSION_ROW_INSET))
             .pr_2()
-            .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
+            .rounded_md()
+            .bg(rgb(if is_active {
+                0x20_3349
+            } else {
+                APP_CHROME_BACKGROUND
+            }))
             .when(can_open, |element| {
                 element
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
+                    .hover(|style| style.bg(rgb(if is_active { 0x26_3e58 } else { 0x1b_1f27 })))
             })
             .when(!can_open, |element| element.opacity(0.55))
             .child(
@@ -7837,14 +7747,14 @@ impl RootView {
                     } else {
                         0x7f_8794
                     }))
-                    .child(if is_live { ">_" } else { "◇" }),
+                    .child(if is_live { "●" } else { "◇" }),
             )
             .child(
                 div()
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .text_sm()
+                    .text_size(px(13.0))
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(label),
             );
@@ -7872,97 +7782,6 @@ impl RootView {
             }))
         })
         .into_any_element()
-    }
-
-    fn herdr_tree(
-        &self,
-        host_index: usize,
-        host: &HostItem,
-        sessions: &[TreeHerdrSession],
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let host_id = host.id().to_owned();
-        let endpoint = host.endpoint().to_owned();
-        let group_key = SessionGroupKey {
-            host_id: host_id.clone(),
-            group: SessionGroup::Herdr,
-        };
-        let collapsed = self.collapsed_session_groups.contains(&group_key);
-        let mut tree = div().w_full().flex().flex_col().child({
-            let mut header = div()
-                .h(px(SESSION_GROUP_ROW_HEIGHT))
-                .flex()
-                .items_center()
-                .pl(px(SESSION_GROUP_INSET))
-                .pr_1()
-                .bg(rgb(SESSION_GROUP_BACKGROUND))
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(SESSION_GROUP_TEXT))
-                .child(Self::session_group_toggle(
-                    host_index,
-                    &host_id,
-                    SessionGroup::Herdr,
-                    collapsed,
-                    cx,
-                ))
-                .child(div().flex_1().child("HERDR SESSIONS"));
-            if session_creation_available(host, NewSessionKind::Herdr) {
-                let host_id = host_id.clone();
-                let endpoint = endpoint.clone();
-                header = header.child(
-                    div()
-                        .id(("create-herdr-session", host_index))
-                        .size(px(22.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .text_sm()
-                        .text_color(rgb(0x8f_96_a3))
-                        .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                        .child("+")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_new_session(
-                                &host_id,
-                                &endpoint,
-                                NewSessionKind::Herdr,
-                                window,
-                                cx,
-                            );
-                        })),
-                );
-            }
-            header
-        });
-        if collapsed {
-            return tree.into_any_element();
-        }
-        if let Some(diagnostic) = host.herdr_diagnostic() {
-            tree = tree.child(Self::capability_diagnostic_row(
-                host_index,
-                &host_id,
-                "retry-herdr",
-                diagnostic.message().to_owned(),
-                cx,
-            ));
-        } else if sessions.is_empty() {
-            tree = tree.child(
-                div()
-                    .h(px(SESSION_ROW_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .pl(px(SESSION_ROW_INSET))
-                    .text_xs()
-                    .text_color(rgb(0x73_7a87))
-                    .child("No sessions"),
-            );
-        }
-        for (index, session) in sessions.iter().enumerate() {
-            tree = tree.child(Self::herdr_session_row(host_index, index, session, cx));
-        }
-        tree.into_any_element()
     }
 
     fn capability_diagnostic_row(
@@ -8006,114 +7825,6 @@ impl RootView {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_lines)] // Declarative row composition keeps controls in visual order.
-    fn herdr_session_row(
-        host_index: usize,
-        index: usize,
-        session: &TreeHerdrSession,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let running = session
-            .inventory
-            .as_ref()
-            .is_none_or(|inventory| inventory.state() == HerdrSessionState::Running);
-        let operation_label = session.inventory.as_ref().and_then(herdr_operation_label);
-        let operation_pending = operation_label.is_some();
-        let selection = session.selection.clone();
-        let active = session.active;
-        let actions = session
-            .inventory
-            .as_ref()
-            .map_or_else(Vec::new, |inventory| {
-                available_herdr_row_actions(session.access, inventory)
-            });
-        let row_is_actionable = if running {
-            session.access.can_open()
-        } else {
-            session.access.can_restart()
-        };
-        let row_group = format!("herdr-session-actions-{host_index}-{index}");
-        let mut row = div()
-            .id((
-                gpui::ElementId::named_usize("herdr-session-host", host_index),
-                index.to_string(),
-            ))
-            .group(row_group.clone())
-            .mr_1()
-            .h(px(SESSION_ROW_HEIGHT))
-            .flex()
-            .items_center()
-            .gap_1()
-            .pl(px(SESSION_ROW_INSET))
-            .pr_2()
-            .bg(rgb(if active { 0x18_3f_68 } else { 0x0f_1116 }))
-            .when(!operation_pending && row_is_actionable, |element| {
-                element
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(0x1c_2028)))
-            })
-            .child(
-                div()
-                    .w(px(18.0))
-                    .flex_none()
-                    .text_xs()
-                    .text_color(rgb(if running { 0x79_c9_a3 } else { 0x68_6f7a }))
-                    .child(if running { ">_" } else { "○" }),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
-                    .text_sm()
-                    .text_color(rgb(if running { 0xc4_c9_d2 } else { 0x7f_8794 }))
-                    .child(selection.session().to_owned()),
-            )
-            .when_some(operation_label, |element, label| {
-                element.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(rgb(0x8f_96_a3))
-                        .child(label),
-                )
-            });
-        if session.show_endpoint {
-            row = row.child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(rgb(0x73_7a87))
-                    .child(format!("· {}", selection.endpoint())),
-            );
-        }
-        let menu_actions = herdr_session_menu_actions(active, actions);
-        if !menu_actions.is_empty() {
-            row = row.child(Self::session_action_menu_button(
-                host_index,
-                format!("herdr-{index}"),
-                selection.clone(),
-                menu_actions,
-                row_group,
-                cx,
-            ));
-        }
-        row = if operation_pending {
-            row
-        } else if running && session.access.can_open() {
-            row.on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&selection, window, cx);
-            }))
-        } else if session.access.can_restart() {
-            row.on_click(cx.listener(move |this, _, window, cx| {
-                this.restart_herdr_session(&selection, window, cx);
-            }))
-        } else {
-            row
-        };
-        row.into_any_element()
-    }
-
     fn session_action_menu_button(
         host_index: usize,
         row_id: String,
@@ -8154,83 +7865,6 @@ impl RootView {
                 cx.notify();
             }))
             .into_any_element()
-    }
-
-    fn tree_session_row(
-        host_index: usize,
-        index: usize,
-        session: &TreeSession,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let selection = session.selection.clone();
-        let is_active = session.state.is_active();
-        let can_open = session.state.can_open();
-        let name = selection.session().to_owned();
-        let backend = session_backend_id(selection.kind());
-        let row_group = format!("{backend}-session-actions-{host_index}-{index}");
-        let mut row = div()
-            .id((
-                gpui::ElementId::named_usize(session_row_element_id(selection.kind()), host_index),
-                index.to_string(),
-            ))
-            .group(row_group.clone())
-            .mr_1()
-            .h(px(SESSION_ROW_HEIGHT))
-            .flex()
-            .items_center()
-            .gap_1()
-            .pl(px(SESSION_ROW_INSET))
-            .pr_2()
-            .bg(rgb(if is_active { 0x13_3d6a } else { 0x0f_1116 }))
-            .when(can_open, |element| {
-                element
-                    .cursor_pointer()
-                    .hover(|style| style.bg(rgb(if is_active { 0x17_477a } else { 0x1b_1f27 })))
-            })
-            .when(!can_open, |element| element.opacity(0.55))
-            .child(
-                div()
-                    .w(px(18.0))
-                    .flex_none()
-                    .text_xs()
-                    .text_color(rgb(if is_active { 0x9d_c7ed } else { 0x7f_8794 }))
-                    .child(">_"),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
-                    .text_sm()
-                    .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
-                    .child(name.clone()),
-            );
-        if session.show_endpoint {
-            row = row.child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(rgb(0x73_7a87))
-                    .child(format!("· {}", selection.endpoint())),
-            );
-        }
-        let actions = tmux_row_actions(is_active, session.state.can_kill());
-        if !actions.is_empty() {
-            row = row.child(Self::session_action_menu_button(
-                host_index,
-                format!("{backend}-{index}"),
-                selection.clone(),
-                actions,
-                row_group,
-                cx,
-            ));
-        }
-        row.when(can_open, |element| {
-            element.on_click(cx.listener(move |this, _, window, cx| {
-                this.select_session(&selection, window, cx);
-            }))
-        })
-        .into_any_element()
     }
 
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -8420,13 +8054,6 @@ impl HostHeaderAction {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SessionGroupVisibility {
-    tmux: bool,
-    herdr: bool,
-    zellij: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HerdrRowAction {
     Stop,
     Restart,
@@ -8522,36 +8149,12 @@ const fn session_backend_id(kind: workspace::SessionKind) -> &'static str {
     }
 }
 
-const fn session_row_element_id(kind: workspace::SessionKind) -> &'static str {
-    match kind {
-        workspace::SessionKind::Tmux => "tmux-session-host",
-        workspace::SessionKind::Herdr => "herdr-session-host",
-        workspace::SessionKind::Zellij => "zellij-session-host",
-    }
-}
-
 fn herdr_operation_label(session: &workspace::HerdrSessionItem) -> Option<&'static str> {
     match session.lifecycle_action() {
         Some(workspace::HerdrLifecycleAction::Stop) => Some("Stopping…"),
         Some(workspace::HerdrLifecycleAction::Delete) => Some("Deleting…"),
         None if session.launch_pending() => Some("Starting…"),
         None => None,
-    }
-}
-
-fn session_group_visibility(
-    host: &HostItem,
-    herdr_sessions: &[TreeHerdrSession],
-    zellij_sessions: &[TreeSession],
-) -> SessionGroupVisibility {
-    SessionGroupVisibility {
-        tmux: true,
-        herdr: host.herdr_available()
-            || !herdr_sessions.is_empty()
-            || host.herdr_diagnostic().is_some(),
-        zellij: host.zellij_available()
-            || !zellij_sessions.is_empty()
-            || host.zellij_diagnostic().is_some(),
     }
 }
 
@@ -8668,6 +8271,7 @@ fn tree_sessions(
     host: &HostItem,
     active: Option<&SessionSelection>,
     retained: &[SessionSelection],
+    hide_worktree_sessions: bool,
 ) -> Vec<TreeSession> {
     let active_for_host = active.filter(|active| {
         active.host_id() == host.id() && active.kind() == workspace::SessionKind::Tmux
@@ -8676,7 +8280,9 @@ fn tree_sessions(
     let mut selections = host
         .sessions()
         .iter()
-        .filter(|session| !host.kwt_owns_tmux_session(session.name(), None))
+        .filter(|session| {
+            !hide_worktree_sessions || !host.kwt_owns_tmux_session(session.name(), None)
+        })
         .map(|session| {
             (
                 SessionSelection::new(host.id(), host.endpoint(), session.name()),
@@ -8689,18 +8295,21 @@ fn tree_sessions(
         .filter(|selection| {
             selection.host_id() == host.id()
                 && selection.kind() == workspace::SessionKind::Tmux
-                && !host_owns_worktree_presentation(host, selection)
+                && (!hide_worktree_sessions || !host_owns_worktree_presentation(host, selection))
         })
-        .chain(
-            active_for_host
-                .into_iter()
-                .filter(|selection| !host_owns_worktree_presentation(host, selection)),
-        )
+        .chain(active_for_host.into_iter().filter(|selection| {
+            !hide_worktree_sessions || !host_owns_worktree_presentation(host, selection)
+        }))
     {
-        if !selections
-            .iter()
-            .any(|(candidate, _)| candidate == selection)
-        {
+        if let Some((candidate, _)) = selections.iter_mut().find(|(candidate, _)| {
+            candidate.host_id() == selection.host_id()
+                && candidate.endpoint() == selection.endpoint()
+                && candidate.session() == selection.session()
+                && candidate.tmux_socket_name() == selection.tmux_socket_name()
+        }) {
+            // Keep the presentation's exact worktree authority in the shared session row.
+            *candidate = selection.clone();
+        } else {
             selections.push((selection.clone(), false));
         }
     }
@@ -8971,11 +8580,20 @@ impl Render for RootView {
         let settings_overlay = self.settings_overlay(window, cx);
         let ssh_prompt_overlay = self.ssh_prompt_overlay(window, cx);
         let session_action_menu = self.session_action_menu_overlay(window, cx);
+        let sidebar_menu = self.sidebar_menu_overlay(window, cx);
         let kill_overlay = self.pending_session_kill_overlay(window, cx);
         let herdr_lifecycle_overlay = self.pending_herdr_lifecycle_overlay(window, cx);
         let (chrome_background, chrome_foreground) =
             chrome_palette_for_terminal_theme(snapshot.appearance().theme());
         let mut root = div()
+            .id("application-shell")
+            .when(self.session_navigation_target(false).is_some(), |root| {
+                root.key_context("SessionNavigation")
+            })
+            .when(
+                terminal_presentation_id(snapshot.content()).is_none(),
+                |root| root.track_focus(&self.focus),
+            )
             .flex()
             .flex_col()
             .size_full()
@@ -8985,12 +8603,19 @@ impl Render for RootView {
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 this.toggle_sidebar(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &NextSession, window, cx| {
+                this.cycle_session(false, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PreviousSession, window, cx| {
+                this.cycle_session(true, window, cx);
+            }))
             .child(self.title_bar(title, cx))
             .child(div().flex_1().min_h_0().w_full().child(content))
             .children(creation_overlay)
             .children(project_overlay)
             .children(settings_overlay)
             .children(session_action_menu)
+            .children(sidebar_menu)
             .children(kill_overlay)
             .children(herdr_lifecycle_overlay);
 
@@ -9082,9 +8707,27 @@ fn session_action_menu_position(
     let action_count = u16::try_from(action_count).unwrap_or(u16::MAX);
     let menu_height = f32::from(action_count) * SESSION_ACTION_MENU_ITEM_HEIGHT
         + SESSION_ACTION_MENU_VERTICAL_CHROME;
-    let max_left = (viewport_width - SESSION_ACTION_MENU_WIDTH - SESSION_ACTION_MENU_MARGIN)
-        .max(SESSION_ACTION_MENU_MARGIN);
-    let left = (anchor_x - SESSION_ACTION_MENU_WIDTH).clamp(SESSION_ACTION_MENU_MARGIN, max_left);
+    popup_position(
+        anchor_x,
+        anchor_y,
+        viewport_width,
+        viewport_height,
+        SESSION_ACTION_MENU_WIDTH,
+        menu_height,
+    )
+}
+
+fn popup_position(
+    anchor_x: f32,
+    anchor_y: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    menu_width: f32,
+    menu_height: f32,
+) -> (f32, f32) {
+    let max_left =
+        (viewport_width - menu_width - SESSION_ACTION_MENU_MARGIN).max(SESSION_ACTION_MENU_MARGIN);
+    let left = (anchor_x - menu_width).clamp(SESSION_ACTION_MENU_MARGIN, max_left);
     let max_top = (viewport_height - menu_height - SESSION_ACTION_MENU_MARGIN)
         .max(SESSION_ACTION_MENU_MARGIN);
     let below = anchor_y + SESSION_ACTION_MENU_OFFSET;
@@ -9496,6 +9139,13 @@ fn is_paste_shortcut(keystroke: &gpui::Keystroke) -> bool {
         && keystroke.key.eq_ignore_ascii_case("v")
 }
 
+fn is_session_navigation_shortcut(keystroke: &gpui::Keystroke) -> bool {
+    keystroke.modifiers.control
+        && !keystroke.modifiers.alt
+        && !keystroke.modifiers.platform
+        && keystroke.key.eq_ignore_ascii_case("tab")
+}
+
 fn is_toggle_sidebar_shortcut(keystroke: &gpui::Keystroke) -> bool {
     keystroke.modifiers.control
         && keystroke.modifiers.shift
@@ -9656,7 +9306,11 @@ pub fn run(status: PortStatus, workspace: Workspace) {
         load_linux_fonts(cx.text_system());
         let bounds = Bounds::centered(None, size(px(1100.0), px(720.0)), cx);
 
-        cx.bind_keys([KeyBinding::new("ctrl-shift-b", ToggleSidebar, None)]);
+        cx.bind_keys([
+            KeyBinding::new("ctrl-shift-b", ToggleSidebar, None),
+            KeyBinding::new("ctrl-tab", NextSession, Some("SessionNavigation")),
+            KeyBinding::new("ctrl-shift-tab", PreviousSession, Some("SessionNavigation")),
+        ]);
 
         cx.open_window(
             WindowOptions {
@@ -9697,7 +9351,7 @@ fn load_linux_fonts(text: &gpui::TextSystem) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::VecDeque;
 
     #[test]
     fn dialog_text_accepts_space_with_or_without_a_character() {
@@ -9787,17 +9441,17 @@ mod tests {
         APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, AppearanceField, HerdrRowAccess, HerdrRowAction,
         HostHeaderAction, INPUT_BUFFER_FULL_DIAGNOSTIC, INPUT_BUFFERED_DIAGNOSTIC, InputRefusal,
         LayoutKey, NewSessionDraft, NewSessionKind, NewWorktreeMode, PendingUiInput, ProjectDialog,
-        QueuedUiInput, SessionGroup, SessionGroupKey, SessionRowAction, SettingsDialog,
-        SettingsPane, SshField, SshHostEditor, TERMINAL_NOTICE_DURATION, TerminalField,
-        TerminalKeyIdentity, TerminalKeyboard, TerminalPointer, TerminalResize, TransientNotice,
-        UI_INPUT_BYTE_CAPACITY, UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority,
-        WorktreeHostAccess, WorktreeOpenContext, WorktreeOpenMode, WorktreeOpenTarget,
-        WorktreePresentation, WorktreeRemoveTarget, WorktreeSessionPresence, WorktreeSocket,
-        activate_settings_sidebar_pane, active_session_selection, adjacent_appearance_field,
-        advance_settings_focus, appearance_draft_is_persistable, appearance_preview_color,
-        application_navigation_width, apply_new_worktree_failure, apply_worktree_removal_failure,
-        available_herdr_row_actions, can_create_worktree, can_kill_directory_workspace,
-        can_kill_worktree, can_open_directory_workspace, canonical_terminal_key_with,
+        QueuedUiInput, SessionRowAction, SettingsDialog, SettingsPane, SshField, SshHostEditor,
+        TERMINAL_NOTICE_DURATION, TerminalField, TerminalKeyIdentity, TerminalKeyboard,
+        TerminalPointer, TerminalResize, TransientNotice, UI_INPUT_BYTE_CAPACITY,
+        UI_INPUT_CAPACITY, WheelBatch, WorktreeAuthority, WorktreeHostAccess, WorktreeOpenContext,
+        WorktreeOpenMode, WorktreeOpenTarget, WorktreePresentation, WorktreeRemoveTarget,
+        WorktreeSessionPresence, WorktreeSocket, activate_settings_sidebar_pane,
+        active_session_selection, adjacent_appearance_field, advance_settings_focus,
+        appearance_draft_is_persistable, appearance_preview_color, application_navigation_width,
+        apply_new_worktree_failure, apply_worktree_removal_failure, available_herdr_row_actions,
+        can_create_worktree, can_kill_directory_workspace, can_kill_worktree,
+        can_open_directory_workspace, canonical_terminal_key_with,
         chrome_palette_for_terminal_theme, clear_terminal_input_state, clears_after_input_delivery,
         clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
         focused_settings_detail, has_ambiguous_worktree_source, herdr_row_actions,
@@ -9807,13 +9461,12 @@ mod tests {
         kwt_selection_matches_presentation, named_key, new_session_validation,
         normalize_cell_width, owns_created_worktree_navigation, pull_request_import_selector,
         queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_backend_id, session_creation_available, session_group_visibility,
-        session_row_element_id, ssh_host_subtitle, ssh_prompt_input_text,
+        session_creation_available, ssh_host_subtitle, ssh_prompt_input_text,
         terminal_cell_at_with_offset, terminal_font_changed, terminal_key_input,
         terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        tmux_row_actions, toggle_session_group_state, transitioned_presentation,
-        tree_herdr_sessions, tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
-        visible_kwt_pull_requests, workspace_window_title, worktree_open_mode,
+        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
+        tree_zellij_sessions, visible_kwt_branch_candidates, visible_kwt_pull_requests,
+        workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -9897,6 +9550,7 @@ mod tests {
             SettingsPane::ALL,
             [
                 SettingsPane::Appearance,
+                SettingsPane::Sidebar,
                 SettingsPane::Terminal,
                 SettingsPane::Hosts,
             ]
@@ -9927,6 +9581,8 @@ mod tests {
         let mut dialog =
             SettingsDialog::new(&[], appearance, terminal, vec!["Cascadia Mono".to_owned()]);
 
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Sidebar));
         advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Terminal));
         assert!(activate_settings_sidebar_pane(&mut dialog));
@@ -10869,29 +10525,6 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_session_groups_are_scoped_to_the_host_and_backend() {
-        let mut collapsed = HashSet::new();
-
-        toggle_session_group_state(&mut collapsed, "ssh:studio", SessionGroup::Tmux);
-
-        assert!(collapsed.contains(&SessionGroupKey {
-            host_id: "ssh:studio".to_owned(),
-            group: SessionGroup::Tmux,
-        }));
-        assert!(!collapsed.contains(&SessionGroupKey {
-            host_id: "ssh:studio".to_owned(),
-            group: SessionGroup::Herdr,
-        }));
-        assert!(!collapsed.contains(&SessionGroupKey {
-            host_id: "wsl".to_owned(),
-            group: SessionGroup::Tmux,
-        }));
-
-        toggle_session_group_state(&mut collapsed, "ssh:studio", SessionGroup::Tmux);
-        assert!(collapsed.is_empty());
-    }
-
-    #[test]
     fn remote_tmux_rows_offer_open_and_confirmed_kill() {
         let host = HostItem::ssh(
             "ssh:user-a@studio.example:",
@@ -10902,7 +10535,7 @@ mod tests {
             None,
         );
 
-        let rows = tree_sessions(&host, None, &[]);
+        let rows = tree_sessions(&host, None, &[], true);
 
         assert_eq!(rows.len(), 1);
         assert!(rows[0].state.can_open());
@@ -10927,8 +10560,8 @@ mod tests {
             None,
         );
 
-        let wsl_rows = tree_sessions(&wsl, None, &[]);
-        let ssh_rows = tree_sessions(&ssh, None, &[]);
+        let wsl_rows = tree_sessions(&wsl, None, &[], true);
+        let ssh_rows = tree_sessions(&ssh, None, &[], true);
 
         assert!(wsl_rows[0].state.can_open());
         assert!(wsl_rows[0].state.can_kill());
@@ -10961,13 +10594,9 @@ mod tests {
 
         let herdr = tree_herdr_sessions(&host, None, &[]);
         let zellij = tree_zellij_sessions(&host, None, &[]);
-        let groups = session_group_visibility(&host, &herdr, &zellij);
 
         assert_eq!(host.connection(), HostConnectionState::Ready);
         assert!(host.tmux_diagnostic().is_some());
-        assert!(groups.tmux);
-        assert!(groups.herdr);
-        assert!(groups.zellij);
         assert!(herdr[0].access.can_open());
         assert!(zellij[0].state.can_open());
         assert!(!session_creation_available(&host, NewSessionKind::Tmux));
@@ -11126,7 +10755,7 @@ mod tests {
             );
 
             let active = active_session_selection(&terminal);
-            let rows = tree_sessions(&host, active.as_ref(), &[]);
+            let rows = tree_sessions(&host, active.as_ref(), &[], true);
             assert_eq!(rows.len(), 2);
             assert_eq!(rows[0].selection.session(), "other");
             assert!(!rows[0].state.is_active());
@@ -11187,7 +10816,7 @@ mod tests {
             Vec::new(),
         );
 
-        let rows = tree_sessions(&host, None, &[]);
+        let rows = tree_sessions(&host, None, &[], true);
 
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|row| row.selection.session() == "scratch"));
@@ -11240,7 +10869,7 @@ mod tests {
             "/repos/project-pr",
             Some("0123456789abcdef0123456789abcdef".to_owned()),
         );
-        let rows = tree_sessions(&host, Some(&active), &[]);
+        let rows = tree_sessions(&host, Some(&active), &[], true);
 
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|row| row.selection.session() == "scratch"));
@@ -11273,7 +10902,7 @@ mod tests {
                     )],
                     Vec::new(),
                 );
-        let fallback_rows = tree_sessions(&changed_inventory, Some(&active), &[]);
+        let fallback_rows = tree_sessions(&changed_inventory, Some(&active), &[], true);
         assert_eq!(fallback_rows.len(), 1);
         assert_eq!(fallback_rows[0].selection, active);
         assert!(fallback_rows[0].state.is_active());
@@ -11292,8 +10921,8 @@ mod tests {
             Some("generation".to_owned()),
         );
 
-        let active = tree_sessions(&host, Some(&selection), &[]);
-        let retained = tree_sessions(&host, None, std::slice::from_ref(&selection));
+        let active = tree_sessions(&host, Some(&selection), &[], true);
+        let retained = tree_sessions(&host, None, std::slice::from_ref(&selection), true);
 
         assert!(active[0].state.can_kill());
         assert!(retained[0].state.can_kill());
@@ -11347,7 +10976,6 @@ mod tests {
         let rows = tree_herdr_sessions(&host, active.as_ref(), &retained);
 
         assert_eq!(rows.len(), 2);
-        assert!(session_group_visibility(&host, &rows, &[]).herdr);
         assert_eq!(rows[0].selection.session(), "retained");
         assert!(rows[0].show_endpoint);
         assert!(rows[0].inventory.is_none());
@@ -11489,7 +11117,6 @@ mod tests {
         let rows = tree_zellij_sessions(&host, active.as_ref(), &retained);
 
         assert_eq!(rows.len(), 2);
-        assert!(session_group_visibility(&host, &[], &rows).zellij);
         assert_eq!(rows[0].selection.session(), "retained");
         assert!(rows[0].show_endpoint);
         assert!(rows[0].state.can_open());
@@ -11585,18 +11212,6 @@ mod tests {
     }
 
     #[test]
-    fn multiplexer_rows_have_backend_scoped_interaction_ids() {
-        assert_ne!(
-            session_backend_id(workspace::SessionKind::Tmux),
-            session_backend_id(workspace::SessionKind::Zellij)
-        );
-        assert_ne!(
-            session_row_element_id(workspace::SessionKind::Tmux),
-            session_row_element_id(workspace::SessionKind::Zellij)
-        );
-    }
-
-    #[test]
     fn kill_confirmation_names_the_exact_endpoint() {
         let selection = SessionSelection::new("wsl", "Ubuntu-24.04", "release");
 
@@ -11630,7 +11245,7 @@ mod tests {
         );
 
         let active = active_session_selection(&terminal);
-        let rows = tree_sessions(&host, active.as_ref(), &[]);
+        let rows = tree_sessions(&host, active.as_ref(), &[], true);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
         assert!(!rows[0].state.is_active());
@@ -11651,7 +11266,7 @@ mod tests {
         );
         let retained = vec![SessionSelection::new("wsl", "Ubuntu", "demo")];
 
-        let rows = tree_sessions(&host, None, &retained);
+        let rows = tree_sessions(&host, None, &retained, true);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.endpoint(), "Debian");
@@ -11677,7 +11292,7 @@ mod tests {
             SessionSelection::new("wsl", "Ubuntu", "two"),
         ];
 
-        let rows = tree_sessions(&host, None, &retained);
+        let rows = tree_sessions(&host, None, &retained, true);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].selection.session(), "one");
@@ -11697,7 +11312,7 @@ mod tests {
             None,
         );
 
-        let rows = tree_sessions(&host, None, &[]);
+        let rows = tree_sessions(&host, None, &[], true);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].selection.session(), "cached");
