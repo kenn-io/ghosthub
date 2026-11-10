@@ -10,6 +10,11 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-10
+
+Ghosthub now finds tmux on Macs and Linux hosts where only `~/.zshrc` sets up
+Homebrew or another package manager.
+
 ### Fixed
 
 - Ghosthub now finds tmux, kwt, Herdr, and Zellij installed with Homebrew,
@@ -572,7 +577,8 @@ local or remote hosts.
   automatically after lost connections, and navigate projects and worktrees
   managed by kwt.
 
-[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/kenn-io/ghosthub/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/kenn-io/ghosthub/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/kenn-io/ghosthub/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kenn-io/ghosthub/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/kenn-io/ghosthub/compare/v0.11.2...v0.11.3
