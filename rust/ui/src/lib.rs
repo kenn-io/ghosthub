@@ -962,6 +962,18 @@ fn ssh_host_subtitle(draft: &SshHostDraft) -> String {
     )
 }
 
+fn dialog_text(keystroke: &gpui::Keystroke) -> Option<&str> {
+    let modifiers = keystroke.modifiers;
+    if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+        return None;
+    }
+    // GPUI reports Space without a character on Windows.
+    keystroke
+        .key_char
+        .as_deref()
+        .or_else(|| keystroke.key.eq_ignore_ascii_case("space").then_some(" "))
+}
+
 fn append_non_control_characters(value: &mut String, text: &str, limit: usize) {
     let remaining = limit.saturating_sub(value.chars().count());
     value.extend(
@@ -2225,12 +2237,7 @@ impl RootView {
             }
         } else if key == "backspace" {
             value.pop();
-        } else if !event.keystroke.modifiers.control
-            && !event.keystroke.modifiers.alt
-            && !event.keystroke.modifiers.platform
-            && !event.keystroke.modifiers.function
-            && let Some(text) = &event.keystroke.key_char
-        {
+        } else if let Some(text) = dialog_text(&event.keystroke) {
             append_non_control_characters(value, text, SETTINGS_FIELD_CHARACTER_LIMIT);
         }
         let draft = editor.draft.clone();
@@ -2481,12 +2488,7 @@ impl RootView {
             }
         } else if key == "backspace" {
             value.pop();
-        } else if !event.keystroke.modifiers.control
-            && !event.keystroke.modifiers.alt
-            && !event.keystroke.modifiers.platform
-            && !event.keystroke.modifiers.function
-            && let Some(text) = &event.keystroke.key_char
-        {
+        } else if let Some(text) = dialog_text(&event.keystroke) {
             append_non_control_characters(value, text, SETTINGS_FIELD_CHARACTER_LIMIT);
         }
         cx.notify();
@@ -2525,12 +2527,7 @@ impl RootView {
             }
         } else if key == "backspace" {
             prompt.value.pop();
-        } else if !event.keystroke.modifiers.control
-            && !event.keystroke.modifiers.alt
-            && !event.keystroke.modifiers.platform
-            && !event.keystroke.modifiers.function
-            && let Some(text) = &event.keystroke.key_char
-        {
+        } else if let Some(text) = dialog_text(&event.keystroke) {
             append_non_control_characters(&mut prompt.value, text, SSH_PROMPT_CHARACTER_LIMIT);
         }
         cx.notify();
@@ -3170,12 +3167,7 @@ impl RootView {
         } else if key == "backspace" {
             value.pop();
             cx.notify();
-        } else if !event.keystroke.modifiers.control
-            && !event.keystroke.modifiers.alt
-            && !event.keystroke.modifiers.platform
-            && !event.keystroke.modifiers.function
-            && let Some(text) = &event.keystroke.key_char
-        {
+        } else if let Some(text) = dialog_text(&event.keystroke) {
             value.extend(text.chars().filter(|character| !character.is_control()));
             cx.notify();
         }
@@ -3253,12 +3245,8 @@ impl RootView {
                 }
                 cx.notify();
             }
-            _ if !event.keystroke.modifiers.control
-                && !event.keystroke.modifiers.alt
-                && !event.keystroke.modifiers.platform
-                && !event.keystroke.modifiers.function =>
-            {
-                if let Some(text) = &event.keystroke.key_char
+            _ => {
+                if let Some(text) = dialog_text(&event.keystroke)
                     && let Some(draft) = &mut self.new_session
                 {
                     draft
@@ -3267,7 +3255,6 @@ impl RootView {
                     cx.notify();
                 }
             }
-            _ => {}
         }
         cx.stop_propagation();
     }
@@ -9711,6 +9698,65 @@ fn load_linux_fonts(text: &gpui::TextSystem) {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashSet, VecDeque};
+
+    #[test]
+    fn dialog_text_accepts_space_with_or_without_a_character() {
+        for (key, key_char, shift, expected) in [
+            ("space", None, false, " "),
+            ("space", None, true, " "),
+            ("space", Some(" "), false, " "),
+            ("e", Some("é"), false, "é"),
+            ("1", Some("!"), true, "!"),
+        ] {
+            let keystroke = gpui::Keystroke {
+                key: key.to_owned(),
+                key_char: key_char.map(str::to_owned),
+                modifiers: gpui::Modifiers {
+                    shift,
+                    ..gpui::Modifiers::default()
+                },
+            };
+            assert_eq!(
+                super::dialog_text(&keystroke),
+                Some(expected),
+                "{keystroke:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dialog_text_does_not_turn_shortcuts_or_non_text_keys_into_text() {
+        for modifiers in [
+            gpui::Modifiers::control(),
+            gpui::Modifiers {
+                alt: true,
+                ..gpui::Modifiers::default()
+            },
+            gpui::Modifiers {
+                platform: true,
+                ..gpui::Modifiers::default()
+            },
+            gpui::Modifiers {
+                function: true,
+                ..gpui::Modifiers::default()
+            },
+        ] {
+            for key_char in [None, Some(" ")] {
+                let keystroke = gpui::Keystroke {
+                    key: "space".to_owned(),
+                    key_char: key_char.map(str::to_owned),
+                    modifiers,
+                };
+                assert_eq!(super::dialog_text(&keystroke), None, "{keystroke:?}");
+            }
+        }
+        let keystroke = gpui::Keystroke {
+            key: "capslock".to_owned(),
+            key_char: None,
+            modifiers: gpui::Modifiers::default(),
+        };
+        assert_eq!(super::dialog_text(&keystroke), None);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
