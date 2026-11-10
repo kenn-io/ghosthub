@@ -11,7 +11,7 @@ import Testing
 struct SettingsScreenshotTests {
     @MainActor
     @Test("exports Settings with synthetic details", arguments: [
-        SettingsDomain.hosts, .keyboard, .privacy,
+        SettingsDomain.hosts, .keyboard, .privacy, .sidebar,
     ])
     func settings(domain: SettingsDomain) throws {
         guard let directory = ProcessInfo.processInfo
