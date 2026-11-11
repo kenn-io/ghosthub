@@ -93,7 +93,11 @@ jobs:
       - name: Install GPUI Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          # Use an independent mirror when Canonical's DNS is unavailable.
+          # Preserve Ubuntu's Signed-By keyring for all package verification.
+          sudo sed -i -E 's|^URIs:.*|URIs: https://mirrors.edge.kernel.org/ubuntu/|' \
+            /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o APT::Update::Error-Mode=any update
           sudo apt-get install -y --no-install-recommends \
             apparmor-profiles \
             build-essential \
