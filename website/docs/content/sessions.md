@@ -447,15 +447,18 @@ host without closing its terminals.
 Right-click a host and choose **Refresh** to reread its inventory. **Connect**,
 **Cancel**, and **Retry** stay visible in the header when needed.
 
-Choose **Manual**, **Name**, or **Backend** beside **Workspaces** to sort the
-list. In Manual mode, drag sessions into your preferred order, including
-across backends on the same host. Stopped Herdr sessions stay at the bottom.
+Open the three-line **Sidebar options** button beside **Workspaces** and
+choose **Manual**, **Name**, or **Backend** to sort the list. The icon gains a
+filled circle when sorting by Name or Backend. In Manual mode, drag sessions
+into your preferred order, including across backends on the same host.
+Stopped Herdr sessions stay at the bottom.
 With a session open, **Ctrl-Tab** and **Ctrl-Shift-Tab** follow the displayed
 session order and skip stopped sessions.
 
 ![The Rust sidebar with tmux, Zellij, and Herdr TUI sessions on Linux](/docs/assets/guide-rust-sidebar.png)
 
-Open the gear button, then **Sidebar**, to choose Chip, Text, or Dot backend
+Choose **Sidebar Settings…** from the options menu, or open the gear button
+and select **Sidebar**, to choose Chip, Text, or Dot backend
 labels and Regular or Compact rows. You can also hide worktree sessions from
 the session list or hide root checkouts under Projects. The preview updates
 as you choose; changes save immediately and apply to every open window.

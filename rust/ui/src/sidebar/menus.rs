@@ -1,18 +1,19 @@
 use super::{
-    Context, FluentBuilder, GpuiMouseButton, HostHeaderAction, HostItem, InteractiveElement,
-    IntoElement, KeyDownEvent, NewSessionKind, ParentElement, RootView, SidebarSort,
+    APP_NAVIGATION_WIDTH, APP_TITLEBAR_HEIGHT, Context, FluentBuilder, GpuiMouseButton,
+    HostHeaderAction, HostItem, InteractiveElement, IntoElement, KeyDownEvent,
+    NAVIGATION_HEADER_HEIGHT, NewSessionKind, ParentElement, RootView, SettingsPane, SidebarSort,
     StatefulInteractiveElement, Styled, Window, div, host_header_action, popup_position, px, rgb,
     session_creation_available, tooltip,
 };
 
 #[derive(Clone)]
 pub(crate) enum SidebarMenu {
-    Sort,
+    Options,
     Create(String),
     Host(String),
 }
 
-pub(crate) fn sort_title(sort: SidebarSort) -> &'static str {
+fn sort_title(sort: SidebarSort) -> &'static str {
     match sort {
         SidebarSort::Manual => "Manual",
         SidebarSort::Name => "Name",
@@ -27,6 +28,34 @@ const BACKENDS: [NewSessionKind; 3] = [
     NewSessionKind::Zellij,
     NewSessionKind::Herdr,
 ];
+
+pub(super) fn options_icon(sort: SidebarSort) -> gpui::Div {
+    let sorted = sort != SidebarSort::Manual;
+    div()
+        .size(px(28.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .child(
+            div()
+                .size(px(18.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(2.5))
+                .when(sorted, |el| el.rounded_full().bg(rgb(0x4a_8fcf)))
+                .children([12.0, 8.0, 4.0].map(|width| {
+                    div()
+                        .w(px(width))
+                        .h(px(1.5))
+                        .rounded_full()
+                        .bg(rgb(if sorted { 0xff_ffff } else { 0xad_b8c8 }))
+                })),
+        )
+}
 
 fn creation_reason(host: &HostItem, kind: NewSessionKind) -> Option<String> {
     if session_creation_available(host, kind) {
@@ -55,24 +84,27 @@ fn creation_title(kind: NewSessionKind) -> &'static str {
 }
 
 impl RootView {
-    pub(crate) fn sidebar_sort_button(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        div()
-            .id("sidebar-sort")
-            .h(px(28.0))
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_1()
-            .rounded_md()
-            .text_size(px(11.0))
-            .text_color(rgb(0x9c_a7b8))
+    pub(crate) fn sidebar_options_button(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let sort = self.workspace.configured_sidebar().session_sort;
+        let description = match sort {
+            SidebarSort::Manual => "Manual order".to_owned(),
+            _ => format!("Sorted by {}", sort_title(sort)),
+        };
+        let open = matches!(self.sidebar_menu, Some((SidebarMenu::Options, _)));
+        options_icon(sort)
+            .id("sidebar-options")
             .cursor_pointer()
             .hover(|style| style.bg(rgb(0x21_2732)))
-            .child("↕")
-            .child(sort_title(self.workspace.configured_sidebar().session_sort))
-            .tooltip(|_, cx| tooltip("Sort sessions".to_owned(), cx))
-            .on_click(cx.listener(|this, event: &gpui::ClickEvent, window, cx| {
-                this.open_sidebar_menu(SidebarMenu::Sort, event.position(), window, cx);
+            .when(open, |el| el.bg(rgb(0x21_2732)))
+            .when(!open, |el| {
+                el.tooltip(move |_, cx| tooltip(format!("Sidebar options · {description}"), cx))
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                let anchor = gpui::point(
+                    px(APP_NAVIGATION_WIDTH - 8.0),
+                    px(APP_TITLEBAR_HEIGHT + NAVIGATION_HEADER_HEIGHT),
+                );
+                this.open_sidebar_menu(SidebarMenu::Options, anchor, window, cx);
             }))
             .into_any_element()
     }
@@ -113,8 +145,15 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.sidebar_menu_index = if matches!(menu, SidebarMenu::Options) {
+            SORTS
+                .iter()
+                .position(|sort| *sort == self.workspace.configured_sidebar().session_sort)
+                .unwrap_or(0)
+        } else {
+            0
+        };
         self.sidebar_menu = Some((menu, point));
-        self.sidebar_menu_index = 0;
         self.session_action_menu = None;
         window.focus(&self.sidebar_menu_focus);
         cx.notify();
@@ -141,7 +180,14 @@ impl RootView {
                 }
                 window.focus(&self.focus);
             }
-            SidebarMenu::Sort => {
+            SidebarMenu::Options if index == SORTS.len() => {
+                self.open_settings(window, cx);
+                if let Some(dialog) = &mut self.settings_dialog {
+                    dialog.pane = SettingsPane::Sidebar;
+                    dialog.sidebar_focus = Some(SettingsPane::Sidebar);
+                }
+            }
+            SidebarMenu::Options => {
                 if let Some(sort) = SORTS.get(index)
                     && let Err(error) = self
                         .workspace
@@ -191,7 +237,7 @@ impl RootView {
                 };
                 vec![(title.to_owned(), None)]
             }
-            SidebarMenu::Sort => SORTS
+            SidebarMenu::Options => SORTS
                 .iter()
                 .map(|sort| {
                     (
@@ -207,6 +253,7 @@ impl RootView {
                         None,
                     )
                 })
+                .chain(std::iter::once(("Sidebar Settings…".to_owned(), None)))
                 .collect(),
             SidebarMenu::Create(id) => {
                 let host = snapshot.hosts().iter().find(|host| host.id() == id)?;
@@ -233,13 +280,15 @@ impl RootView {
             }
         };
         let count = options.len();
+        let is_options = matches!(menu, SidebarMenu::Options);
         let (left, top) = popup_position(
             point.x.into(),
             point.y.into(),
             window.bounds().size.width.into(),
             window.bounds().size.height.into(),
             224.0,
-            8.0 + 30.0 * f32::from(u16::try_from(count).expect("sidebar menu size")),
+            8.0 + 30.0 * f32::from(u16::try_from(count).expect("sidebar menu size"))
+                + if is_options { 37.0 } else { 0.0 },
         );
         let mut items = div()
             .id("sidebar-menu")
@@ -273,7 +322,22 @@ impl RootView {
                 cx.stop_propagation();
                 cx.notify();
             }));
+        if is_options {
+            items = items.child(
+                div()
+                    .h(px(28.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .text_size(px(11.0))
+                    .text_color(rgb(0x8a_96a8))
+                    .child("Sort Sessions By"),
+            );
+        }
         for (index, (title, reason)) in options.into_iter().enumerate() {
+            if is_options && index == SORTS.len() {
+                items = items.child(div().h(px(1.0)).my_1().bg(rgb(0x36_3c48)));
+            }
             items = items.child(
                 div()
                     .id(("sidebar-menu-option", index))

@@ -7242,7 +7242,7 @@ impl RootView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(0xa5_ac_b8))
                     .child(div().flex_1().child("Workspaces"))
-                    .child(self.sidebar_sort_button(cx)),
+                    .child(self.sidebar_options_button(cx)),
             )
             .child(body)
             .into_any_element()

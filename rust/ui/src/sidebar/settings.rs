@@ -1,4 +1,4 @@
-use super::menus::{SORTS, sort_title};
+use super::menus::{SORTS, options_icon};
 use super::*;
 
 pub(crate) const FIELD_COUNT: usize = 5;
@@ -258,7 +258,7 @@ impl RootView {
                     .text_size(px(11.0))
                     .text_color(rgb(0x8a_96a8))
                     .child("Workspaces")
-                    .child(sort_title(preferences.session_sort)),
+                    .child(options_icon(preferences.session_sort)),
             )
             .child(
                 div()
