@@ -7893,7 +7893,7 @@ impl RootView {
         actions: Vec<SessionRowAction>,
         row_group: String,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    ) -> gpui::Stateful<gpui::Div> {
         div()
             .id((
                 gpui::ElementId::named_usize("session-menu-host", host_index),
@@ -7911,7 +7911,7 @@ impl RootView {
             .text_xs()
             .text_color(rgb(0x9b_a2ae))
             .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xe1_e5ec)))
-            .child("…")
+            .child("⋯")
             .tooltip(|_, cx| sidebar::tooltip("Session actions".to_owned(), cx))
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
@@ -7924,7 +7924,6 @@ impl RootView {
                     );
                 }),
             )
-            .into_any_element()
     }
 
     fn host_landing_element(host: &HostItem, cx: &mut Context<Self>) -> gpui::AnyElement {

@@ -190,6 +190,60 @@ fn manual_drag_moves_across_backends_without_moving_same_named_sessions_on_other
 }
 
 #[test]
+fn navigation_leaves_a_hidden_worktree_in_both_directions() {
+    let host = settings::sample_host();
+    let active = SessionSelection::kwt_workspace(
+        "preview",
+        "studio.example",
+        "atlas/main",
+        KwtTmuxAttachMode::Direct,
+        None,
+        "/projects/atlas",
+        None,
+    );
+    let rows = sessions(&host, Some(&active), &[], &SidebarPreferences::default());
+    assert_eq!(
+        adjacent_session(&rows, Some(&active), false),
+        Some(SessionSelection::new("preview", "studio.example", "build"))
+    );
+    assert_eq!(
+        adjacent_session(&rows, Some(&active), true),
+        Some(SessionSelection::herdr(
+            "preview",
+            "studio.example",
+            "review"
+        ))
+    );
+}
+
+#[test]
+fn navigation_uses_the_only_destination_and_preserves_terminal_keys_without_one() {
+    let host = HostItem::ssh(
+        "studio",
+        "Studio",
+        "studio.example",
+        HostConnectionState::Ready,
+        vec![workspace::SessionItem::new("build", 0)],
+        None,
+    );
+    let rows = sessions(&host, None, &[], &SidebarPreferences::default());
+    let hidden = SessionSelection::new("studio", "studio.example", "hidden");
+    let build = SessionSelection::new("studio", "studio.example", "build");
+    for backwards in [false, true] {
+        assert_eq!(
+            adjacent_session(&rows, Some(&hidden), backwards),
+            Some(build.clone())
+        );
+        assert_eq!(
+            adjacent_session(&rows, None, backwards),
+            Some(build.clone())
+        );
+        assert_eq!(adjacent_session(&rows, Some(&build), backwards), None);
+        assert_eq!(adjacent_session(&[], Some(&hidden), backwards), None);
+    }
+}
+
+#[test]
 fn showing_worktree_sessions_preserves_the_exact_open_and_kill_target() {
     let host = settings::sample_host();
     let mut preferences = SidebarPreferences::default();

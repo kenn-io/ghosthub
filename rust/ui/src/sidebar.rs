@@ -255,11 +255,7 @@ fn label(kind: workspace::SessionKind, style: BackendLabel) -> gpui::AnyElement 
         .into_any_element()
 }
 
-fn content(
-    row: &SidebarSession,
-    preferences: &SidebarPreferences,
-    group: Option<String>,
-) -> gpui::AnyElement {
+fn content(row: &SidebarSession, preferences: &SidebarPreferences) -> gpui::AnyElement {
     let selection = row.selection();
     let mut body = div()
         .flex_1()
@@ -297,19 +293,10 @@ fn content(
                 .child(operation),
         );
     }
-    body.child(
-        div()
-            .flex_none()
-            .min_w(px(28.0))
-            .flex()
-            .justify_end()
-            .when_some(group, |el, group| {
-                el.group_hover(group, |style| style.opacity(0.0))
-            })
-            .when(preferences.backend_label != BackendLabel::Dot, |el| {
-                el.child(label(selection.kind(), preferences.backend_label))
-            }),
-    )
+    body.when(preferences.backend_label != BackendLabel::Dot, |el| {
+        el.child(label(selection.kind(), preferences.backend_label))
+    })
+    .pr(px(14.0))
     .into_any_element()
 }
 
@@ -396,11 +383,7 @@ impl RootView {
             })
             .when(!interactive, |el| el.opacity(0.55))
             .tooltip(move |_, cx| tooltip(hint.clone(), cx))
-            .child(content(
-                row,
-                preferences,
-                (!actions.is_empty()).then(|| group.clone()),
-            ));
+            .child(content(row, preferences));
         if !actions.is_empty() {
             let action_selection = row.action_selection().clone();
             let context_selection = action_selection.clone();
@@ -419,17 +402,19 @@ impl RootView {
                     }),
                 )
                 .child(
-                    div()
-                        .absolute()
-                        .right_1()
-                        .child(Self::session_action_menu_button(
+                    div().absolute().right(px(2.0)).child(
+                        Self::session_action_menu_button(
                             0,
                             order_id(&selection),
                             action_selection,
                             actions,
                             group,
                             cx,
-                        )),
+                        )
+                        .w(px(20.0))
+                        .h(px(row_height(preferences)))
+                        .when(row.active(), |el| el.opacity(1.0)),
+                    ),
                 );
         }
         if preferences.session_sort == SidebarSort::Manual {
@@ -477,6 +462,11 @@ impl RootView {
         element
             .when(interactive, |el| {
                 el.on_click(cx.listener(move |this, _, window, cx| {
+                    if let Err(error) = this.workspace.select_host(selection.host_id()) {
+                        this.diagnostic = Some(error.to_string());
+                        cx.notify();
+                        return;
+                    }
                     if stopped {
                         this.restart_herdr_session(&selection, window, cx);
                     } else {
@@ -544,12 +534,20 @@ fn adjacent_session(
     backwards: bool,
 ) -> Option<SessionSelection> {
     let available: Vec<_> = rows.iter().filter(|row| row.can_navigate()).collect();
-    if available.len() < 2 {
+    let Some(index) = available
+        .iter()
+        .position(|row| Some(row.selection()) == active)
+    else {
+        return if backwards {
+            available.last()
+        } else {
+            available.first()
+        }
+        .map(|row| row.selection().clone());
+    };
+    if available.len() == 1 {
         return None;
     }
-    let index = available
-        .iter()
-        .position(|row| Some(row.selection()) == active)?;
     let next = if backwards {
         (index + available.len() - 1) % available.len()
     } else {

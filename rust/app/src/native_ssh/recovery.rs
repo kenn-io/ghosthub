@@ -459,21 +459,19 @@ fn automatic_recovery_retries_an_unavailable_server() {
     };
     fixture.connect();
     fixture.attach("review", "before-outage");
-    let config_path = PathBuf::from(std::env::var_os("HOME").unwrap()).join(".ssh/config");
-    let original = std::fs::read_to_string(&config_path).unwrap();
-    let unavailable = original
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with("Port ") {
-                "  Port 1"
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&config_path, unavailable).unwrap();
+    // An outage leaves the route unchanged. Editing SSH config can correctly
+    // pause automatic recovery for review while KWT resolves or leases it.
+    let listener = std::fs::read_to_string(fixture.root.join("sshd.pid")).unwrap();
+    let port = std::fs::read_to_string(fixture.root.join("port")).unwrap();
+    let refused_port = format!("port {}:", port.trim());
     fixture.break_ssh_connections();
+    assert!(
+        Command::new("kill")
+            .arg(listener.trim())
+            .status()
+            .unwrap()
+            .success()
+    );
     fixture.wait_for_error("status 255");
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -485,7 +483,7 @@ fn automatic_recovery_retries_an_unavailable_server() {
             .unwrap();
         if host.connection() == HostConnectionState::Unavailable
             && host.diagnostic().is_some_and(|diagnostic| {
-                diagnostic.message().contains("port 1:")
+                diagnostic.message().contains(&refused_port)
                     && diagnostic.message().contains("Connection refused")
             })
         {
@@ -493,12 +491,23 @@ fn automatic_recovery_retries_an_unavailable_server() {
         }
         assert!(
             Instant::now() < deadline,
-            "automatic connection to Port 1 did not fail: {:?}",
+            "automatic connection to the stopped SSH server did not fail: {:?}",
             host.diagnostic()
         );
         thread::sleep(Duration::from_millis(20));
     }
-    std::fs::write(&config_path, original).unwrap();
+    let log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(fixture.root.join("sshd.log"))
+        .unwrap();
+    let mut server = Command::new("/usr/sbin/sshd")
+        .args(["-D", "-e", "-f"])
+        .arg(fixture.root.join("sshd_config"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(log)
+        .spawn()
+        .unwrap();
     fixture.wait_for_automatic_recovery();
     fixture.tmux_shell("review", "after-outage");
     assert!(
@@ -506,6 +515,8 @@ fn automatic_recovery_retries_an_unavailable_server() {
             .terminal_text()
             .contains("remote-review:before-outage")
     );
+    server.kill().unwrap();
+    server.wait().unwrap();
 }
 
 #[test]

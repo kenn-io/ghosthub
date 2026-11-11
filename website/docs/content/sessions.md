@@ -440,9 +440,10 @@ configuration, updates, resurrection data, and process behavior.
 
 The Rust development build for Linux and Windows shows tmux, Zellij, and
 Herdr TUI sessions in one list per host. The host’s **+** stays visible: use it
-to create a session or **Add Project…**. Right-click a session or hover its row
-and select **…** for session actions. The arrow beside **+** collapses the
-host without closing its terminals.
+to create a session or **Add Project…**. Right-click a session or select its
+**⋯** button for session actions. That button sits after the backend label,
+appears on hover, and stays visible on the active row. The arrow beside **+**
+collapses the host without closing its terminals.
 
 Right-click a host and choose **Refresh** to reread its inventory. **Connect**,
 **Cancel**, and **Retry** stay visible in the header when needed.
@@ -454,23 +455,27 @@ into your preferred order, including across backends on the same host.
 Stopped Herdr sessions stay at the bottom.
 With a session open, **Ctrl-Tab** and **Ctrl-Shift-Tab** follow the displayed
 session order and skip stopped sessions.
+From a worktree hidden from the session list, these shortcuts open the first
+or last available session on the same host. If there is no destination,
+the terminal receives the shortcut.
 
 ![The Rust sidebar with tmux, Zellij, and Herdr TUI sessions on Linux](/docs/assets/guide-rust-sidebar.png)
 
-Choose **Sidebar Settings…** from the options menu, or open the gear button
-and select **Sidebar**, to choose Chip, Text, or Dot backend
-labels and Regular or Compact rows. You can also hide worktree sessions from
-the session list or hide root checkouts under Projects. The preview updates
-as you choose; changes save immediately and apply to every open window.
+The options menu also offers **Backend Label** (Chip, Text, or Dot), **Row
+Height** (Regular or Compact), **Hide Worktree Sessions**, and **Hide Root
+Checkout**. Choose **Sidebar Settings…** for a live preview of these choices.
+Changes save immediately and apply to every open window. You can also reach
+these settings through the gear button, then **Sidebar**.
 
 ![Sidebar settings and the live preview in the Rust application on Linux](/docs/assets/guide-rust-sidebar-settings.png)
 
-Agent attention, Herdr desktop terminals, hidden-worktree filtering, and
-worktree diff/PR/check indicators are still being added to the Rust port.
+Agent attention, Herdr desktop terminals, session renaming, hidden-worktree
+filtering, and worktree diff/PR/check indicators are still being added to the
+Rust port.
 
 ### Session controls
 
-Right-click a session or select its **…** button. The available actions depend
+Right-click a session or select its **⋯** button. The available actions depend
 on the backend and whether the session is running:
 
 | Action | Result |

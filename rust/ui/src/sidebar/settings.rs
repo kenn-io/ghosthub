@@ -280,7 +280,7 @@ impl RootView {
                     .h(px(row_height(preferences)))
                     .flex()
                     .items_center()
-                    .child(content(&row, preferences, None)),
+                    .child(content(&row, preferences)),
             );
         }
         preview = preview

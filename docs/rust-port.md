@@ -1764,14 +1764,20 @@ numbers naturally, and stopped Herdr sessions remain last in every mode.
 Ctrl-Tab and Ctrl-Shift-Tab move between openable sessions in the displayed
 order on the active host, skipping stopped Herdr sessions. Without an eligible
 neighbor, the terminal keeps the key. Host disclosure remains window-local.
+When the active worktree is hidden from the session list, navigation starts
+at the first or last available session on its host. Session action buttons
+have a separate trailing column, keep backend labels visible, and remain
+visible on the active row. The Sidebar options menu also exposes backend
+labels, row height, worktree-session visibility, and root-checkout visibility;
+Sidebar Settings opens the same preferences with a live preview.
 Worktree sessions are hidden from the session list by default; the root checkout
 remains visible under Projects. Settings edits preserve changes made in other
 windows, including a sort choice made from the sidebar menu.
 
 The Rust sidebar does not yet have agent-attention data or Needs Attention
-sorting, Herdr desktop terminals, worktree diff/PR/check status, or hidden-worktree
-metadata. Those integrations remain separate parity work; no inactive controls
-are shown for them.
+sorting, Herdr desktop terminals, session renaming, worktree diff/PR/check
+status, or hidden-worktree metadata. Those integrations remain separate parity
+work; no inactive controls are shown for them.
 
 The parity inventory is:
 
