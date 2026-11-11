@@ -38,7 +38,7 @@ struct KeyboardNavigationModelTests {
         ) == last)
     }
 
-    @Test("session sibling groups are host-local and filter eligibility")
+    @Test("sessions on a host step through one list across backends")
     func hostSessionSiblingGroups() {
         let hostID = UUID()
         let directoryOne = DirectoryWorkspaceSummary(
@@ -82,32 +82,51 @@ struct KeyboardNavigationModelTests {
             .directoryWorkspace(directoryOne.id),
             .directoryWorkspace(directoryTwo.id),
         ])
-        #expect(KeyboardNavigationModel.siblingTargets(
-            for: .tmuxSession(hostID: hostID, name: "alpha"), in: context
-        ) == [
+        // Hidden tmux sessions and stopped Herdr sessions are skipped; the
+        // rest follow the sidebar's default backend-then-name order.
+        let sessions: [WorkspaceNavigationTarget] = [
             .tmuxSession(hostID: hostID, name: "alpha"),
             .tmuxSession(hostID: hostID, name: "omega"),
-        ])
-        #expect(KeyboardNavigationModel.siblingTargets(
-            for: .herdrSession(hostID: hostID, name: "running-a"), in: context
-        ) == [
+            .zellijSession(hostID: hostID, name: "zellij-a"),
+            .zellijSession(hostID: hostID, name: "zellij-z"),
+            .herdrSession(hostID: hostID, name: "t1", backend: .core),
+            .herdrSession(hostID: hostID, name: "t2", backend: .core),
             .herdrSession(hostID: hostID, name: "running-a"),
             .herdrSession(hostID: hostID, name: "running-z"),
-        ])
+        ]
+        for current in sessions {
+            #expect(KeyboardNavigationModel.siblingTargets(
+                for: current, in: context
+            ) == sessions)
+        }
         #expect(KeyboardNavigationModel.siblingTargets(
             for: .herdrSession(hostID: hostID, name: "stopped"), in: context
         ).isEmpty)
+        #expect(KeyboardNavigationModel.steppedTarget(
+            from: .tmuxSession(hostID: hostID, name: "omega"),
+            step: 1,
+            in: context
+        ) == .zellijSession(hostID: hostID, name: "zellij-a"))
+    }
+
+    @Test("session navigation follows the chosen sort")
+    func sessionNavigationFollowsSort() {
+        let hostID = UUID()
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [.fixture(
+            id: hostID,
+            tmuxSessions: [.init(name: "zed", managed: false, windows: [])],
+            zellijSessions: [.init(name: "alpha")]
+        )])
+        let context = KeyboardNavigationContext(
+            snapshot: snapshot,
+            sessionSort: .name
+        )
+
         #expect(KeyboardNavigationModel.siblingTargets(
-            for: .herdrSession(hostID: hostID, name: "t1", backend: .core), in: context
+            for: .tmuxSession(hostID: hostID, name: "zed"), in: context
         ) == [
-            .herdrSession(hostID: hostID, name: "t1", backend: .core),
-            .herdrSession(hostID: hostID, name: "t2", backend: .core),
-        ])
-        #expect(KeyboardNavigationModel.siblingTargets(
-            for: .zellijSession(hostID: hostID, name: "zellij-a"), in: context
-        ) == [
-            .zellijSession(hostID: hostID, name: "zellij-a"),
-            .zellijSession(hostID: hostID, name: "zellij-z"),
+            .zellijSession(hostID: hostID, name: "alpha"),
+            .tmuxSession(hostID: hostID, name: "zed"),
         ])
     }
 

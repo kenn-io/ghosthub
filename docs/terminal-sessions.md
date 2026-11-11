@@ -271,9 +271,10 @@ selected backend, so they do not wait for the other backend to respond.
 Core attachments reuse the ordinary local/SSH client, detach, and reconnect
 paths. They never request TUI lifecycle operations or pane splits. Herdr desktop
 owns spaces and tabs; Ghosthub presents individual terminals without importing
-its layout. The sidebar separates **Herdr Terminals** from **Herdr TUI Sessions**.
-Only the TUI group offers creation and lifecycle actions. Sibling navigation
-stays within the selected backend's group and follows its saved row order.
+its layout. In the sidebar's session list, desktop terminals carry a
+**herdr** label and TUI sessions a **herdr tui** label. Only TUI rows offer
+creation and lifecycle actions. Sibling navigation walks the host's whole
+session list in sidebar order and skips stopped Herdr sessions.
 
 Before discovery and attachment, Ghosthub clears inherited TUI routing variables
 and `HC_SESSION`, `HC_SOCKET`, `HC_TERMINAL_ID`, and `HC_TERMINAL_SOCKET`.
@@ -966,10 +967,10 @@ Direct tmux discovery marks a worktree session on the default or `kwt` server as
 running when its exact kwt session name and socket are present and the host remains
 reachable. Cached
 inventory does not preserve the live indicator through a discovery failure.
-Kwt-owned session endpoints are removed from the generic session group by default and
-remain rendered under their project/worktree. Settings → Worktrees can expose
+Kwt-owned session endpoints are removed from the host session list by default and
+remain rendered under their project/worktree. Settings → Sidebar can expose
 those duplicate generic session entries. Every remaining tmux session is
-eligible for the host-level session group. Case-sensitive `*` and `?` wildcard
+eligible for the host session list. Case-sensitive `*` and `?` wildcard
 patterns in
 `hidden_session_patterns` under `[tmux]` inside
 `~/.config/ghosthub/config.toml` hide matching standalone sessions from the

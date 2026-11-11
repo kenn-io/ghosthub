@@ -8,19 +8,27 @@ icon: lucide/square-terminal
 Open a running session, create one for a new task, or return to work started by
 your tools and agents. Closing a Ghosthub terminal leaves its session running.
 
-Expand a host in the sidebar to find its sessions:
+Expand a host in the sidebar to find its sessions. Each host shows one list of
+sessions, then a **Projects** group:
 
-- **Tmux Sessions** lists tmux sessions that are not grouped under a project.
-- **Herdr TUI Sessions** lists running and stopped sessions from the older terminal app.
-- **Herdr Terminals** lists live desktop terminals (macOS).
-- **Zellij Sessions** lists active Zellij sessions.
+- The session list holds every session that is not grouped under a project.
+  A label at the end of each row names its backend:
+
+  | Label | Session |
+  | --- | --- |
+  | **tmux** | tmux session |
+  | **zellij** | active Zellij session |
+  | **herdr** | live Herdr desktop terminal (macOS) |
+  | **herdr tui** | running or stopped session from the older Herdr terminal app |
+
 - **Projects** lists Git worktrees and registered directories with tmux sessions.
 
-If Herdr or Zellij is not installed, its group is hidden. You can use all three
-multiplexers on the same host. Each keeps its own panes, layout, history, key
-bindings, and running programs.
+If Herdr or Zellij is not installed, its sessions simply do not appear. You can
+use all three multiplexers on the same host. Each keeps its own panes, layout,
+history, key bindings, and running programs. To change how the labels look or
+how the list is sorted, see [Arrange the session list](#arrange-the-session-list).
 
-![Ghosthub showing tmux, Herdr, and Zellij session groups with an active Zellij session and its Command Palette actions](/docs/assets/guide-sessions.png)
+![Ghosthub showing tmux, Herdr, and Zellij sessions in one labeled list, with an active Zellij session and its Command Palette actions](/docs/assets/guide-sessions.png)
 
 ## Sessions started by tools and agents
 
@@ -36,7 +44,7 @@ For example, create a detached tmux session on your Mac or SSH host:
 tmux new-session -d -s agent-review
 ```
 
-Select **agent-review** under that host's **Tmux Sessions**. The agent and your
+Select **agent-review** in that host's session list. The agent and your
 terminal share the same running session. Closing Ghosthub leaves it running.
 
 For project work, agents can run `kwt list --json` from a repository to inspect
@@ -48,7 +56,7 @@ this Mac; they do not report agent progress.
 
 Ghosthub checks the default tmux server and kwt's server. Sessions registered
 as worktrees or directories appear under **Projects**. Other sessions on either
-server appear under **Tmux Sessions**, including those created with
+server appear in the host's session list, including those created with
 `kwt tmux run`. Ghosthub opens each session on the server where it was found.
 It does not scan arbitrary named tmux servers.
 
@@ -69,9 +77,13 @@ until discovery succeeds again.
 
 ## Create a standalone session
 
-1. Expand the target host.
-2. Select the **+** beside **Tmux Sessions**, **Herdr TUI Sessions**, or **Zellij Sessions**.
+1. Select the **+** at the right end of the target host's row in the sidebar.
+2. Choose **New tmux Session…**, **New Zellij Session…**, or
+   **New Herdr Session…**.
 3. Enter a session name.
+
+A backend that is not available on the host stays in the menu, dimmed. Hover
+over it to see why.
 
 A new tmux session remains usable from the `tmux` CLI and other tmux clients.
 To start a remote session with a saved command, use a
@@ -101,20 +113,21 @@ spaces, tabs, or [split layout](#herdr-desktop-splits).
    executable must be on that account's login-shell `PATH`. The upstream
    installer places it in `~/.local/bin`; `hc` is an optional alias.
 2. Start a terminal in Herdr desktop, or run `herdr-core run --bg --name review`.
-3. Expand **Herdr Terminals** in Ghosthub and select the terminal. The row shows
-   its name or desktop space and tab, with its address (such as `t7`) underneath.
+3. Find the terminal's **herdr** row in the host's session list and select it.
+   The row shows its name or desktop space and tab, followed by its address
+   (such as `t7`).
    You can also press ++shift+cmd+p++ and search for the name or address.
 
-![A desktop terminal under Herdr Terminals, with older TUI sessions in a separate group.](/docs/assets/guide-herdr-core.png)
+![A Herdr desktop terminal and an older Herdr TUI session in one host's session list.](/docs/assets/guide-herdr-core.png)
 
 Switching away or pressing ++cmd+w++ detaches and leaves the program running.
-Press ++ctrl+tab++ or ++ctrl+shift+tab++ to move between terminals in the same
-group when at least two are available. Herdr desktop's space, tab, and pane
+Press ++ctrl+tab++ or ++ctrl+shift+tab++ to move to the next or previous
+session in the host's list. Herdr desktop's space, tab, and pane
 shortcuts belong to its own window.
 
-Create terminals in Herdr desktop or with its CLI. Ghosthub's **Herdr TUI
-Sessions** group has the **+**, Stop, Restart, and Delete actions for the older
-terminal app.
+Create terminals in Herdr desktop or with its CLI. Ghosthub's
+**New Herdr Session…** action and the Stop, Restart, and Delete actions apply
+only to the older Herdr TUI app.
 
 Ghosthub checks the default core on each configured host. It excludes finished
 terminals and terminals reached through core's own remote-machine connections;
@@ -131,19 +144,19 @@ Ghosthub. The desktop handoff is tested with Herdr 0.1.13 and core 0.1.17.
 
 ### Herdr desktop splits
 
-Each terminal pane in a Herdr desktop split appears as a separate row under
-**Herdr Terminals**. A tab with two terminal panes produces two rows. Selecting
+Each terminal pane in a Herdr desktop split appears as a separate **herdr**
+row in the host's session list. A tab with two terminal panes produces two rows. Selecting
 either row opens that terminal at full size. Ghosthub does not show the panes
 side by side or preserve their arrangement.
 
 Without explicit terminal names, panes in the same desktop tab share the same
-`space / tab` title. Use the address beneath each title, such as `t1` or `t2`,
-to tell them apart. ++ctrl+tab++ and ++ctrl+shift+tab++ move through eligible
-terminals across the host's **Herdr Terminals** group, including other tabs.
+`space / tab` title. Use the address after each title, such as `t1` or `t2`,
+to tell them apart. ++ctrl+tab++ and ++ctrl+shift+tab++ move through every
+session in the host's list, including terminals in other tabs.
 
 Use Herdr desktop to view or change the split layout. Ghosthub's **Split Right**
 and **Split Down** actions are unavailable for desktop terminals. Older
-**Herdr TUI Sessions** open as a whole session, including their visible splits.
+Herdr TUI sessions open as a whole session, including their visible splits.
 
 ## Attach and detach
 
@@ -337,7 +350,8 @@ open or reopen it.
 
 ## Rename a standalone session
 
-Control-click a standalone session row and choose **Rename Session…**, or use
+Open a standalone session row's **⋯** menu, or Control-click the row, and
+choose **Rename Session…**, or use
 **Rename tmux session** in the Command Palette. The new name must be unique on
 that host and cannot contain periods, colons, or line breaks. An open session
 stays connected in every window that shows it and keeps its windows, panes, and
@@ -353,10 +367,11 @@ Renaming is unavailable on native Windows hosts.
 
 ## End a session deliberately
 
-To end a standalone session that Ghosthub knows is running, hover over its
-sidebar row and choose the subtle **×** control. For a kwt-backed session,
-open its worktree's **…** menu, or Control-click the row, and choose
-**Kill Session…**.
+Every session row has a small **⋯** menu just after its backend label. It
+appears when you hover over the row and stays visible on the selected row. To
+end a standalone tmux or active Zellij session, open that menu, or Control-click
+the row, and choose **Kill Session…**. For a kwt-backed session, open its
+worktree's **…** menu, or Control-click the row, and choose **Kill Session…**.
 
 Ghosthub confirms the host and exact tmux session before it sends
 `kill-session`. Ending a session terminates all of its windows, panes, and
@@ -371,7 +386,7 @@ Herdr lifecycle is whole-session only:
 - A running row offers **Stop Session…**. After confirmation, every shell,
   agent, server, test, and other process ends, while Herdr retains the saved
   workspace/tab/pane shape.
-- A dimmed **Stopped** row offers **Restart**, which restores that shape with
+- A dimmed **stopped** row offers **Restart**, which restores that shape with
   new processes and attaches immediately.
 - A stopped named row also offers **Delete Session…**, which permanently
   removes its saved state after confirmation.
@@ -400,6 +415,37 @@ resurrection or deletes exited Zellij sessions.
     checkout, while keeping the Git branch. See
     [Remove a worktree](projects-worktrees.md#remove-a-worktree).
 
+## Arrange the session list
+
+Select the options menu (the stacked lines beside **Workspaces** at the top of
+the sidebar) and choose how to order every host's session list:
+
+- **Manual** keeps the order you set by dragging rows. Drag a row onto another
+  row to move it, across backends too. Sessions you have not placed yet appear
+  after the placed ones, grouped by backend.
+- **Name** sorts sessions alphabetically.
+- **Backend** groups tmux, Zellij, Herdr desktop, and Herdr TUI sessions, each
+  by name.
+- **Needs Attention** moves sessions whose agent is waiting for approval or
+  input to the top, then working agents, then finished turns. Other sessions
+  keep their manual order.
+
+Stopped Herdr sessions always sit at the bottom. ++ctrl+tab++ and
+++ctrl+shift+tab++ follow the same order. While a sort other than **Manual** is
+on, the options menu icon shows in the accent color.
+
+The same menu changes the rest of the sidebar's settings at once:
+
+- **Backend Label**: a **Chip** (the default), colored **Text**, or a small
+  colored **Dot** before the name.
+- **Row Height**: **Regular** or **Compact**.
+- **Hide Worktree Sessions**, **Hide Root Checkout**, and **Show Hidden
+  Worktrees**.
+
+To compare choices before you apply them, select **Sidebar Settings…** in the
+menu or open **Settings → Sidebar**. A sample sidebar at the top of the pane
+shows each choice. Select **Done** to apply your changes.
+
 ## Hide standalone sessions
 
 To keep tool-owned or noisy standalone sessions out of the sidebar:
@@ -414,10 +460,10 @@ matches one character. Ghosthub stores these patterns in
 The patterns apply only to standalone sessions. A matching kwt workspace stays
 visible under its project.
 
-Kwt-managed sessions are also omitted from the separate **Tmux Sessions** group
-by default because their worktrees remain the canonical entry. You can expose
-those duplicate session rows with the toggle in **Settings → Worktrees**. The
-worktree's status glyph continues to reflect the live tmux session either way.
+Kwt-managed sessions are also omitted from the host's session list by default
+because their worktrees remain the canonical entry. To show those duplicate
+session rows, turn off **Hide Worktree Sessions** in the sidebar's options
+menu. The worktree's status glyph continues to reflect the live tmux session either way.
 
 ## Ownership and safety
 

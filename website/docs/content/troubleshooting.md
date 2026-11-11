@@ -58,7 +58,7 @@ that it is empty. Project inventory is separate from SSH reachability. A
 managed kwt maintenance failure stays silent until you request a project or
 worktree operation that needs the helper.
 
-## Herdr Sessions does not appear
+## Herdr sessions do not appear
 
 Herdr is optional and independent from tmux and projects. On the local Mac or
 a remote macOS/Linux host, run:
@@ -71,7 +71,7 @@ herdr session list --json
 Ghosthub shows entries reported as running or stopped. A session created
 outside Ghosthub, for example with `herdr --session NAME`, appears within about
 30 seconds while Ghosthub is the active app. If `herdr` is missing, the
-host stays fully usable and Ghosthub silently omits **Herdr Sessions**. If the
+host stays fully usable and Ghosthub silently omits Herdr sessions. If the
 command exists but fails or returns malformed JSON, the host header shows a
 warning with **Retry** and a shortcut to Host Settings. Herdr is not probed on
 experimental Windows hosts.
@@ -80,12 +80,12 @@ Closing a Herdr client never stops its server. A normal detach offers manual
 **Reconnect**; automatic retry is reserved for remote SSH transport loss and
 stops if the exact session is no longer running.
 
-If a session is labeled **Stopped**, choose **Restart** to restore its saved
+If a session is marked **stopped**, choose **Restart** to restore its saved
 shape with new processes. **Stop Session…** intentionally terminates all
 current processes; **Delete Session…** permanently removes saved state and is
 not available for Herdr's default session.
 
-## Zellij Sessions does not appear
+## Zellij sessions do not appear
 
 Zellij is optional and independent from tmux, Herdr, and projects. On the local
 Mac or a remote macOS/Linux host, run:
@@ -98,7 +98,7 @@ zellij list-sessions --no-formatting
 Ghosthub lists active Zellij sessions only. A session created outside
 Ghosthub appears within about 30 seconds while Ghosthub is the active app. If
 `zellij` is missing, the host
-stays fully usable and Ghosthub silently omits **Zellij Sessions**. If the
+stays fully usable and Ghosthub silently omits Zellij sessions. If the
 command exists but fails unexpectedly or returns malformed output, the host
 header shows a warning with **Retry** and a shortcut to Host Settings. Zellij
 is not probed on experimental Windows hosts.

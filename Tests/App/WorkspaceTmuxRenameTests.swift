@@ -28,7 +28,7 @@ extension WorkspaceTmuxDiscoveryTests {
                     name: "anchor"
                 ),
             ].joined(separator: "\n"),
-            forKey: WorkspaceSidebarOrderStorage.tmuxSessionKey
+            forKey: WorkspaceSidebarOrderStorage.sessionKey
         )
         let model = try makeModel(
             database: environment.database,
@@ -82,7 +82,7 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(store.requestCount == surfaceRequests)
         #expect(model.activeBorrowedTmuxSessionIsConnected)
         #expect(
-            WorkspaceSidebarOrderStorage.tmuxSessionRawValue(in: defaults)
+            WorkspaceSidebarOrderStorage.sessionRawValue(in: defaults)
                 .split(separator: "\n").map(String.init) == [
                     WorkspaceSidebarModel.tmuxSessionOrderID(
                         hostID: hostID,

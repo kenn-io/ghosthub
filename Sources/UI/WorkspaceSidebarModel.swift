@@ -7,9 +7,8 @@ public enum WorkspaceSidebarOrderStorage {
     public static let hostKey = "workspaceSidebarHostOrder"
     public static let defaultHostOrder = "local"
     public static let worktreeKey = "workspaceSidebarWorktreeOrderV1"
-    public static let tmuxSessionKey = "workspaceSidebarTmuxSessionOrderV1"
-    public static let herdrSessionKey = "workspaceSidebarHerdrSessionOrderV1"
-    public static let zellijSessionKey = "workspaceSidebarZellijSessionOrderV1"
+    /// One manual order for every backend's sessions on every host.
+    public static let sessionKey = "workspaceSidebarSessionOrderV2"
 
     public static func hostRawValue(
         in defaults: UserDefaults = .standard
@@ -23,22 +22,10 @@ public enum WorkspaceSidebarOrderStorage {
         defaults.string(forKey: worktreeKey) ?? ""
     }
 
-    public static func tmuxSessionRawValue(
+    public static func sessionRawValue(
         in defaults: UserDefaults = .standard
     ) -> String {
-        defaults.string(forKey: tmuxSessionKey) ?? ""
-    }
-
-    public static func herdrSessionRawValue(
-        in defaults: UserDefaults = .standard
-    ) -> String {
-        defaults.string(forKey: herdrSessionKey) ?? ""
-    }
-
-    public static func zellijSessionRawValue(
-        in defaults: UserDefaults = .standard
-    ) -> String {
-        defaults.string(forKey: zellijSessionKey) ?? ""
+        defaults.string(forKey: sessionKey) ?? ""
     }
 
     /// Keeps a renamed tmux session at its saved sidebar position.
@@ -49,7 +36,7 @@ public enum WorkspaceSidebarOrderStorage {
         in defaults: UserDefaults = .standard
     ) {
         var order = WorkspaceSidebarOrder(
-            rawValue: tmuxSessionRawValue(in: defaults)
+            rawValue: sessionRawValue(in: defaults)
         )
         guard order.replace(
             WorkspaceSidebarModel.tmuxSessionOrderID(
@@ -61,7 +48,7 @@ public enum WorkspaceSidebarOrderStorage {
                 name: newName
             )
         ) else { return }
-        defaults.set(order.rawValue, forKey: tmuxSessionKey)
+        defaults.set(order.rawValue, forKey: sessionKey)
     }
 }
 
@@ -346,12 +333,36 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
     }
 }
 
-public enum WorkspaceSidebarGroup: Equatable, Sendable {
-    case tmuxSessions
-    case herdrSessions
-    case herdrTerminals
-    case zellijSessions
-    case projects
+/// The multiplexer behind a session row. Case order is the Backend sort.
+public enum WorkspaceSidebarSessionBackend: Int, CaseIterable, Comparable, Sendable {
+    case tmux
+    case zellij
+    case herdrTerminal
+    case herdrTUI
+
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    /// The short label shown on the row.
+    public var label: String {
+        switch self {
+        case .tmux: "tmux"
+        case .zellij: "zellij"
+        case .herdrTerminal: "herdr"
+        case .herdrTUI: "herdr tui"
+        }
+    }
+
+    /// The spoken and tooltip name.
+    public var title: String {
+        switch self {
+        case .tmux: "tmux session"
+        case .zellij: "Zellij session"
+        case .herdrTerminal: "Herdr terminal"
+        case .herdrTUI: "Herdr TUI session"
+        }
+    }
 }
 
 public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
@@ -372,6 +383,51 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
     public var herdrSessionIsDefault: Bool?
 
     public var id: WorkspaceNavigationTarget { target }
+
+    /// Nil for host, project, worktree, and directory workspace rows.
+    public var sessionBackend: WorkspaceSidebarSessionBackend? {
+        switch target {
+        case .tmuxSession: .tmux
+        case .zellijSession: .zellij
+        case let .herdrSession(_, _, backend):
+            backend == .core ? .herdrTerminal : .herdrTUI
+        case .host, .project, .worktree, .directoryWorkspace: nil
+        }
+    }
+
+    /// Quiet text after a session's name. Herdr desktop panes in one tab
+    /// share a `space / tab` title, so their address tells them apart.
+    public var sessionDetail: String? {
+        guard sessionBackend == .herdrTerminal,
+              let subtitle, subtitle != title
+        else { return nil }
+        return subtitle
+    }
+
+    /// The row's identity in the shared manual session order.
+    public var sessionOrderID: String? {
+        switch target {
+        case let .tmuxSession(hostID, name, socketName):
+            WorkspaceSidebarModel.tmuxSessionOrderID(
+                hostID: hostID,
+                name: name,
+                socketName: socketName
+            )
+        case let .herdrSession(hostID, name, backend):
+            WorkspaceSidebarModel.herdrSessionOrderID(
+                hostID: hostID,
+                name: name,
+                backend: backend
+            )
+        case let .zellijSession(hostID, name):
+            WorkspaceSidebarModel.zellijSessionOrderID(
+                hostID: hostID,
+                name: name
+            )
+        case .host, .project, .worktree, .directoryWorkspace:
+            nil
+        }
+    }
 
     public init(
         target: WorkspaceNavigationTarget,
@@ -402,44 +458,20 @@ public struct WorkspaceSidebarSection: Equatable, Identifiable, Sendable {
     public var host: HostSummary
     public var projects: [WorkspaceSidebarProject]
     public var directoryWorkspaceRows: [WorkspaceSidebarRow]
-    public var tmuxSessionRows: [WorkspaceSidebarRow]
-    public var herdrSessionRows: [WorkspaceSidebarRow]
-    public var zellijSessionRows: [WorkspaceSidebarRow]
+    /// Every backend's sessions on this host, in display order.
+    public var sessionRows: [WorkspaceSidebarRow]
 
-    public func herdrRows(for backend: HerdrBackend) -> [WorkspaceSidebarRow] {
-        herdrSessionRows.filter {
-            guard case let .herdrSession(_, _, rowBackend) = $0.target else { return false }
-            return rowBackend == backend
-        }
+    public func sessionRows(
+        for backend: WorkspaceSidebarSessionBackend
+    ) -> [WorkspaceSidebarRow] {
+        sessionRows.filter { $0.sessionBackend == backend }
     }
 
     public var id: UUID { host.id }
     public var isEmpty: Bool {
         projects.isEmpty
             && directoryWorkspaceRows.isEmpty
-            && tmuxSessionRows.isEmpty
-            && herdrSessionRows.isEmpty
-            && zellijSessionRows.isEmpty
-    }
-
-    public var visibleGroups: [WorkspaceSidebarGroup] {
-        var groups: [WorkspaceSidebarGroup] = []
-        if !tmuxSessionRows.isEmpty {
-            groups.append(.tmuxSessions)
-        }
-        if !herdrRows(for: .core).isEmpty {
-            groups.append(.herdrTerminals)
-        }
-        if !herdrRows(for: .tui).isEmpty {
-            groups.append(.herdrSessions)
-        }
-        if !zellijSessionRows.isEmpty {
-            groups.append(.zellijSessions)
-        }
-        if !projects.isEmpty || !directoryWorkspaceRows.isEmpty {
-            groups.append(.projects)
-        }
-        return groups
+            && sessionRows.isEmpty
     }
 
     public var row: WorkspaceSidebarRow {
@@ -698,22 +730,16 @@ public enum WorkspaceSidebarModel {
         liveTmuxWindowCounts: [String: Int] = [:],
         hostOrderRawValue: String = "",
         worktreeOrderRawValue: String = "",
-        tmuxSessionOrderRawValue: String = "",
-        herdrSessionOrderRawValue: String = "",
-        zellijSessionOrderRawValue: String = ""
+        sessionOrderRawValue: String = "",
+        sessionSort: SidebarSessionSort = .manual,
+        agentAttentionByEndpoint: [String: AgentAttention] = [:]
     ) -> [WorkspaceSidebarSection] {
         RenderWorkCounters.countSidebarSectionComputation()
         let worktreeOrder = WorkspaceSidebarOrder(
             rawValue: worktreeOrderRawValue
         )
-        let tmuxSessionOrder = WorkspaceSidebarOrder(
-            rawValue: tmuxSessionOrderRawValue
-        )
-        let herdrSessionOrder = WorkspaceSidebarOrder(
-            rawValue: herdrSessionOrderRawValue
-        )
-        let zellijSessionOrder = WorkspaceSidebarOrder(
-            rawValue: zellijSessionOrderRawValue
+        let sessionOrder = WorkspaceSidebarOrder(
+            rawValue: sessionOrderRawValue
         )
         let hosts = WorkspaceSidebarOrder(rawValue: hostOrderRawValue).ordered(
             snapshot.hosts, identifiedBy: hostOrderID
@@ -789,7 +815,7 @@ public enum WorkspaceSidebarModel {
                 directoryWorkspaceRows: snapshot.directoryWorkspaces
                     .filter { $0.hostID == host.id }
                     .map { directoryWorkspaceRow($0, host: host) },
-                tmuxSessionRows: tmuxSessionOrder.ordered(
+                sessionRows: WorkspaceSidebarSessionOrdering.ordered(
                     host.tmuxSessions
                         .filter {
                             (!tmuxSessionVisibility.hideKwtManagedSessions
@@ -800,52 +826,24 @@ public enum WorkspaceSidebarModel {
                                 )))
                                 && !tmuxSessionVisibility.isHidden($0.name)
                         }
-                        .sorted {
-                            $0.name.localizedStandardCompare($1.name)
-                                == .orderedAscending
+                        .map {
+                            tmuxSessionRow(
+                                $0,
+                                hostID: host.id,
+                                connectedTmuxSessionIDs: connectedTmuxSessionIDs,
+                                liveTmuxWindowCounts: liveTmuxWindowCounts
+                            )
+                        }
+                        + host.herdrSessions.map {
+                            herdrSessionRow($0, hostID: host.id)
+                        }
+                        + host.zellijSessions.map {
+                            zellijSessionRow($0, hostID: host.id)
                         },
-                    identifiedBy: {
-                        tmuxSessionOrderID(
-                            hostID: host.id,
-                            name: $0.name,
-                            socketName: $0.socketName
-                        )
-                    }
+                    sort: sessionSort,
+                    manualOrder: sessionOrder,
+                    agentAttentionByEndpoint: agentAttentionByEndpoint
                 )
-                .map {
-                    tmuxSessionRow(
-                        $0,
-                        hostID: host.id,
-                        connectedTmuxSessionIDs: connectedTmuxSessionIDs,
-                        liveTmuxWindowCounts: liveTmuxWindowCounts
-                    )
-                },
-                herdrSessionRows: herdrSessionOrder.ordered(
-                    host.herdrSessions.sorted {
-                        $0.name.localizedStandardCompare($1.name)
-                            == .orderedAscending
-                    },
-                    identifiedBy: {
-                        herdrSessionOrderID(
-                            hostID: host.id,
-                            name: $0.name, backend: $0.backend
-                        )
-                    }
-                )
-                .map { herdrSessionRow($0, hostID: host.id) },
-                zellijSessionRows: zellijSessionOrder.ordered(
-                    host.zellijSessions.sorted {
-                        $0.name.localizedStandardCompare($1.name)
-                            == .orderedAscending
-                    },
-                    identifiedBy: {
-                        zellijSessionOrderID(
-                            hostID: host.id,
-                            name: $0.name
-                        )
-                    }
-                )
-                .map { zellijSessionRow($0, hostID: host.id) }
             )
         }
     }
@@ -899,8 +897,7 @@ public enum WorkspaceSidebarModel {
         WorkspaceSidebarRow(
             target: .zellijSession(hostID: hostID, name: session.name),
             icon: .zellijSession,
-            title: session.name,
-            subtitle: "Zellij session"
+            title: session.name
         )
     }
 
@@ -938,15 +935,14 @@ public enum WorkspaceSidebarModel {
         let windowCount = liveCount ?? (
             session.windows.isEmpty ? nil : session.windows.count
         )
-        let subtitle: String
-        if let windowCount {
-            subtitle = windowCount == 1
-                ? "1 window"
-                : "\(windowCount) windows"
+        // The backend label already says "tmux"; the subtitle carries only
+        // extra detail for the tooltip and VoiceOver.
+        let subtitle: String? = if let windowCount {
+            windowCount == 1 ? "1 window" : "\(windowCount) windows"
         } else if session.managed {
-            subtitle = "Workspace session"
+            "Workspace session"
         } else {
-            subtitle = "Tmux session"
+            nil
         }
         return WorkspaceSidebarRow(
             target: .tmuxSession(

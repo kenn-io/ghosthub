@@ -1071,6 +1071,10 @@ final class NativeTmuxSessionCoordinator {
         )
     }
 
+    func requestKeyboardFocus(handle: BorrowedTmuxSessionHandle) {
+        terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?.requestKeyboardFocus()
+    }
+
     func surface(handle: BorrowedTmuxSessionHandle) -> TerminalSurfaceView? {
         guard attachmentClosures[handle.id] == nil,
               let attachment = attachments[handle.id]

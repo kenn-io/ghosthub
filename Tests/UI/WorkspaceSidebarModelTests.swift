@@ -1,45 +1,139 @@
 import Foundation
+import GhosthubSettings
 import GhosthubTestSupport
 import GhosthubWorkspace
 import Testing
 @testable import GhosthubUI
 
 struct WorkspaceSidebarModelTests {
-    @Test("Herdr terminals and TUI sessions keep separate groups and saved ordering")
-    func herdrBackendGroups() {
+    @Test("every backend shares one session list, by backend then name by default")
+    func mergedSessionListDefaultsToBackendOrder() {
         let hostID = UUID()
-        let host = HostSummary.fixture(id: hostID, herdrSessions: [
-            .init(name: "t1", isDefault: false, state: .running),
-            .init(name: "t1", isDefault: false, state: .running, backend: .core, title: "review"),
-            .init(name: "t2", isDefault: false, state: .running, backend: .core, title: "build"),
-        ], herdrAvailable: true)
-        let order = ["t2", "t1"].map {
-            WorkspaceSidebarModel.herdrSessionOrderID(hostID: hostID, name: $0, backend: .core)
-        }.joined(separator: "\n")
-        let section = WorkspaceSidebarModel.sections(
-            in: .fixture(hosts: [host]), herdrSessionOrderRawValue: order
-        )[0]
-        #expect(section.visibleGroups == [.herdrTerminals, .herdrSessions])
-        #expect(section.herdrRows(for: .core).map(\.target) == [
-            .herdrSession(hostID: hostID, name: "t2", backend: .core),
-            .herdrSession(hostID: hostID, name: "t1", backend: .core),
+        let host = HostSummary.fixture(
+            id: hostID,
+            tmuxSessions: [
+                .init(name: "zeta", managed: false, windows: []),
+                .init(name: "alpha", managed: false, windows: []),
+            ],
+            herdrSessions: [
+                .init(name: "t1", isDefault: false, state: .running),
+                .init(
+                    name: "t9",
+                    isDefault: false,
+                    state: .running,
+                    backend: .core,
+                    title: "review"
+                ),
+            ],
+            herdrAvailable: true,
+            zellijSessions: [.init(name: "docs")],
+            zellijAvailable: true
+        )
+        let section = WorkspaceSidebarModel.sections(in: .fixture(hosts: [host]))[0]
+
+        #expect(section.sessionRows.map(\.title) == [
+            "alpha", "zeta", "docs", "review", "t1",
         ])
-        #expect(section.herdrRows(for: .tui).map(\.target) == [
-            .herdrSession(hostID: hostID, name: "t1"),
+        #expect(section.sessionRows.map(\.sessionBackend) == [
+            .tmux, .tmux, .zellij, .herdrTerminal, .herdrTUI,
         ])
-        #expect(section.herdrRows(for: .core).allSatisfy { $0.icon == .herdrTerminal })
-        #expect(WorkspaceSidebarSectionActionModel.action(
-            for: .herdrTerminals, host: host,
-            onNewTmuxSession: { _ in }, onNewHerdrSession: { _ in },
-            onNewZellijSession: { _ in }, onAddProject: { _ in }
-        ) == nil)
-        var createdOnHost: UUID?
-        WorkspaceSidebarSectionActionModel.action(
-            for: .herdrSessions, host: host,
-            onNewTmuxSession: { _ in }, onNewHerdrSession: { createdOnHost = $0.id },
-            onNewZellijSession: { _ in }, onAddProject: { _ in }
-        )?.perform()
-        #expect(createdOnHost == hostID)
+        #expect(section.sessionRows(for: .herdrTerminal).map(\.target) == [
+            .herdrSession(hostID: hostID, name: "t9", backend: .core),
+        ])
+        // Only desktop terminals show their address after the name.
+        #expect(section.sessionRows.map(\.sessionDetail) == [
+            nil, nil, nil, "t9", nil,
+        ])
+    }
+
+    @Test("a manual drag moves a session across backends")
+    func manualOrderCrossesBackends() {
+        let hostID = UUID()
+        let host = HostSummary.fixture(
+            id: hostID,
+            tmuxSessions: [.init(name: "build", managed: false, windows: [])],
+            herdrSessions: [.init(name: "agent", isDefault: false, state: .running)],
+            zellijSessions: [.init(name: "docs")]
+        )
+        let rows = WorkspaceSidebarModel.sections(in: .fixture(hosts: [host]))[0]
+            .sessionRows
+        let ids = rows.compactMap(\.sessionOrderID)
+        var order = WorkspaceSidebarOrder()
+        // Drop the Herdr session onto the tmux session.
+        let moved = order.move(ids[2], to: ids[0], within: ids)
+        #expect(moved)
+
+        let reordered = WorkspaceSidebarModel.sections(
+            in: .fixture(hosts: [host]),
+            sessionOrderRawValue: order.rawValue
+        )[0].sessionRows
+        #expect(reordered.map(\.title) == ["agent", "build", "docs"])
+    }
+
+    @Test(
+        "each sort mode orders sessions and stopped Herdr sessions sink",
+        arguments: [
+            (SidebarSessionSort.manual, ["zed", "beta", "docs", "alpha", "parked"]),
+            (.name, ["alpha", "beta", "docs", "zed", "parked"]),
+            (.backend, ["alpha", "beta", "zed", "docs", "parked"]),
+            (.attention, ["beta", "alpha", "zed", "docs", "parked"]),
+        ]
+    )
+    func sortModes(sort: SidebarSessionSort, expected: [String]) {
+        let hostID = UUID()
+        let host = HostSummary.fixture(
+            id: hostID,
+            tmuxSessions: ["alpha", "beta", "zed"].map {
+                .init(name: $0, managed: false, windows: [])
+            },
+            herdrSessions: [
+                .init(name: "parked", isDefault: false, state: .stopped),
+            ],
+            zellijSessions: [.init(name: "docs")]
+        )
+        let manual = [
+            WorkspaceSidebarModel.herdrSessionOrderID(hostID: hostID, name: "parked"),
+            WorkspaceSidebarModel.tmuxSessionOrderID(hostID: hostID, name: "zed"),
+            WorkspaceSidebarModel.tmuxSessionOrderID(hostID: hostID, name: "beta"),
+            WorkspaceSidebarModel.zellijSessionOrderID(hostID: hostID, name: "docs"),
+            WorkspaceSidebarModel.tmuxSessionOrderID(hostID: hostID, name: "alpha"),
+        ].joined(separator: "\n")
+        let attention: [String: AgentAttention] = [
+            AgentAttentionStore.endpointKey(hostID: hostID, name: "alpha", socketName: nil):
+                .working(agent: "Claude"),
+            AgentAttentionStore.endpointKey(hostID: hostID, name: "beta", socketName: nil):
+                .approval(agent: "Codex"),
+        ]
+
+        let rows = WorkspaceSidebarModel.sections(
+            in: .fixture(hosts: [host]),
+            sessionOrderRawValue: manual,
+            sessionSort: sort,
+            agentAttentionByEndpoint: attention
+        )[0].sessionRows
+
+        #expect(rows.map(\.title) == expected)
+    }
+
+    @Test("the host menu lists every backend and disables unavailable ones")
+    func hostMenuEntries() {
+        let bare = HostSummary.fixture(platform: .windows)
+        let entries = WorkspaceSidebarHostMenuModel.entries(for: bare)
+        #expect(entries.count == 1)
+        #expect(entries[0].map(\.item) == [
+            .newTmuxSession, .newZellijSession, .newHerdrSession,
+        ])
+        #expect(entries[0].map(\.isEnabled) == [true, false, false])
+        #expect(entries[0][1].help?.contains("Zellij") == true)
+
+        let full = HostSummary.fixture(
+            platform: .macOS,
+            herdrAvailable: true,
+            zellijAvailable: true
+        )
+        let fullEntries = WorkspaceSidebarHostMenuModel.entries(for: full)
+        #expect(fullEntries.flatMap { $0 }.allSatisfy { $0.isEnabled })
+        #expect(fullEntries.last?.map(\.item) == [.addProject])
     }
 
     @MainActor
@@ -64,7 +158,50 @@ struct WorkspaceSidebarModelTests {
             .init(name: "second", managed: false, windows: [])
         )
         let refreshed = cache.sections(in: snapshot, snapshotRevision: 1)
-        #expect(refreshed[0].tmuxSessionRows.map(\.title)
+        #expect(refreshed[0].sessionRows(for: .tmux).map(\.title)
+            == ["first", "second"])
+    }
+
+    @MainActor
+    @Test("agent attention rebuilds the cached sidebar only in the attention sort")
+    func sectionCacheAttentionInput() {
+        let hostID = UUID()
+        let cache = WorkspaceSidebarSectionCache()
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [.fixture(
+            id: hostID,
+            tmuxSessions: ["first", "second"].map {
+                .init(name: $0, managed: false, windows: [])
+            }
+        )])
+        let secondNeedsApproval: [String: AgentAttention] = [
+            AgentAttentionStore.endpointKey(
+                hostID: hostID, name: "second", socketName: nil
+            ): .approval(agent: "Codex"),
+        ]
+        func titles(
+            _ sort: SidebarSessionSort,
+            _ attention: [String: AgentAttention],
+            in snapshot: WorkspaceSnapshot
+        ) -> [String] {
+            cache.sections(
+                in: snapshot,
+                snapshotRevision: 0,
+                sessionSort: sort,
+                agentAttentionByEndpoint: attention
+            )[0].sessionRows.map(\.title)
+        }
+
+        #expect(titles(.attention, [:], in: snapshot) == ["first", "second"])
+        #expect(titles(.attention, secondNeedsApproval, in: snapshot)
+            == ["second", "first"])
+
+        // Outside the attention sort, an attention change is a cache hit: the
+        // sections come back unchanged even from a mutated snapshot that
+        // kept its revision.
+        #expect(titles(.manual, [:], in: snapshot) == ["first", "second"])
+        var mutated = snapshot
+        mutated.hosts[0].tmuxSessions.removeAll()
+        #expect(titles(.manual, secondNeedsApproval, in: mutated)
             == ["first", "second"])
     }
 
@@ -207,70 +344,41 @@ struct WorkspaceSidebarModelTests {
         ])
         let sections = WorkspaceSidebarModel.sections(
             in: snapshot,
-            tmuxSessionOrderRawValue: order.rawValue
+            sessionOrderRawValue: order.rawValue
         )
 
-        #expect(sections[0].tmuxSessionRows.map(\.title)
+        #expect(sections[0].sessionRows(for: .tmux).map(\.title)
             == ["beta", "gamma", "alpha"])
-        #expect(sections[1].tmuxSessionRows.map(\.title)
+        #expect(sections[1].sessionRows(for: .tmux).map(\.title)
             == ["alpha", "beta", "gamma"])
     }
 
-    @Test("Herdr sessions use an independent row model and ordering")
+    @Test("Herdr rows report state and stopped sessions sink below running ones")
     func herdrSessionRowsAndOrdering() {
         let hostID = UUID()
-        let herdrSessions = [
-            HerdrSessionSummary(name: "alpha", isDefault: false, state: .running),
-            HerdrSessionSummary(name: "beta", isDefault: true, state: .running),
-            HerdrSessionSummary(name: "gamma", isDefault: false, state: .stopped),
-        ]
         let host = HostSummary.fixture(
             id: hostID,
             tmuxSessions: [
-                TmuxSessionSummary(
-                    name: "tmux-kept",
-                    managed: false,
-                    windows: []
-                ),
+                TmuxSessionSummary(name: "tmux-kept", managed: false, windows: []),
             ],
-            herdrSessions: herdrSessions.reversed()
+            herdrSessions: [
+                HerdrSessionSummary(name: "gamma", isDefault: false, state: .stopped),
+                HerdrSessionSummary(name: "beta", isDefault: true, state: .running),
+                HerdrSessionSummary(name: "alpha", isDefault: false, state: .running),
+            ]
         )
-        let ids = herdrSessions.map {
-            WorkspaceSidebarModel.herdrSessionOrderID(
-                hostID: hostID,
-                name: $0.name
-            )
-        }
-        var order = WorkspaceSidebarOrder()
-        let didMove = order.move(ids[0], to: ids[2], within: ids)
-        #expect(didMove)
 
         let section = WorkspaceSidebarModel.sections(
-            in: WorkspaceSnapshot(
-                hosts: [host],
-                projects: [
-                    .fixture(hostID: hostID, name: "ghosthub"),
-                ],
-                worktrees: []
-            ),
-            herdrSessionOrderRawValue: order.rawValue
+            in: WorkspaceSnapshot(hosts: [host], projects: [], worktrees: [])
         )[0]
 
-        #expect(section.tmuxSessionRows.map(\.title) == ["tmux-kept"])
-        #expect(section.herdrSessionRows.map(\.title)
-            == ["beta", "gamma", "alpha"])
-        #expect(section.herdrSessionRows.map(\.subtitle)
-            == ["Running", "Stopped", "Running"])
-        #expect(section.herdrSessionRows[0].target == .herdrSession(
-            hostID: hostID,
-            name: "beta"
-        ))
-        #expect(section.herdrSessionRows[0].icon == .herdrSession)
-        #expect(section.herdrSessionRows[0].subtitle == "Running")
-        #expect(section.herdrSessionRows[0].indentLevel == 0)
-        #expect(section.visibleGroups == [
-            .tmuxSessions, .herdrSessions, .projects,
-        ])
+        #expect(section.sessionRows.map(\.title)
+            == ["tmux-kept", "alpha", "beta", "gamma"])
+        let herdr = section.sessionRows(for: .herdrTUI)
+        #expect(herdr.map(\.subtitle) == ["Running", "Running", "Stopped"])
+        #expect(herdr[1].target == .herdrSession(hostID: hostID, name: "beta"))
+        #expect(herdr[1].icon == .herdrSession)
+        #expect(herdr[1].indentLevel == 0)
     }
 
     @Test("section emptiness includes Herdr inventory")
@@ -286,50 +394,27 @@ struct WorkspaceSidebarModelTests {
             ])
         )[0]
 
-        #expect(empty.herdrSessionRows.isEmpty)
+        #expect(empty.sessionRows(for: .herdrTUI).isEmpty)
         #expect(empty.isEmpty)
         #expect(!herdr.isEmpty)
     }
 
-    @Test("Zellij sessions have an independent group and ordering")
-    func zellijSessionRowsAndOrdering() {
+    @Test("Zellij rows carry no subtitle beyond their backend label")
+    func zellijSessionRows() {
         let hostID = UUID()
-        let sessions = ["alpha", "beta", "gamma"]
         let host = HostSummary.fixture(
             id: hostID,
-            zellijSessions: sessions.reversed().map(
-                ZellijSessionSummary.init(name:)
-            ),
+            zellijSessions: [ZellijSessionSummary(name: "beta")],
             zellijAvailable: true
         )
-        let ids = sessions.map {
-            WorkspaceSidebarModel.zellijSessionOrderID(
-                hostID: hostID,
-                name: $0
-            )
-        }
-        var order = WorkspaceSidebarOrder()
-        let didMove = order.move(ids[0], to: ids[2], within: ids)
-        #expect(didMove)
 
-        let section = WorkspaceSidebarModel.sections(
-            in: WorkspaceSnapshot(
-                hosts: [host],
-                projects: [],
-                worktrees: []
-            ),
-            zellijSessionOrderRawValue: order.rawValue
-        )[0]
+        let row = WorkspaceSidebarModel.sections(
+            in: WorkspaceSnapshot(hosts: [host], projects: [], worktrees: [])
+        )[0].sessionRows[0]
 
-        #expect(section.zellijSessionRows.map(\.title)
-            == ["beta", "gamma", "alpha"])
-        #expect(section.zellijSessionRows[0].target == .zellijSession(
-            hostID: hostID,
-            name: "beta"
-        ))
-        #expect(section.zellijSessionRows[0].icon == .zellijSession)
-        #expect(section.zellijSessionRows[0].subtitle == "Zellij session")
-        #expect(section.visibleGroups == [.zellijSessions])
+        #expect(row.target == .zellijSession(hostID: hostID, name: "beta"))
+        #expect(row.sessionBackend == .zellij)
+        #expect(row.subtitle == nil)
     }
 
     @Test("sidebar hierarchy advances one compact indent per level")
@@ -365,7 +450,7 @@ struct WorkspaceSidebarModelTests {
         )
     }
 
-    @Test("session actions appear on hover or selection without shifting rows")
+    @Test("session actions appear on hover or selection beside, not over, the label")
     func sessionActionsStayDiscoverableAndStable() {
         let idle = WorkspaceSessionActionPresentation(
             hasActions: true,
@@ -396,8 +481,17 @@ struct WorkspaceSidebarModelTests {
         #expect(selected.isVisible)
         #expect(hovered.isVisible)
         #expect(!unavailable.isVisible)
+        // Rows with and without actions keep their labels in one column.
         #expect(idle.reservedWidth == selected.reservedWidth)
-        #expect(selected.hitTargetWidth >= 28)
+        #expect(unavailable.reservedWidth == selected.reservedWidth)
+        // The control fits the space after the label, so it never covers it.
+        #expect(
+            WorkspaceSessionActionPresentation.trailingInset
+                + selected.hitTargetWidth
+                <= WorkspaceSessionActionPresentation.rowTrailingPadding
+                + selected.reservedWidth
+        )
+        #expect(unavailable.hitTargetWidth == 0)
     }
 
     @Test("worktree actions reserve one stable slot with or without a session")
@@ -488,7 +582,7 @@ struct WorkspaceSidebarModelTests {
 
         #expect(sections.map(\.host.id) == [local.id, remote.id])
         #expect(sections.allSatisfy { $0.projects.isEmpty })
-        #expect(sections.allSatisfy { $0.tmuxSessionRows.isEmpty })
+        #expect(sections.allSatisfy { $0.sessionRows(for: .tmux).isEmpty })
         #expect(sections.allSatisfy { $0.isEmpty })
     }
 
@@ -497,27 +591,17 @@ struct WorkspaceSidebarModelTests {
         let hostID = UUID()
         let projectID = UUID()
         let hostKey = WorkspaceSidebarDisclosureState.host(hostID)
-        let sessionsKey = WorkspaceSidebarDisclosureState.sessions(hostID)
-        let herdrSessionsKey = WorkspaceSidebarDisclosureState
-            .herdrSessions(hostID)
-        let herdrTerminalsKey = WorkspaceSidebarDisclosureState
-            .herdrTerminals(hostID)
         let projectsKey = WorkspaceSidebarDisclosureState.projects(hostID)
         let projectKey = WorkspaceSidebarDisclosureState.project(projectID)
         var state = WorkspaceSidebarDisclosureState()
 
         #expect(state.isExpanded(hostKey))
-        #expect(state.isExpanded(sessionsKey))
-        #expect(state.isExpanded(herdrSessionsKey))
-        #expect(state.isExpanded(herdrTerminalsKey))
-        state.toggle(herdrTerminalsKey)
-        #expect(!state.isExpanded(herdrTerminalsKey))
-        #expect(state.isExpanded(herdrSessionsKey))
-        state.toggle(herdrTerminalsKey)
-        #expect(state.isExpanded(herdrTerminalsKey))
         #expect(!state.isExpanded(projectsKey))
         #expect(!state.isExpanded(projectKey))
 
+        state.toggle(hostKey)
+        #expect(!state.isExpanded(hostKey))
+        state.toggle(hostKey)
         state.toggle(projectsKey)
         state.toggle(projectKey)
         #expect(state.isExpanded(hostKey))
@@ -529,18 +613,6 @@ struct WorkspaceSidebarModelTests {
         state.toggle(projectsKey)
         #expect(!state.isExpanded(projectsKey))
         #expect(state == WorkspaceSidebarDisclosureState())
-    }
-
-    @Test("Herdr ordering has its own persisted storage key")
-    func herdrOrderStorageKey() {
-        #expect(
-            WorkspaceSidebarOrderStorage.herdrSessionKey
-                == "workspaceSidebarHerdrSessionOrderV1"
-        )
-        #expect(
-            WorkspaceSidebarOrderStorage.herdrSessionKey
-                != WorkspaceSidebarOrderStorage.tmuxSessionKey
-        )
     }
 
     @Test("Herdr rows preserve running and stopped state")
@@ -557,7 +629,7 @@ struct WorkspaceSidebarModelTests {
         ])
 
         let rows = WorkspaceSidebarModel.sections(in: snapshot)[0]
-            .herdrSessionRows
+            .sessionRows(for: .herdrTUI)
         let running = rows.first { $0.title == "running" }
         let stopped = rows.first { $0.title == "stopped" }
         #expect(running?.herdrSessionState == .running)
@@ -822,17 +894,17 @@ struct WorkspaceSidebarModelTests {
 
         #expect(sections.count == 1)
         #expect(sections[0].projects.isEmpty)
-        #expect(sections[0].tmuxSessionRows.map(\.title) == [
+        #expect(sections[0].sessionRows(for: .tmux).map(\.title) == [
             "docbank", "kwt-workspace-core",
         ])
-        #expect(sections[0].tmuxSessionRows[0].target == .tmuxSession(
+        #expect(sections[0].sessionRows(for: .tmux)[0].target == .tmuxSession(
             hostID: hostID,
             name: "docbank"
         ))
-        #expect(sections[0].tmuxSessionRows[0].subtitle == "1 window")
-        #expect(sections[0].tmuxSessionRows[0].icon == .tmuxSession)
-        #expect(sections[0].tmuxSessionRows[0].indentLevel == 0)
-        #expect(sections[0].tmuxSessionRows[1].subtitle == "Workspace session")
+        #expect(sections[0].sessionRows(for: .tmux)[0].subtitle == "1 window")
+        #expect(sections[0].sessionRows(for: .tmux)[0].icon == .tmuxSession)
+        #expect(sections[0].sessionRows(for: .tmux)[0].indentLevel == 0)
+        #expect(sections[0].sessionRows(for: .tmux)[1].subtitle == "Workspace session")
     }
 
     @Test("kwt workspace sessions appear only under their project")
@@ -878,7 +950,7 @@ struct WorkspaceSidebarModelTests {
 
         let sections = WorkspaceSidebarModel.sections(in: snapshot)
 
-        #expect(sections[0].tmuxSessionRows.map(\.title) == ["external-agent"])
+        #expect(sections[0].sessionRows(for: .tmux).map(\.title) == ["external-agent"])
         #expect(sections[0].projects[0].worktrees.map(\.id) == [worktree.id])
         #expect(
             sections[0].projects[0].worktreeRows[0]
@@ -892,7 +964,7 @@ struct WorkspaceSidebarModelTests {
             )
         )
 
-        #expect(showingKwtSessions[0].tmuxSessionRows.map(\.title) == [
+        #expect(showingKwtSessions[0].sessionRows(for: .tmux).map(\.title) == [
             "external-agent", "kwt-docbank-main",
         ])
 
@@ -952,7 +1024,7 @@ struct WorkspaceSidebarModelTests {
                 sessionIsRunning: true
             ),
         ])
-        #expect(section.tmuxSessionRows.isEmpty)
+        #expect(section.sessionRows(for: .tmux).isEmpty)
         #expect(
             WorkspaceSidebarModel.tmuxSessionSelection(
                 for: directory
@@ -976,7 +1048,7 @@ struct WorkspaceSidebarModelTests {
         unregistered.directoryWorkspaces = []
         #expect(
             WorkspaceSidebarModel.sections(in: unregistered)[0]
-                .tmuxSessionRows.map(\.title) == [directory.tmuxSessionName]
+                .sessionRows(for: .tmux).map(\.title) == [directory.tmuxSessionName]
         )
     }
 
@@ -1011,7 +1083,7 @@ struct WorkspaceSidebarModelTests {
             worktrees: [worktree]
         )
         let visible = WorkspaceSidebarModel.sections(in: snapshot)[0]
-        #expect(visible.tmuxSessionRows.map(\.target) == [.tmuxSession(
+        #expect(visible.sessionRows(for: .tmux).map(\.target) == [.tmuxSession(
             hostID: hostID,
             name: "desk"
         )])
@@ -1022,11 +1094,11 @@ struct WorkspaceSidebarModelTests {
             connectedTmuxSessionIDs: [defaultSelection.id, kwtSelection.id],
             liveTmuxWindowCounts: [defaultSelection.id: 2, kwtSelection.id: 5]
         )[0]
-        #expect(Set(all.tmuxSessionRows.map(\.target)) == [
+        #expect(Set(all.sessionRows(for: .tmux).map(\.target)) == [
             .tmuxSession(hostID: hostID, name: "desk"),
             .tmuxSession(hostID: hostID, name: "desk", socketName: "kwt"),
         ])
-        #expect(all.tmuxSessionRows.first { $0.target == .tmuxSession(
+        #expect(all.sessionRows(for: .tmux).first { $0.target == .tmuxSession(
             hostID: hostID,
             name: "desk",
             socketName: "kwt"
@@ -1049,7 +1121,7 @@ struct WorkspaceSidebarModelTests {
             tmuxAttachMode: .direct,
             sessionLive: true
         )]
-        #expect(WorkspaceSidebarModel.sections(in: snapshot)[0].tmuxSessionRows
+        #expect(WorkspaceSidebarModel.sections(in: snapshot)[0].sessionRows(for: .tmux)
             .map(\.target) == [.tmuxSession(
                 hostID: hostID,
                 name: "desk"
@@ -1202,7 +1274,7 @@ struct WorkspaceSidebarModelTests {
             )
         )
 
-        #expect(sections[0].tmuxSessionRows.map(\.title) == ["homelab"])
+        #expect(sections[0].sessionRows(for: .tmux).map(\.title) == ["homelab"])
         #expect(sections[0].projects[0].worktrees.map(\.id) == [worktree.id])
     }
 
@@ -1246,7 +1318,7 @@ struct WorkspaceSidebarModelTests {
         let sections = WorkspaceSidebarModel.sections(in: snapshot)
 
         #expect(
-            sections[0].tmuxSessionRows.map(\.title) == ["kwt-docbank-pr-32"]
+            sections[0].sessionRows(for: .tmux).map(\.title) == ["kwt-docbank-pr-32"]
         )
         #expect(
             sections[0].projects[0].worktreeRows[0]

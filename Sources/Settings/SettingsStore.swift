@@ -37,6 +37,11 @@ public final class SettingsStore: ObservableObject {
             "ghosthub.settings.terminalAppearance.fontSize"
         static let sessionPreviewMode =
             "ghosthub.settings.terminal.sessionPreviewMode"
+        static let sidebarSessionSort =
+            "ghosthub.settings.sidebar.sessionSort"
+        static let sidebarBackendLabelStyle =
+            "ghosthub.settings.sidebar.backendLabelStyle"
+        static let sidebarRowHeight = "ghosthub.settings.sidebar.rowHeight"
         static let sshHosts = "ghosthub.settings.hosts.ssh"
         static let exeAccounts = "ghosthub.settings.hosts.exeAccounts"
     }
@@ -84,6 +89,7 @@ public final class SettingsStore: ObservableObject {
     ) var terminalAppearancePreferences: TerminalAppearancePreferences
     @Published public private(set) var terminalPreferences: TerminalPreferences
     @Published public private(set) var sessionPreviewMode: SessionPreviewMode
+    @Published public private(set) var sidebarPreferences: SidebarPreferences
     @Published public private(set) var worktreePreferences: WorktreePreferences
     @Published public private(set) var tmuxSessionPreferences: TmuxSessionPreferences
     @Published public private(set) var shareAnonymousUsageData: Bool
@@ -142,6 +148,7 @@ public final class SettingsStore: ObservableObject {
         let loadedWorktrees = Self.loadWorktreePreferences(
             using: userDefaults
         )
+        let loadedSidebar = Self.loadSidebarPreferences(using: userDefaults)
         let loadedTmuxSessions = Self.loadTmuxSessionPreferences(
             from: configPipeline.paths.configDirectory.appendingPathComponent(
                 "config.toml",
@@ -167,6 +174,7 @@ public final class SettingsStore: ObservableObject {
         terminalAppearancePreferences = loadedTerminalAppearance
         terminalPreferences = loadedTerminal
         sessionPreviewMode = loadedSessionPreviewMode
+        sidebarPreferences = loadedSidebar
         worktreePreferences = loadedWorktrees
         tmuxSessionPreferences = loadedTmuxSessions
         shareAnonymousUsageData = loadedShareAnonymousUsageData
@@ -206,6 +214,7 @@ public final class SettingsStore: ObservableObject {
             using: userDefaults
         )
         worktreePreferences = Self.loadWorktreePreferences(using: userDefaults)
+        sidebarPreferences = Self.loadSidebarPreferences(using: userDefaults)
         tmuxSessionPreferences = Self.loadTmuxSessionPreferences(
             from: appConfigFile
         )
@@ -284,6 +293,22 @@ public final class SettingsStore: ObservableObject {
         userDefaults.set(
             mode.rawValue,
             forKey: DefaultsKey.sessionPreviewMode
+        )
+    }
+
+    public func setSidebarPreferences(_ preferences: SidebarPreferences) {
+        sidebarPreferences = preferences
+        userDefaults.set(
+            preferences.sessionSort.rawValue,
+            forKey: DefaultsKey.sidebarSessionSort
+        )
+        userDefaults.set(
+            preferences.backendLabelStyle.rawValue,
+            forKey: DefaultsKey.sidebarBackendLabelStyle
+        )
+        userDefaults.set(
+            preferences.rowHeight.rawValue,
+            forKey: DefaultsKey.sidebarRowHeight
         )
     }
 
@@ -746,6 +771,26 @@ public final class SettingsStore: ObservableObject {
         )
         .flatMap(AppearancePreference.init(rawValue:))
         ?? .system
+    }
+
+    private static func loadSidebarPreferences(
+        using userDefaults: UserDefaults
+    ) -> SidebarPreferences {
+        let defaults = SidebarPreferences()
+        return SidebarPreferences(
+            sessionSort: userDefaults.string(
+                forKey: DefaultsKey.sidebarSessionSort
+            ).flatMap(SidebarSessionSort.init(rawValue:))
+                ?? defaults.sessionSort,
+            backendLabelStyle: userDefaults.string(
+                forKey: DefaultsKey.sidebarBackendLabelStyle
+            ).flatMap(SidebarBackendLabelStyle.init(rawValue:))
+                ?? defaults.backendLabelStyle,
+            rowHeight: userDefaults.string(
+                forKey: DefaultsKey.sidebarRowHeight
+            ).flatMap(SidebarRowHeight.init(rawValue:))
+                ?? defaults.rowHeight
+        )
     }
 
     private static func loadSessionPreviewMode(

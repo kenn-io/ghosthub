@@ -263,11 +263,12 @@ struct WorkspaceSidebarView: View {
         TmuxSessionPreviewExpansionState()
     @State private var tmuxPreviewMountState = TmuxSessionPreviewMountState()
     @State private var disclosureState = WorkspaceSidebarDisclosureState()
+    @State private var hoveredHostID: UUID?
     @Binding private var hostOrderRawValue: String
     @Binding private var worktreeOrderRawValue: String
-    @Binding private var tmuxSessionOrderRawValue: String
-    @Binding private var herdrSessionOrderRawValue: String
-    @Binding private var zellijSessionOrderRawValue: String
+    @Binding private var sessionOrderRawValue: String
+    let sidebarPreferences: SidebarPreferences
+    let onSidebarOptionChange: (SidebarOptionChange) -> Void
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -357,9 +358,9 @@ struct WorkspaceSidebarView: View {
         hostOrderRawValue: Binding<String> = .constant(WorkspaceSidebarOrderStorage
             .defaultHostOrder),
         worktreeOrderRawValue: Binding<String> = .constant(""),
-        tmuxSessionOrderRawValue: Binding<String> = .constant(""),
-        herdrSessionOrderRawValue: Binding<String> = .constant(""),
-        zellijSessionOrderRawValue: Binding<String> = .constant(""),
+        sessionOrderRawValue: Binding<String> = .constant(""),
+        sidebarPreferences: SidebarPreferences = SidebarPreferences(),
+        onSidebarOptionChange: @escaping (SidebarOptionChange) -> Void = { _ in },
         onWorktreeFlagFailure: @escaping (WorktreeSummary, String) -> Void = { _, _ in },
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
@@ -418,9 +419,9 @@ struct WorkspaceSidebarView: View {
         self.inventoryRefreshComplete = inventoryRefreshComplete
         _hostOrderRawValue = hostOrderRawValue
         _worktreeOrderRawValue = worktreeOrderRawValue
-        _tmuxSessionOrderRawValue = tmuxSessionOrderRawValue
-        _herdrSessionOrderRawValue = herdrSessionOrderRawValue
-        _zellijSessionOrderRawValue = zellijSessionOrderRawValue
+        _sessionOrderRawValue = sessionOrderRawValue
+        self.sidebarPreferences = sidebarPreferences
+        self.onSidebarOptionChange = onSidebarOptionChange
         self.onOpen = onOpen
     }
 
@@ -437,9 +438,9 @@ struct WorkspaceSidebarView: View {
                 liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
                 hostOrderRawValue: hostOrderRawValue,
                 worktreeOrderRawValue: worktreeOrderRawValue,
-                tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-                herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-                zellijSessionOrderRawValue: zellijSessionOrderRawValue
+                sessionOrderRawValue: sessionOrderRawValue,
+                sessionSort: sidebarPreferences.sessionSort,
+                agentAttentionByEndpoint: agentAttentionByEndpoint
             )
         } else {
             WorkspaceSidebarModel.sections(
@@ -450,9 +451,9 @@ struct WorkspaceSidebarView: View {
                 liveTmuxWindowCounts: tmuxWindowCountsBySessionID,
                 hostOrderRawValue: hostOrderRawValue,
                 worktreeOrderRawValue: worktreeOrderRawValue,
-                tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-                herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-                zellijSessionOrderRawValue: zellijSessionOrderRawValue
+                sessionOrderRawValue: sessionOrderRawValue,
+                sessionSort: sidebarPreferences.sessionSort,
+                agentAttentionByEndpoint: agentAttentionByEndpoint
             )
         }
     }
@@ -462,20 +463,20 @@ struct WorkspaceSidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
             if sections.isEmpty {
                 emptyState
             } else {
                 ScrollView {
                     VStack(
                         alignment: .leading,
-                        spacing: 2
+                        spacing: 12
                     ) {
                         ForEach(sections) { section in
                             hostSection(section)
                         }
                     }
-                    .padding(.vertical, 6)
+                    .padding(.top, 2)
+                    .padding(.bottom, 10)
                     .padding(.horizontal, 8)
                 }
             }
@@ -510,7 +511,7 @@ struct WorkspaceSidebarView: View {
             WorkspaceSidebarModel.hostOrderID(section.host)
         )
         return reorderableRow(
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 hostHeader(section, disclosureKey: hostKey)
                     .onDrag {
                         draggedSidebarItem = item
@@ -542,36 +543,167 @@ struct WorkspaceSidebarView: View {
         }
     }
 
+    /// Host name, dimmed detail, and connection dot. The disclosure chevron
+    /// and + menu appear on hover; the chevron stays while collapsed.
     private func hostHeader(
         _ section: WorkspaceSidebarSection,
         disclosureKey: String
     ) -> some View {
-        hierarchyRow(
+        let host = section.host
+        let expanded = isExpanded(disclosureKey)
+        let isHovered = hoveredHostID == host.id
+        let warning = inventoryWarningsByHost[host.id]
+        let isSelected = Self.isRowSelected(
             section.row,
-            disclosureKey: disclosureKey,
-            host: section.host,
-            inventoryWarning: inventoryWarningsByHost[section.host.id]
+            selection: selection,
+            activeTmuxSession: activeTmuxSession,
+            activeHerdrSession: activeHerdrSession,
+            activeZellijSession: activeZellijSession
         )
-        .padding(.vertical, 1)
-        .background {
-            ZStack {
-                // The sidebar column already paints the tinted surface when
-                // transparent; repainting it here would compound the alpha
-                // and make the header block more opaque than the rest.
-                WorkspaceSurfaceColor.behindTerminal(backgroundAppearance)
-                Color.primary.opacity(
-                    colorSchemeContrast == .increased ? 0.08 : 0.035
+        // The status dot and name sit flush with the sidebar title. The
+        // disclosure chevron trails the name, as in macOS sidebar sections,
+        // and the + menu stays visible so session creation is discoverable.
+        return HStack(spacing: 2) {
+            Button {
+                onNavigateAwayFromSession()
+                selection.select(
+                    section.row.target,
+                    in: snapshot,
+                    visibility: visibility
+                )
+            } label: {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(
+                            warning == nil && host.lastKnownReachable
+                                ? Color.green : Color.orange
+                        )
+                        .frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
+                    Text(host.sidebarTitle)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(
+                            colorSchemeContrast == .increased || isSelected
+                                ? Color.primary : Color.secondary
+                        )
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                    if let subtitle = host.sidebarSubtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 4)
+                .frame(height: 26)
+                .background { SidebarRowSelectionBackground(isSelected: isSelected) }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .workspaceAccessibility(
+                WorkspaceAccessibilityModel.descriptor(
+                    for: section.row,
+                    isSelected: isSelected
+                )
+            )
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityIdentifier("sidebar-host-\(host.id.uuidString)")
+
+            if let warning {
+                inventoryWarningButton(
+                    warning,
+                    host: host,
+                    accessibilityLabel:
+                    "Show connection issue for \(host.sidebarTitle)"
                 )
             }
-        }
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(
-                    Color.primary.opacity(
-                        colorSchemeContrast == .increased ? 0.35 : 0.12
-                    )
+
+            Button {
+                toggle(disclosureKey)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 18, height: 22)
+                    .contentShape(Rectangle())
+                    .opacity(isHovered || !expanded ? 1 : 0)
+            }
+            .buttonStyle(.plain)
+            .workspaceAccessibility(
+                WorkspaceAccessibilityModel.disclosureDescriptor(
+                    title: host.sidebarTitle,
+                    isExpanded: expanded
                 )
-                .frame(height: 0.5)
+            )
+            .accessibilityIdentifier("sidebar-host-disclosure-\(host.id.uuidString)")
+
+            hostMenuButton(host)
+        }
+        .onHover { hovering in
+            if hovering {
+                hoveredHostID = host.id
+            } else if hoveredHostID == host.id {
+                hoveredHostID = nil
+            }
+        }
+        .contextMenu {
+            ForEach(
+                Array(WorkspaceSidebarHostMenuModel.entries(for: host).enumerated()),
+                id: \.offset
+            ) { index, group in
+                if index > 0 {
+                    Divider()
+                }
+                ForEach(group, id: \.title) { entry in
+                    Button(entry.title) {
+                        performHostMenuItem(entry.item, host: host)
+                    }
+                    .disabled(!entry.isEnabled)
+                }
+            }
+        }
+    }
+
+    private func hostMenuButton(_ host: HostSummary) -> some View {
+        NativePopupMenuButton(
+            groups: WorkspaceSidebarHostMenuModel.entries(for: host).map { group in
+                group.map { entry in
+                    NativePopupMenuAction(
+                        entry.title,
+                        isEnabled: entry.isEnabled,
+                        help: entry.help
+                    ) {
+                        performHostMenuItem(entry.item, host: host)
+                    }
+                }
+            }
+        ) {
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("New on \(host.sidebarTitle)")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("New tmux, Zellij, or Herdr session, or add a project")
+        .accessibilityIdentifier("sidebar-host-menu-\(host.id.uuidString)")
+    }
+
+    private func performHostMenuItem(
+        _ item: WorkspaceSidebarHostMenuItem,
+        host: HostSummary
+    ) {
+        switch item {
+        case .newTmuxSession: onNewTmuxSession(host)
+        case .newZellijSession: onNewZellijSession(host)
+        case .newHerdrSession: onNewHerdrSession(host)
+        case .addProject: onAddProject(host)
         }
     }
 
@@ -581,244 +713,127 @@ struct WorkspaceSidebarView: View {
         disclosureKey: String
     ) -> some View {
         if isExpanded(disclosureKey) {
-            VStack(alignment: .leading, spacing: 2) {
-                let sessionsKey = WorkspaceSidebarDisclosureState
-                    .sessions(section.host.id)
-                sidebarGroupLabel(
-                    "Tmux Sessions",
-                    disclosureKey: sessionsKey,
-                    action: sectionAction(
-                        for: .tmuxSessions,
-                        host: section.host
-                    )
-                )
-                if isExpanded(sessionsKey) {
-                    let groupItems = sidebarDragItems(section.tmuxSessionRows)
-                    let rows = ForEach(section.tmuxSessionRows) { row in
-                        tmuxSessionButton(
-                            row,
-                            groupItems: groupItems
-                        )
-                    }
-                    if sessionPreviewMode == .off {
-                        LazyVStack(alignment: .leading, spacing: 2) {
-                            rows
-                        }
-                    } else {
+            VStack(alignment: .leading, spacing: 1) {
+                let groupItems = sidebarDragItems(section.sessionRows)
+                let rows = ForEach(section.sessionRows) { row in
+                    sessionButton(row, groupItems: groupItems)
+                }
+                if sessionPreviewMode == .off {
+                    LazyVStack(alignment: .leading, spacing: 1) {
                         rows
                     }
+                } else {
+                    rows
                 }
-                if WorkspaceSidebarSectionActionModel.isVisible(
-                    .herdrTerminals,
-                    host: section.host,
-                    hasProjects: !section.projects.isEmpty
-                ) {
-                    let terminalsKey = WorkspaceSidebarDisclosureState
-                        .herdrTerminals(section.host.id)
-                    sidebarGroupLabel("Herdr Terminals", disclosureKey: terminalsKey)
-                    if isExpanded(terminalsKey) {
-                        let rows = section.herdrRows(for: .core)
-                        let groupItems = sidebarDragItems(rows)
-                        ForEach(rows) { row in
-                            herdrSessionButton(row, groupItems: groupItems)
+                if !section.projects.isEmpty
+                    || !section.directoryWorkspaceRows.isEmpty {
+                    projectsGroup(section)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func projectsGroup(_ section: WorkspaceSidebarSection) -> some View {
+        let projectsKey = WorkspaceSidebarDisclosureState
+            .projects(section.host.id)
+        let expanded = isExpanded(projectsKey)
+        Button {
+            toggle(projectsKey)
+        } label: {
+            HStack(spacing: 4) {
+                Text("Projects")
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 10.5, weight: .medium))
+            .foregroundStyle(
+                colorSchemeContrast == .increased
+                    ? Color.secondary : Color(nsColor: .tertiaryLabelColor)
+            )
+            .padding(.leading, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .workspaceAccessibility(
+            WorkspaceAccessibilityModel.disclosureDescriptor(
+                title: "Projects",
+                isExpanded: expanded
+            )
+        )
+        .accessibilityIdentifier("sidebar-section-disclosure-\(projectsKey)")
+        if expanded {
+            ForEach(section.projects) { project in
+                projectGroup(project)
+            }
+            ForEach(section.directoryWorkspaceRows) { row in
+                tmuxPreviewRow(
+                    row,
+                    content: AnyView(sidebarButton(row))
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func projectGroup(_ project: WorkspaceSidebarProject) -> some View {
+        let projectKey = WorkspaceSidebarDisclosureState
+            .project(project.project.id)
+        projectHierarchyRow(project, disclosureKey: projectKey)
+            .contextMenu {
+                Button("New Worktree…") {
+                    onNewWorktree(project.project)
+                }
+                .disabled(!snapshot.canCreateWorktree(in: project.project))
+                Button("Import Pull Request…") {
+                    onImportPullRequest(project.project)
+                }
+                .disabled(!snapshot.canImportPullRequest(in: project.project))
+                Divider()
+                Button("Open All Worktrees as Tabs") {
+                    onOpenProjectWorktreesAsTabs(
+                        project.project,
+                        project.worktrees
+                    )
+                }
+                .disabled(
+                    !canOpenProjectWorktreesAsTabs(
+                        project.project,
+                        project.worktrees
+                    )
+                )
+                if snapshot.host(id: project.project.hostID)?
+                    .canRegisterProjects == true {
+                    Divider()
+                    if project.project.pathIssue != nil {
+                        Button("Locate Folder…") {
+                            onLocateProject(project.project)
                         }
                     }
-                }
-                if WorkspaceSidebarSectionActionModel.isVisible(
-                    .herdrSessions,
-                    host: section.host,
-                    hasProjects: !section.projects.isEmpty
-                ) {
-                    let herdrSessionsKey = WorkspaceSidebarDisclosureState
-                        .herdrSessions(section.host.id)
-                    sidebarGroupLabel(
-                        "Herdr TUI Sessions",
-                        disclosureKey: herdrSessionsKey,
-                        action: sectionAction(
-                            for: .herdrSessions,
-                            host: section.host
-                        )
-                    )
-                    if isExpanded(herdrSessionsKey) {
-                        let rows = section.herdrRows(for: .tui)
-                        let groupItems = sidebarDragItems(rows)
-                        ForEach(rows) { row in
-                            herdrSessionButton(
-                                row,
-                                groupItems: groupItems
-                            )
-                        }
-                    }
-                }
-                if WorkspaceSidebarSectionActionModel.isVisible(
-                    .zellijSessions,
-                    host: section.host,
-                    hasProjects: !section.projects.isEmpty
-                ) {
-                    let zellijSessionsKey = WorkspaceSidebarDisclosureState
-                        .zellijSessions(section.host.id)
-                    sidebarGroupLabel(
-                        "Zellij Sessions",
-                        disclosureKey: zellijSessionsKey,
-                        action: sectionAction(
-                            for: .zellijSessions,
-                            host: section.host
-                        )
-                    )
-                    if isExpanded(zellijSessionsKey) {
-                        let groupItems = sidebarDragItems(section.zellijSessionRows)
-                        ForEach(section.zellijSessionRows) { row in
-                            zellijSessionButton(
-                                row,
-                                groupItems: groupItems
-                            )
-                        }
-                    }
-                }
-                if WorkspaceSidebarSectionActionModel.isVisible(
-                    .projects,
-                    host: section.host,
-                    hasProjects: !section.projects.isEmpty
-                        || !section.directoryWorkspaceRows.isEmpty
-                ) {
-                    let projectsKey = WorkspaceSidebarDisclosureState
-                        .projects(section.host.id)
-                    sidebarGroupLabel(
-                        "Projects",
-                        disclosureKey: projectsKey,
-                        action: sectionAction(
-                            for: .projects,
-                            host: section.host
-                        )
-                    )
-                    if isExpanded(projectsKey) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(section.projects) { project in
-                                let projectKey = WorkspaceSidebarDisclosureState
-                                    .project(project.project.id)
-                                projectHierarchyRow(
-                                    project,
-                                    disclosureKey: projectKey
-                                )
-                                .contextMenu {
-                                    Button("New Worktree…") {
-                                        onNewWorktree(project.project)
-                                    }
-                                    .disabled(
-                                        !snapshot.canCreateWorktree(
-                                            in: project.project
-                                        )
-                                    )
-                                    Button("Import Pull Request…") {
-                                        onImportPullRequest(project.project)
-                                    }
-                                    .disabled(
-                                        !snapshot.canImportPullRequest(
-                                            in: project.project
-                                        )
-                                    )
-                                    Divider()
-                                    Button(
-                                        "Open All Worktrees as Tabs"
-                                    ) {
-                                        onOpenProjectWorktreesAsTabs(
-                                            project.project,
-                                            project.worktrees
-                                        )
-                                    }
-                                    .disabled(
-                                        !canOpenProjectWorktreesAsTabs(
-                                            project.project,
-                                            project.worktrees
-                                        )
-                                    )
-                                    if snapshot.host(
-                                        id: project.project.hostID
-                                    )?.canRegisterProjects == true {
-                                        Divider()
-                                        if project.project.pathIssue != nil {
-                                            Button("Locate Folder…") {
-                                                onLocateProject(project.project)
-                                            }
-                                        }
-                                        Button(
-                                            "Remove Project…",
-                                            role: .destructive
-                                        ) {
-                                            onRequestRemoveProject(
-                                                project.project
-                                            )
-                                        }
-                                    }
-                                }
-                                if isExpanded(projectKey) {
-                                    let groupItems = sidebarDragItems(project.worktreeRows)
-                                    let rows = ForEach(project.worktreeRows) { row in
-                                        worktreeButton(
-                                            row,
-                                            groupItems: groupItems
-                                        )
-                                    }
-                                    if sessionPreviewMode == .off {
-                                        LazyVStack(alignment: .leading, spacing: 2) {
-                                            rows
-                                        }
-                                    } else {
-                                        // Preview mounts control capture and parking eligibility;
-                                        // retain them while expanded, including offscreen tiles.
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            rows
-                                        }
-                                    }
-                                }
-                            }
-                            ForEach(section.directoryWorkspaceRows) { row in
-                                tmuxPreviewRow(
-                                    row,
-                                    content: AnyView(sidebarButton(row))
-                                )
-                            }
-                        }
-                        .padding(.vertical, 2)
-                        .background {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(
-                                    Color.primary.opacity(
-                                        colorSchemeContrast == .increased
-                                            ? 0.09 : 0.035
-                                    )
-                                )
-                        }
-                        .overlay(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 1)
-                                .fill(
-                                    Color.primary.opacity(
-                                        colorSchemeContrast == .increased
-                                            ? 0.5 : 0.2
-                                    )
-                                )
-                                .frame(width: 2)
-                                .padding(.vertical, 4)
-                        }
+                    Button("Remove Project…", role: .destructive) {
+                        onRequestRemoveProject(project.project)
                     }
                 }
             }
-            .padding(
-                .leading,
-                WorkspaceSidebarHierarchy.indent(level: 1)
-            )
-            .padding(.bottom, 6)
-            .overlay(alignment: .leading) {
-                Rectangle()
-                    .fill(
-                        Color.primary.opacity(
-                            colorSchemeContrast == .increased ? 0.38 : 0.14
-                        )
-                    )
-                    .frame(width: 1)
-                    .frame(maxHeight: .infinity)
-                    .padding(.leading, 9)
-                    .padding(.vertical, 3)
+        if isExpanded(projectKey) {
+            let groupItems = sidebarDragItems(project.worktreeRows)
+            let rows = ForEach(project.worktreeRows) { row in
+                worktreeButton(row, groupItems: groupItems)
+            }
+            if sessionPreviewMode == .off {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    rows
+                }
+            } else {
+                // Preview mounts control capture and parking eligibility;
+                // retain them while expanded, including offscreen tiles.
+                VStack(alignment: .leading, spacing: 1) {
+                    rows
+                }
             }
         }
     }
@@ -848,9 +863,17 @@ struct WorkspaceSidebarView: View {
                 .accessibilityLabel("Show workspace inventory issue")
                 .accessibilityValue(inventoryWarning)
             }
+            SidebarOptionsMenu(
+                preferences: sidebarPreferences,
+                hidesWorktreeSessions: tmuxSessionVisibility.hideKwtManagedSessions,
+                hidesRootCheckout: visibility.hideRootWorktrees,
+                showsHiddenWorktrees: visibility.showHiddenWorktrees,
+                onChange: onSidebarOptionChange
+            )
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
     }
 
     // MARK: - Empty state
@@ -899,73 +922,45 @@ struct WorkspaceSidebarView: View {
         return items
     }
 
-    private func tmuxSessionButton(
+    /// One session row of any backend. Dragging reorders the host's shared
+    /// session list and is available only in the Manual sort.
+    private func sessionButton(
         _ row: WorkspaceSidebarRow,
         groupItems: [WorkspaceSidebarDragItem]
-    ) -> some View {
-        guard case let .tmuxSession(hostID, name, socketName) = row.target else {
-            return AnyView(sidebarButton(row))
+    ) -> AnyView {
+        let item: WorkspaceSidebarDragItem? = switch row.target {
+        case let .tmuxSession(hostID, name, socketName):
+            .tmuxSession(hostID: hostID, name: name, socketName: socketName)
+        case let .herdrSession(hostID, name, backend):
+            .herdrSession(hostID: hostID, name: name, backend: backend)
+        case let .zellijSession(hostID, name):
+            .zellijSession(hostID: hostID, name: name)
+        default:
+            nil
         }
-        let item = WorkspaceSidebarDragItem.tmuxSession(
-            hostID: hostID,
-            name: name,
-            socketName: socketName
-        )
+        guard let item else { return AnyView(sidebarButton(row)) }
         let content = AnyView(reorderableRow(
             sidebarButton(row),
             item: item,
             groupItems: groupItems,
-            orderRawValue: tmuxSessionOrderRawValue
+            orderRawValue: sessionOrderRawValue,
+            allowsDragging: sidebarPreferences.sessionSort == .manual
         ) { updatedRawValue in
-            tmuxSessionOrderRawValue = updatedRawValue
+            sessionOrderRawValue = updatedRawValue
         })
-        return tmuxPreviewRow(row, content: content)
+        guard case .tmuxSession = row.target else {
+            return previewChevronSpacer(content)
+        }
+        return tmuxPreviewRow(row, content: content, reservesChevron: true)
     }
 
-    private func herdrSessionButton(
-        _ row: WorkspaceSidebarRow,
-        groupItems: [WorkspaceSidebarDragItem]
-    ) -> some View {
-        guard case let .herdrSession(hostID, name, backend) = row.target else {
-            return AnyView(sidebarButton(row))
-        }
-        let item = WorkspaceSidebarDragItem.herdrSession(
-            hostID: hostID,
-            name: name, backend: backend
-        )
-        return AnyView(
-            reorderableRow(
-                sidebarButton(row),
-                item: item,
-                groupItems: groupItems,
-                orderRawValue: herdrSessionOrderRawValue
-            ) { updatedRawValue in
-                herdrSessionOrderRawValue = updatedRawValue
-            }
-        )
-    }
-
-    private func zellijSessionButton(
-        _ row: WorkspaceSidebarRow,
-        groupItems: [WorkspaceSidebarDragItem]
-    ) -> some View {
-        guard case let .zellijSession(hostID, name) = row.target else {
-            return AnyView(sidebarButton(row))
-        }
-        let item = WorkspaceSidebarDragItem.zellijSession(
-            hostID: hostID,
-            name: name
-        )
-        return AnyView(
-            reorderableRow(
-                sidebarButton(row),
-                item: item,
-                groupItems: groupItems,
-                orderRawValue: zellijSessionOrderRawValue
-            ) { updatedRawValue in
-                zellijSessionOrderRawValue = updatedRawValue
-            }
-        )
+    /// Keeps names aligned with previewable rows while previews are on.
+    private func previewChevronSpacer(_ content: AnyView) -> AnyView {
+        guard sessionPreviewMode != .off else { return content }
+        return AnyView(HStack(spacing: 0) {
+            Color.clear.frame(width: 14)
+            content
+        })
     }
 
     private func sidebarButton(
@@ -1040,24 +1035,21 @@ struct WorkspaceSidebarView: View {
                 socketName: $0.socketName
             )]
         }
-        let usesDirectKillAction: Bool
-        if case .tmuxSession = row.target {
-            usesDirectKillAction = true
-        } else if case .zellijSession = row.target {
-            usesDirectKillAction = true
-        } else {
-            usesDirectKillAction = false
-        }
-        let hasSessionActions = runningTmuxSession != nil
-            || !herdrActions.isEmpty
-            || zellijSelection != nil
+        let sessionActionGroups = sessionActionGroups(
+            renamableTmuxSession: row.sessionBackend == nil
+                ? nil : renamableTmuxSession,
+            runningTmuxSession: runningTmuxSession,
+            zellijSelection: zellijSelection,
+            herdrActions: herdrActions
+        )
+        let hasSessionActions = !sessionActionGroups.isEmpty
         let isActionHovered = hasSessionActions
             && hoveredSessionActionControlRowID == row.id
         let actionPresentation = WorkspaceSessionActionPresentation(
             hasActions: hasSessionActions,
             isRowHovered: hoveredSessionActionRowID == row.id,
             isActionHovered: isActionHovered,
-            isSelected: herdrSelection != nil && isSelected
+            isSelected: isSelected
         )
         return HStack(spacing: 0) {
             Button {
@@ -1145,32 +1137,39 @@ struct WorkspaceSidebarView: View {
                     visibility: visibility
                 )
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: isWorktreeFlagged
-                        ? flagPresentation.systemImageName : row.icon.systemImageName)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(isWorktreeFlagged
-                            ? WorktreeFlagPresentation.flagColor
-                            : (isSelected ? .primary : .secondary))
-                        .frame(width: 18)
-                    if let status = row.worktreeStatus {
-                        worktreeRowContent(
-                            row.title,
-                            status: status,
-                            titleColor: flagPresentation.titleColor
-                        )
-                    } else {
-                        legacyRowContent(
+                HStack(spacing: 6) {
+                    if let backend = row.sessionBackend {
+                        SidebarSessionRowContent(
                             title: row.title,
-                            subtitle: row.subtitle,
-                            sessionIsRunning: row.sessionIsRunning
+                            detail: row.sessionDetail,
+                            backend: backend,
+                            labelStyle: sidebarPreferences.backendLabelStyle,
+                            agentAttention: agentAttention,
+                            showsRecentOutput: isTmuxSessionWorking,
+                            isStopped: row.herdrSessionState == .stopped,
+                            isSelected: isSelected
                         )
-                    }
-                    Spacer(minLength: 0)
-                    if let agentAttention {
-                        AgentStateBadge(attention: agentAttention)
-                    } else if isTmuxSessionWorking {
-                        tmuxSessionActivityIndicator
+                        .padding(.trailing, actionPresentation.reservedWidth)
+                    } else {
+                        if let status = row.worktreeStatus {
+                            SidebarWorktreeRowContent(
+                                title: row.title,
+                                status: status,
+                                titleColor: flagPresentation.titleColor,
+                                isFlagged: isWorktreeFlagged
+                            )
+                        } else {
+                            legacyRowContent(
+                                title: row.title,
+                                subtitle: row.subtitle,
+                                sessionIsRunning: row.sessionIsRunning
+                            )
+                        }
+                        if let agentAttention {
+                            AgentStateBadge(attention: agentAttention)
+                        } else if isTmuxSessionWorking {
+                            tmuxSessionActivityIndicator
+                        }
                     }
                     if isSelected, differentiateWithoutColor {
                         Image(systemName: "checkmark")
@@ -1186,37 +1185,13 @@ struct WorkspaceSidebarView: View {
                     )
                 )
                 .padding(.horizontal, 8)
-                .padding(
-                    .trailing,
-                    actionPresentation.reservedWidth
-                        + reservedTrailingActionWidth
-                )
-                .padding(.vertical, 6)
+                .padding(.trailing, reservedTrailingActionWidth)
+                .frame(minHeight: sidebarPreferences.rowHeight.points)
                 .background {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(
-                            isSelected
-                                ? Color.accentColor.opacity(
-                                    colorSchemeContrast == .increased
-                                        ? 0.42 : 0.28
-                                )
-                                : Color.clear
-                        )
-                }
-                .overlay {
-                    if isSelected {
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(
-                                Color.primary.opacity(
-                                    colorSchemeContrast == .increased
-                                        ? 0.55 : 0.24
-                                ),
-                                lineWidth: colorSchemeContrast == .increased
-                                    ? 1.5 : 1
-                            )
-                    }
+                    SidebarRowSelectionBackground(isSelected: isSelected)
                 }
             }
+            .help(Self.rowHelp(row))
             .buttonStyle(.plain)
             .disabled(herdrOperationIsPending)
             .opacity(
@@ -1237,83 +1212,13 @@ struct WorkspaceSidebarView: View {
         }
         .overlay(alignment: .trailing) {
             if hasSessionActions {
-                Group {
-                    if let tmuxSession = runningTmuxSession,
-                       usesDirectKillAction {
-                        Button {
-                            onRequestKillTmuxSession(tmuxSession)
-                        } label: {
-                            sessionActionLabel(
-                                actionPresentation,
-                                isActionHovered: isActionHovered,
-                                imageName: "xmark"
-                            )
-                        }
-                        .accessibilityLabel(
-                            "Kill tmux session \(tmuxSession.name)"
-                        )
-                        .accessibilityIdentifier(
-                            "kill-tmux-session-\(tmuxSession.id)"
-                        )
-                    } else if let tmuxSession = runningTmuxSession {
-                        NativePopupMenuButton(
-                            groups: [
-                                [
-                                    NativePopupMenuAction(
-                                        "Kill Session…",
-                                        role: .destructive
-                                    ) {
-                                        onRequestKillTmuxSession(tmuxSession)
-                                    },
-                                ],
-                            ]
-                        ) {
-                            sessionActionLabel(
-                                actionPresentation,
-                                isActionHovered: isActionHovered,
-                                imageName: "ellipsis"
-                            )
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(
-                                "Session actions for \(row.title)"
-                            )
-                        }
-                        .accessibilityHint(
-                            "Includes the option to kill this session."
-                        )
-                    } else if let zellijSelection {
-                        Button {
-                            onRequestKillZellijSession(zellijSelection)
-                        } label: {
-                            sessionActionLabel(
-                                actionPresentation,
-                                isActionHovered: isActionHovered,
-                                imageName: "xmark"
-                            )
-                        }
-                        .accessibilityLabel(
-                            "Kill Zellij session \(zellijSelection.name)"
-                        )
-                    } else {
-                        NativePopupMenuButton(
-                            groups: [herdrActions.compactMap(
-                                herdrPopupMenuAction
-                            )]
-                        ) {
-                            sessionActionLabel(
-                                actionPresentation,
-                                isActionHovered: isActionHovered,
-                                imageName: "ellipsis"
-                            )
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(
-                                "Session actions for \(row.title)"
-                            )
-                        }
-                        .accessibilityHint(
-                            "Includes Herdr lifecycle actions."
-                        )
-                    }
+                NativePopupMenuButton(groups: sessionActionGroups) {
+                    sessionActionLabel(
+                        actionPresentation,
+                        isActionHovered: isActionHovered
+                    )
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Session actions for \(row.title)")
                 }
                 .buttonStyle(.plain)
                 .onHover { isHovered in
@@ -1325,10 +1230,12 @@ struct WorkspaceSidebarView: View {
                         scheduleSessionActionHoverDismiss(row.id)
                     }
                 }
-                .help(
-                    usesDirectKillAction ? "Kill session…" : "Session actions"
+                .help("Session actions")
+                .padding(
+                    .trailing,
+                    WorkspaceSessionActionPresentation.trailingInset
+                        + reservedTrailingActionWidth
                 )
-                .padding(.trailing, reservedTrailingActionWidth)
             }
         }
         .onHover { isHovered in
@@ -1459,6 +1366,14 @@ struct WorkspaceSidebarView: View {
         }
     }
 
+    /// Details dropped from the one-line row, such as the window count.
+    static func rowHelp(_ row: WorkspaceSidebarRow) -> String {
+        [row.sessionBackend?.title, row.subtitle]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+
     static func isRowSelected(
         _ row: WorkspaceSidebarRow,
         selection: WorkspaceSelection,
@@ -1518,31 +1433,63 @@ struct WorkspaceSidebarView: View {
 
     private func sessionActionLabel(
         _ presentation: WorkspaceSessionActionPresentation,
-        isActionHovered: Bool,
-        imageName: String
+        isActionHovered: Bool
     ) -> some View {
         ZStack {
-            Color.clear
+            if isActionHovered {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 16, height: 16)
+            }
             if presentation.isVisible {
-                Image(systemName: imageName)
-                    .font(.system(size: 10, weight: .semibold))
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(
+                        isActionHovered ? .primary : .secondary
+                    )
             }
         }
         .frame(
             width: presentation.hitTargetWidth,
-            height: 30
+            height: sidebarPreferences.rowHeight.points
         )
-        .background {
-            if presentation.isVisible {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(
-                        Color.primary.opacity(
-                            isActionHovered ? 0.14 : 0.05
-                        )
-                    )
-            }
-        }
         .contentShape(Rectangle())
+    }
+
+    /// One menu for every backend, in the context menu's order.
+    private func sessionActionGroups(
+        renamableTmuxSession: WorkspaceTmuxSessionSelection?,
+        runningTmuxSession: WorkspaceTmuxSessionSelection?,
+        zellijSelection: WorkspaceZellijSessionSelection?,
+        herdrActions: [WorkspaceSidebarRowAction]
+    ) -> [[NativePopupMenuAction]] {
+        var groups: [[NativePopupMenuAction]] = []
+        if let renamableTmuxSession {
+            groups.append([NativePopupMenuAction("Rename Session…") {
+                onRequestRenameTmuxSession(renamableTmuxSession)
+            }])
+        }
+        if let runningTmuxSession {
+            groups.append([NativePopupMenuAction(
+                "Kill Session…",
+                role: .destructive
+            ) {
+                onRequestKillTmuxSession(runningTmuxSession)
+            }])
+        }
+        if let zellijSelection {
+            groups.append([NativePopupMenuAction(
+                "Kill Session…",
+                role: .destructive
+            ) {
+                onRequestKillZellijSession(zellijSelection)
+            }])
+        }
+        let herdrItems = herdrActions.compactMap(herdrPopupMenuAction)
+        if !herdrItems.isEmpty {
+            groups.append(herdrItems)
+        }
+        return groups
     }
 
     private func scheduleSessionActionHoverDismiss(
@@ -1869,7 +1816,8 @@ struct WorkspaceSidebarView: View {
 
     private func tmuxPreviewRow(
         _ row: WorkspaceSidebarRow,
-        content: AnyView
+        content: AnyView,
+        reservesChevron: Bool = false
     ) -> AnyView {
         guard sessionPreviewMode != .off else { return content }
         guard let tmuxSession = tmuxSessionSelection(for: row),
@@ -1878,7 +1826,9 @@ struct WorkspaceSidebarView: View {
                   sessionID: tmuxSession.id,
                   previewableSessionIDs: previewableTmuxSessionIDs
               )
-        else { return content }
+        else {
+            return reservesChevron ? previewChevronSpacer(content) : content
+        }
         let isExpanded = TmuxSessionPreviewRowPresentation.isExpanded(
             mode: sessionPreviewMode,
             sessionID: tmuxSession.id,
@@ -1900,9 +1850,13 @@ struct WorkspaceSidebarView: View {
                         )
                     } label: {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .frame(width: 18, height: 28)
+                            .frame(
+                                width: 14,
+                                height: sidebarPreferences.rowHeight.points
+                            )
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -1941,7 +1895,7 @@ struct WorkspaceSidebarView: View {
                             session: tmuxSession,
                             onMountChanged: tmuxSessionPreviewMountChanged
                         ))
-                        .padding(.leading, 18)
+                        .padding(.leading, 14)
                         .padding(.trailing, 8)
                         .accessibilityIdentifier(
                             "tmux-preview-\(tmuxSession.id)"
@@ -2120,31 +2074,6 @@ struct WorkspaceSidebarView: View {
         }
     }
 
-    private func hierarchyRow(
-        _ row: WorkspaceSidebarRow,
-        disclosureKey: String,
-        host: HostSummary? = nil,
-        inventoryWarning: String? = nil
-    ) -> some View {
-        return HStack(spacing: 0) {
-            hierarchyDisclosureButton(
-                row,
-                disclosureKey: disclosureKey
-            )
-
-            sidebarButton(row)
-
-            if let inventoryWarning {
-                inventoryWarningButton(
-                    inventoryWarning,
-                    host: host,
-                    accessibilityLabel:
-                    "Show connection issue for \(row.title)"
-                )
-            }
-        }
-    }
-
     private func projectHierarchyRow(
         _ project: WorkspaceSidebarProject,
         disclosureKey: String
@@ -2252,17 +2181,15 @@ struct WorkspaceSidebarView: View {
     }
 
     private func hierarchyDisclosureIcon(isExpanded: Bool) -> some View {
-        Image(
-            systemName: isExpanded
-                ? "chevron.down" : "chevron.right"
-        )
-        .font(.system(size: 11, weight: .bold))
-        .foregroundStyle(
-            colorSchemeContrast == .increased
-                ? Color.primary : Color.secondary
-        )
-        .frame(width: 20, height: 30)
-        .contentShape(Rectangle())
+        Image(systemName: "chevron.right")
+            .font(.system(size: 9, weight: .bold))
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            .foregroundStyle(
+                colorSchemeContrast == .increased
+                    ? Color.primary : Color(nsColor: .tertiaryLabelColor)
+            )
+            .frame(width: 16, height: sidebarPreferences.rowHeight.points)
+            .contentShape(Rectangle())
     }
 
     private func projectActionHelp(
@@ -2331,79 +2258,6 @@ struct WorkspaceSidebarView: View {
 
     // MARK: - Row content
 
-    private func sectionAction(
-        for section: WorkspaceSidebarInventorySection,
-        host: HostSummary
-    ) -> WorkspaceSidebarSectionAction? {
-        WorkspaceSidebarSectionActionModel.action(
-            for: section,
-            host: host,
-            onNewTmuxSession: onNewTmuxSession,
-            onNewHerdrSession: onNewHerdrSession,
-            onNewZellijSession: onNewZellijSession,
-            onAddProject: onAddProject
-        )
-    }
-
-    private func sidebarGroupLabel(
-        _ title: String,
-        disclosureKey: String,
-        action: WorkspaceSidebarSectionAction? = nil
-    ) -> some View {
-        let expanded = isExpanded(disclosureKey)
-        return HStack(spacing: 0) {
-            Button {
-                toggle(disclosureKey)
-            } label: {
-                HStack(spacing: 5) {
-                    Image(
-                        systemName: expanded
-                            ? "chevron.down" : "chevron.right"
-                    )
-                    .font(.system(size: 10, weight: .bold))
-                    .frame(width: 12)
-                    Text(title.uppercased())
-                        .tracking(0.35)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-                .padding(.leading, 8)
-                .frame(minHeight: 30)
-            }
-            .buttonStyle(.plain)
-            .workspaceAccessibility(
-                WorkspaceAccessibilityModel.disclosureDescriptor(
-                    title: title,
-                    isExpanded: expanded
-                )
-            )
-            .accessibilityIdentifier(
-                "sidebar-section-disclosure-\(disclosureKey)"
-            )
-
-            if let action {
-                Button(action: action.perform) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 28, height: 30)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(action.help)
-                .accessibilityLabel(action.accessibilityLabel)
-                .accessibilityIdentifier(
-                    action.accessibilityIdentifier
-                )
-            }
-        }
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(
-            colorSchemeContrast == .increased
-                ? Color.primary : Color.secondary
-        )
-        .padding(.top, 5)
-    }
-
     private func isExpanded(_ key: String) -> Bool {
         disclosureState.isExpanded(key)
     }
@@ -2435,149 +2289,57 @@ struct WorkspaceSidebarView: View {
             worktreeOrderRawValue = worktreeOrder.rawValue
         }
 
-        var tmuxSessionOrder = WorkspaceSidebarOrder(
-            rawValue: tmuxSessionOrderRawValue
+        var sessionOrder = WorkspaceSidebarOrder(
+            rawValue: sessionOrderRawValue
         )
-        let tmuxSessionIDs = Set(snapshot.hosts.flatMap { host in
+        let sessionIDs = Set(snapshot.hosts.flatMap { host in
             host.tmuxSessions.map {
                 WorkspaceSidebarModel.tmuxSessionOrderID(
                     hostID: host.id,
                     name: $0.name,
                     socketName: $0.socketName
                 )
-            }
-        })
-        if tmuxSessionOrder.prune(keeping: tmuxSessionIDs) {
-            tmuxSessionOrderRawValue = tmuxSessionOrder.rawValue
-        }
-
-        var herdrSessionOrder = WorkspaceSidebarOrder(
-            rawValue: herdrSessionOrderRawValue
-        )
-        let herdrSessionIDs = Set(snapshot.hosts.flatMap { host in
-            host.herdrSessions.map {
+            } + host.herdrSessions.map {
                 WorkspaceSidebarModel.herdrSessionOrderID(
                     hostID: host.id,
-                    name: $0.name, backend: $0.backend
+                    name: $0.name,
+                    backend: $0.backend
                 )
-            }
-        })
-        if herdrSessionOrder.prune(keeping: herdrSessionIDs) {
-            herdrSessionOrderRawValue = herdrSessionOrder.rawValue
-        }
-
-        var zellijSessionOrder = WorkspaceSidebarOrder(
-            rawValue: zellijSessionOrderRawValue
-        )
-        let zellijSessionIDs = Set(snapshot.hosts.flatMap { host in
-            host.zellijSessions.map {
+            } + host.zellijSessions.map {
                 WorkspaceSidebarModel.zellijSessionOrderID(
                     hostID: host.id,
                     name: $0.name
                 )
             }
         })
-        if zellijSessionOrder.prune(keeping: zellijSessionIDs) {
-            zellijSessionOrderRawValue = zellijSessionOrder.rawValue
+        if sessionOrder.prune(keeping: sessionIDs) {
+            sessionOrderRawValue = sessionOrder.rawValue
         }
     }
 
-    /// Two-line status row for worktrees: title + trailing status cluster on
-    /// line 1; optional PR info on line 2.
-    private func worktreeRowContent(
-        _ title: String,
-        status: WorktreeRowStatus,
-        titleColor: Color
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            WorktreeRowLine(title: title, status: status, titleColor: titleColor)
-            worktreePRLine(status)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Second line: PR number + truncated title, draft badge, CI glyph.
-    @ViewBuilder
-    private func worktreePRLine(_ status: WorktreeRowStatus) -> some View {
-        if status.showsSecondLine {
-            HStack(spacing: 4) {
-                if let num = status.prNumber {
-                    Label {
-                        Text("PR #\(num)")
-                            .monospacedDigit()
-                    } icon: {
-                        Image(systemName: "arrow.triangle.branch")
-                    }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(
-                        Color.accentColor.opacity(0.14),
-                        in: Capsule()
-                    )
-                }
-                if let title = status.prTitle {
-                    Text(title)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                if status.isDraft {
-                    Text("draft")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-                if let glyph = status.checks {
-                    checksGlyphView(glyph)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func checksGlyphView(_ glyph: ChecksGlyph) -> some View {
-        switch glyph {
-        case .success:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.caption2)
-                .foregroundStyle(Color.green)
-        case .failure:
-            Image(systemName: "xmark.circle.fill")
-                .font(.caption2)
-                .foregroundStyle(Color.red)
-        case .pending:
-            Image(systemName: "clock.circle")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    /// Legacy single-line rendering for host and project rows.
+    /// Project and directory workspace rows: name plus dimmed path.
     private func legacyRowContent(
         title: String,
         subtitle: String?,
         sessionIsRunning: Bool
     ) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if sessionIsRunning {
-                    Image(systemName: "play.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 13))
+                .lineLimit(1)
+                .layoutPriority(1)
             if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
+                    .truncationMode(.head)
+            }
+            Spacer(minLength: 0)
+            if sessionIsRunning {
+                Image(systemName: "play.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

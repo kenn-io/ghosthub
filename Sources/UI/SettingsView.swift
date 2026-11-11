@@ -333,6 +333,8 @@ public struct SettingsView: View {
             switch draft.selectedDomain {
             case .appearance:
                 appearanceDetail
+            case .sidebar:
+                sidebarDetail
             case .terminal:
                 terminalDetail
             case .keyboard:
@@ -533,30 +535,6 @@ public struct SettingsView: View {
 
     private var worktreesDetail: some View {
         VStack(alignment: .leading, spacing: 18) {
-            settingsSection("Sidebar Behavior") {
-                Toggle(
-                    "Hide the root checkout in the sidebar",
-                    isOn: $draft.hideRootCheckout
-                )
-                Toggle(
-                    "Show hidden worktrees by default",
-                    isOn: $draft.showHiddenWorktreesByDefault
-                )
-                Toggle(
-                    "Hide kwt-managed sessions from Tmux Sessions",
-                    isOn: $draft.hideKwtManagedSessions
-                )
-
-                Text(
-                    "Kwt-managed sessions remain available through their"
-                        + " worktrees when hidden from the separate tmux"
-                        + " session list."
-                )
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
             settingsSection("Standalone Tmux Sessions") {
                 Text("Hidden session patterns")
                     .font(.system(size: 13, weight: .semibold))
@@ -684,6 +662,95 @@ public struct SettingsView: View {
                         + " app version, and build number. It never sends"
                         + " repository, worktree, host, session, path,"
                         + " command, or terminal data."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var sidebarDetail: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 18) {
+                SidebarSettingsPreview(
+                    preferences: draft.sidebar,
+                    hideWorktreeSessions: draft.hideKwtManagedSessions,
+                    hideRootCheckout: draft.hideRootCheckout,
+                    showHiddenWorktrees: draft.showHiddenWorktreesByDefault
+                )
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Preview")
+                        .font(.system(size: 11, weight: .semibold))
+                        .textCase(.uppercase)
+                        .foregroundStyle(.tertiary)
+                    Text(
+                        "Sample sessions on a sample host. A brief highlight"
+                            + " marks the rows your last change affected."
+                    )
+                    Text("Changes apply to the sidebar when you close Settings.")
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            settingsSection("Layout") {
+                settingRow("Backend label") {
+                    Picker("Backend label", selection: $draft.sidebar.backendLabelStyle) {
+                        ForEach(SidebarBackendLabelStyle.allCases) { style in
+                            Text(style.title).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 210)
+                }
+                settingRow("Row height") {
+                    Picker("Row height", selection: $draft.sidebar.rowHeight) {
+                        ForEach(SidebarRowHeight.allCases) { height in
+                            Text(height.title).tag(height)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 210)
+                }
+                settingRow("Sort sessions by") {
+                    Picker("Sort sessions by", selection: $draft.sidebar.sessionSort) {
+                        ForEach(SidebarSessionSort.allCases) { sort in
+                            Text(sort.title).tag(sort)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 210)
+                }
+                Text(
+                    "The options menu at the top of the sidebar changes"
+                        + " these settings too. Stopped Herdr sessions always"
+                        + " sit at the bottom."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            settingsSection("Contents") {
+                Toggle(
+                    "Hide sessions that belong to a worktree",
+                    isOn: $draft.hideKwtManagedSessions
+                )
+                Toggle(
+                    "Hide the root checkout",
+                    isOn: $draft.hideRootCheckout
+                )
+                Toggle(
+                    "Show hidden worktrees",
+                    isOn: $draft.showHiddenWorktreesByDefault
+                )
+                Text(
+                    "Hidden worktree sessions stay available under their"
+                        + " project."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

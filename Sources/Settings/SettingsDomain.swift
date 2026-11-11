@@ -2,6 +2,7 @@ import Foundation
 
 public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
     case appearance
+    case sidebar
     case terminal
     case keyboard
     case worktrees
@@ -16,6 +17,8 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .appearance:
             return "Appearance"
+        case .sidebar:
+            return "Sidebar"
         case .terminal:
             return "Terminal"
         case .keyboard:
@@ -38,12 +41,14 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
         case .appearance:
             return "App chrome, built-in tmux themes,"
                 + " font overrides, and cursor styling."
+        case .sidebar:
+            return "How hosts, sessions, and worktrees appear in the sidebar."
         case .terminal:
             return "Terminal interaction and ghostty.conf configuration."
         case .keyboard:
             return "Application and workspace navigation shortcuts."
         case .worktrees:
-            return "Workspace and standalone tmux session visibility."
+            return "Hidden tmux session patterns and workspace sessions."
         case .agents:
             return "Attention notifications for active agent sessions."
         case .privacy:

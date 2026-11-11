@@ -12,6 +12,11 @@ struct SettingsDomainTests {
                     + " font overrides, and cursor styling."
             ),
             (
+                .sidebar,
+                "Sidebar",
+                "How hosts, sessions, and worktrees appear in the sidebar."
+            ),
+            (
                 .terminal,
                 "Terminal",
                 "Terminal interaction and ghostty.conf configuration."
@@ -24,7 +29,7 @@ struct SettingsDomainTests {
             (
                 .worktrees,
                 "Worktrees",
-                "Workspace and standalone tmux session visibility."
+                "Hidden tmux session patterns and workspace sessions."
             ),
             (
                 .agents,

@@ -5,17 +5,21 @@ struct NativePopupMenuAction {
     let title: String
     let role: ButtonRole?
     let isEnabled: Bool
+    /// Tooltip, typically the reason a disabled item is unavailable.
+    let help: String?
     let action: @MainActor () -> Void
 
     init(
         _ title: String,
         role: ButtonRole? = nil,
         isEnabled: Bool = true,
+        help: String? = nil,
         action: @escaping @MainActor () -> Void
     ) {
         self.title = title
         self.role = role
         self.isEnabled = isEnabled
+        self.help = help
         self.action = action
     }
 }
@@ -68,6 +72,7 @@ private enum NativePopupMenuPresenter {
                     )
                 }
                 item.isEnabled = action.isEnabled
+                item.toolTip = action.help
                 item.target = target
                 menu.addItem(item)
                 targets.append(target)

@@ -317,6 +317,66 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("returning to the shown tmux terminal during Herdr validation restores focus")
+    func returningToTmuxDuringHerdrValidationRestoresFocus() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let sessions = try #require(
+            environment.snapshot.host(id: environment.hostID)?.herdrSessions
+        )
+        let probeStarted = Mutex(false)
+        let releaseProbe = AsyncGate()
+        let model = try makeHerdrModel(
+            environment, store: store,
+            validationDiscovery: { _, _, _ in
+                probeStarted.withLock { $0 = true }
+                await releaseProbe.wait()
+                return .available(sessions, tuiAvailable: false)
+            }
+        )
+        let tmux = WorkspaceTmuxSessionSelection(
+            hostID: environment.hostID,
+            name: "tmux-work"
+        )
+        model.openBorrowedTmuxSession(tmux)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestedKeys.contains { $0.target == .tmuxSession }
+        }
+        #expect(store.requestedKeys.contains { $0.target == .tmuxSession })
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let input = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        window.contentView = input
+        model.workspaceWindow = window
+        #expect(window.makeFirstResponder(input))
+
+        let opening = Task {
+            try await model.openBorrowedHerdrSession(.init(
+                hostID: environment.hostID,
+                name: "worker"
+            ))
+        }
+        await waitUntilMainActor { probeStarted.withLock { $0 } }
+        #expect(window.firstResponder !== input)
+        #expect(model.activeBorrowedTmuxSelection == tmux)
+        let requestsBeforeReturn = store.surface.keyboardFocusRequestCount
+
+        model.selectFromUser(WorkspaceSelection(selectedHostID: environment.hostID))
+        model.openBorrowedTmuxSession(tmux)
+        #expect(store.surface.keyboardFocusRequestCount == requestsBeforeReturn + 1)
+
+        releaseProbe.open()
+        await #expect(throws: CancellationError.self) {
+            try await opening.value
+        }
+        #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        await model.shutdown()
+    }
+
     @Test("active capable Herdr presentation routes pane splits")
     func activeHerdrPaneSplitRouting() async throws {
         let environment = try environment()

@@ -69,8 +69,9 @@ brew install zellij
 
 1. Launch Ghosthub.
 2. Expand your Mac under **Hosts** in the sidebar.
-3. Select an existing entry under **Tmux Sessions**, **Herdr Sessions**, or
-   **Zellij Sessions**.
+3. Select an existing session in your Mac's session list. The label at the
+   end of each row names its backend: **tmux**, **zellij**, **herdr**, or
+   **herdr tui**.
 
 Ghosthub attaches the ordinary whole-session client for that backend. Existing
 tmux windows and panes, Herdr workspaces, or Zellij tabs and panes stay under their
@@ -78,18 +79,19 @@ backend's control. Closing the presentation detaches without stopping the
 server. Sessions started by a shell or agent appear here too; see
 [agent sessions](sessions.md#sessions-started-by-tools-and-agents).
 
-![Ghosthub sidebar with local and remote session groups](/docs/assets/guide-sessions.png)
+![Ghosthub sidebar with a labeled session list under each host](/docs/assets/guide-sessions.png)
 
 ## Create a session
 
-1. Expand your Mac in the sidebar.
-2. Select the **+** beside **Tmux Sessions** or, when available, **Herdr
-   Sessions** or **Zellij Sessions**.
+1. Select the **+** at the right end of your Mac's row in the sidebar.
+2. Choose **New tmux Session…** or, when available, **New Zellij Session…** or
+   **New Herdr Session…**.
 3. Enter a session name and create it.
 
 The session is not tied to a Git repository. Close the Ghosthub window or tab
 to detach; your shell and other processes continue running in its multiplexer.
-Stopped Herdr sessions remain visible with a **Stopped** label so you can
+Stopped Herdr sessions remain visible at the bottom of the list, dimmed and
+marked **stopped**, so you can
 restart their saved shape later.
 
 ## Release and nightly builds

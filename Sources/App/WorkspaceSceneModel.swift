@@ -8809,6 +8809,10 @@ final class WorkspaceSceneModel: ObservableObject {
         if activeBorrowedZellijSelection == selection,
            let handle = activeBorrowedZellijHandle,
            nativeZellijSessionCoordinator.attachmentClosure(handle) == nil {
+            // The surface stays on screen, so its appear-time focus does not
+            // rerun. A Herdr open superseded by this return may have cleared
+            // the window's first responder while it validated.
+            nativeZellijSessionCoordinator.requestKeyboardFocus(handle: handle)
             return
         }
         cancelPendingRestoration()
@@ -9410,6 +9414,9 @@ final class WorkspaceSceneModel: ObservableObject {
     func openBorrowedHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
+        // A sibling shortcut can be superseded before its task first runs.
+        // Stop before touching the newer navigation's pending open or focus.
+        try Task.checkCancellation()
         invalidateZellijPresentationIntent()
         cancelPendingTmuxPreviewActivations()
         let activityGeneration = try captureSceneActivity()
@@ -10440,7 +10447,18 @@ final class WorkspaceSceneModel: ObservableObject {
                         )
                         return retained.handle
                     }
+                    let returnsToShownTerminal = intent == .userInitiated
+                        && activeBorrowedTmuxHandle == retained.handle
                     activateTmuxPresentation(retained)
+                    // A shown terminal stays mounted, so its appear-time
+                    // focus does not rerun. A Herdr open superseded by this
+                    // return may have cleared the window's first responder.
+                    if returnsToShownTerminal,
+                       activeBorrowedTmuxHandle == retained.handle {
+                        nativeTmuxSessionCoordinator.requestKeyboardFocus(
+                            handle: retained.handle
+                        )
+                    }
                 }
                 return retained.handle
             }

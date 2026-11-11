@@ -98,7 +98,7 @@ extension WorkspaceTmuxDiscoveryTests {
         await fixture.open("desk", attachedTo: nil)
         #expect(fixture.attention.acknowledgedDoneStamps.isEmpty, "connected but not yet verified")
 
-        fixture.attachedSessionID.store("$2")
+        fixture.newestClientShows("$2")
         await waitUntilMainActor {
             fixture.attention.acknowledgedDoneStamps.values.sorted() == [200]
         }
@@ -141,7 +141,7 @@ extension WorkspaceTmuxDiscoveryTests {
         await fixture.open("desk", attachedTo: "$2")
 
         // The user switches the client to anchor with tmux's own keys.
-        fixture.attachedSessionID.store("$1")
+        fixture.newestClientShows("$1")
         await fixture.refresh([
             agentSession("anchor", "$1", [
                 TmuxPaneAgentState(paneID: "%1", state: .done, stamp: 300, agent: "codex"),
@@ -172,7 +172,7 @@ extension WorkspaceTmuxDiscoveryTests {
 
         // The user switches the client to desk with tmux's own keys, and
         // desk's agent then asks for approval while the window is behind.
-        fixture.attachedSessionID.store("$2")
+        fixture.newestClientShows("$2")
         await fixture.refresh([
             agentSession("anchor", "$1", []),
             agentSession("desk", "$2", [
@@ -215,7 +215,7 @@ extension WorkspaceTmuxDiscoveryTests {
 
         // Meanwhile the user switches the client to desk, and anchor's
         // agent then finishes a turn the user has not seen.
-        fixture.attachedSessionID.store("$2")
+        fixture.newestClientShows("$2")
         await fixture.refresh([
             agentSession("anchor", "$1", [
                 TmuxPaneAgentState(paneID: "%1", state: .done, stamp: 300, agent: "codex"),
@@ -238,8 +238,10 @@ private struct AttentionFixture {
     let defaults: UserDefaults
     let attention: AgentAttentionStore
     let model: WorkspaceSceneModel
-    /// Session the next attached client reports; nil keeps it unverified.
-    let attachedSessionID = LockedValue<String?>(nil)
+    /// Session each client reports, by launch order; a missing entry keeps
+    /// that client unverified. Clients answer separately, so a late reply
+    /// from an earlier client never reports a later client's session.
+    let clientSessionIDs = LockedValue<[Int: String]>([:])
     let identityReplies = LockedValue(0)
     /// While set, identity replies wait on it after reading the session.
     let identityGate = LockedValue<DispatchSemaphore?>(nil)
@@ -252,7 +254,8 @@ private struct AttentionFixture {
         defaults = try #require(UserDefaults(
             suiteName: "ghosthub-agent-attention-\(UUID().uuidString)"
         ))
-        let attachedSessionID = attachedSessionID
+        let clientSessionIDs = clientSessionIDs
+        let launchCommands = store.launchCommands
         let identityReplies = identityReplies
         let identityGate = identityGate
         let heldIdentityReplies = heldIdentityReplies
@@ -268,7 +271,11 @@ private struct AttentionFixture {
             },
             nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
                 guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY"),
-                      let sessionID = attachedSessionID.load()
+                      let client = launchIndex(
+                          ofClientProbedBy: command,
+                          launches: launchCommands.load()
+                      ),
+                      let sessionID = clientSessionIDs.load()[client]
                 else { return (0, "") }
                 identityReplies.withLock { $0 += 1 }
                 if let gate = identityGate.load() {
@@ -307,8 +314,10 @@ private struct AttentionFixture {
         }
     }
 
+    /// Opens `name`. A client launched for it reports `sessionID`.
     func open(_ name: String, attachedTo sessionID: String?) async {
-        attachedSessionID.store(sessionID)
+        let nextClient = store.launchCommands.load().count
+        clientSessionIDs.withLock { $0[nextClient] = sessionID }
         model.openBorrowedTmuxSession(
             WorkspaceTmuxSessionSelection(hostID: hostID, name: name)
         )
@@ -319,11 +328,30 @@ private struct AttentionFixture {
         }
     }
 
+    /// The newest client now shows `sessionID`, as after tmux's own
+    /// session-switch keys.
+    func newestClientShows(_ sessionID: String) {
+        let newest = store.launchCommands.load().count - 1
+        clientSessionIDs.withLock { $0[newest] = sessionID }
+    }
+
     func current(_ name: String) -> AgentAttention? {
         attention.attentionByEndpoint(in: model.snapshot)[
             AgentAttentionStore.endpointKey(hostID: hostID, name: name, socketName: nil)
         ]
     }
+}
+
+/// Launch order of the client an identity probe asks about. The probe reads
+/// the client's tty from a file named by the client's token, which the
+/// client's launch command also carries.
+private func launchIndex(
+    ofClientProbedBy command: String,
+    launches: [String]
+) -> Int? {
+    let token = /([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})['"]? 2>\/dev\/null/
+    guard let match = command.firstMatch(of: token) else { return nil }
+    return launches.firstIndex { $0.contains(String(match.1)) }
 }
 
 /// Session names with their agent states, for comparing inventories.

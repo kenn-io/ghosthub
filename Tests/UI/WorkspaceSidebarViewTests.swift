@@ -238,106 +238,15 @@ struct WorkspaceSidebarViewTests {
             tmuxWindowCount: 3
         )
         let fallbackHeight = hostView(
-            WorktreeRowLine(title: "main", status: fallback),
+            SidebarWorktreeRowContent(title: "main", status: fallback),
             size: CGSize(width: 180, height: 32)
         ).fittingSize.height
         let countedHeight = hostView(
-            WorktreeRowLine(title: "main", status: counted),
+            SidebarWorktreeRowContent(title: "main", status: counted),
             size: CGSize(width: 180, height: 32)
         ).fittingSize.height
 
         #expect(ceil(countedHeight) == ceil(fallbackHeight))
-    }
-
-    @Test("section actions target their exact host")
-    func sectionActionsTargetExactHost() throws {
-        let host = HostSummary.fixture(
-            id: UUID(),
-            herdrAvailable: true,
-            zellijAvailable: true
-        )
-        var tmuxHosts: [UUID] = []
-        var herdrHosts: [UUID] = []
-        var zellijHosts: [UUID] = []
-        var projectHosts: [UUID] = []
-        let action = { section in
-            WorkspaceSidebarSectionActionModel.action(
-                for: section,
-                host: host,
-                onNewTmuxSession: { tmuxHosts.append($0.id) },
-                onNewHerdrSession: { herdrHosts.append($0.id) },
-                onNewZellijSession: { zellijHosts.append($0.id) },
-                onAddProject: { projectHosts.append($0.id) }
-            )
-        }
-
-        try #require(action(.tmuxSessions)).perform()
-        try #require(action(.herdrSessions)).perform()
-        try #require(action(.zellijSessions)).perform()
-        try #require(action(.projects)).perform()
-        #expect(tmuxHosts == [host.id])
-        #expect(herdrHosts == [host.id])
-        #expect(zellijHosts == [host.id])
-        #expect(projectHosts == [host.id])
-    }
-
-    @Test("Herdr action follows availability rather than inventory")
-    func herdrActionFollowsAvailability() {
-        let availableHost = HostSummary.fixture(
-            id: UUID(),
-            herdrSessions: [],
-            herdrAvailable: true
-        )
-        let unavailableHost = HostSummary.fixture(
-            id: UUID(),
-            name: "Without Herdr",
-            kind: .remote,
-            platform: .linux,
-            herdrSessions: [],
-            herdrAvailable: false
-        )
-        #expect(WorkspaceSidebarSectionActionModel.isVisible(
-            .herdrSessions,
-            host: availableHost,
-            hasProjects: false
-        ))
-        #expect(!WorkspaceSidebarSectionActionModel.isVisible(
-            .herdrSessions,
-            host: unavailableHost,
-            hasProjects: false
-        ))
-        #expect(WorkspaceSidebarSectionActionModel.action(
-            for: .herdrSessions,
-            host: unavailableHost,
-            onNewTmuxSession: { _ in },
-            onNewHerdrSession: { _ in },
-            onNewZellijSession: { _ in },
-            onAddProject: { _ in }
-        ) == nil)
-    }
-
-    @Test("existing projects remain visible without registration")
-    func existingProjectsRemainVisibleWithoutRegistration() {
-        let host = HostSummary.fixture(
-            kind: .remote,
-            platform: .windows,
-            remoteCapabilities: nil
-        )
-
-        #expect(!host.canRegisterProjects)
-        #expect(WorkspaceSidebarSectionActionModel.isVisible(
-            .projects,
-            host: host,
-            hasProjects: true
-        ))
-        #expect(WorkspaceSidebarSectionActionModel.action(
-            for: .projects,
-            host: host,
-            onNewTmuxSession: { _ in },
-            onNewHerdrSession: { _ in },
-            onNewZellijSession: { _ in },
-            onAddProject: { _ in }
-        ) == nil)
     }
 
     @MainActor
@@ -408,7 +317,7 @@ struct WorkspaceSidebarViewTests {
             ),
         ])
         let rows = WorkspaceSidebarModel.sections(in: snapshot)[0]
-            .herdrSessionRows
+            .sessionRows(for: .herdrTUI)
 
         #expect(WorkspaceSidebarRowActionModel.actions(
             for: rows.first(where: { $0.title == "api" })!,

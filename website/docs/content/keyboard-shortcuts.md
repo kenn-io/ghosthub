@@ -25,14 +25,11 @@ Sibling navigation is local to what you are currently using:
 
 - A worktree cycles through visible worktrees in the same project.
 - A directory workspace cycles through directory workspaces on the same host.
-- A standalone tmux session cycles through visible standalone tmux sessions on
-  the same host.
-- A Herdr desktop terminal cycles through **Herdr Terminals** on the same host.
-- A Herdr TUI session cycles through running **Herdr TUI Sessions** on the same host.
-- A Zellij session cycles through active Zellij sessions on the same host.
+- A standalone tmux, Zellij, or Herdr session cycles through the host's whole
+  session list, across backends. Stopped Herdr sessions are skipped.
 
-The order matches the sidebar, including custom ordering and visibility
-settings. At least two eligible siblings must exist. If navigation is not
+The order matches the sidebar, including the chosen sort, custom ordering, and
+visibility settings. At least two eligible siblings must exist. If navigation is not
 available, Ghosthub leaves the key event untouched so the active terminal can
 receive it. Stopped Herdr sessions are never started by a navigation shortcut.
 

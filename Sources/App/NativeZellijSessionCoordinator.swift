@@ -316,6 +316,10 @@ final class NativeZellijSessionCoordinator {
         attachments[handle.id]?.sshConnectionSnapshot
     }
 
+    func requestKeyboardFocus(handle: BorrowedZellijSessionHandle) {
+        terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?.requestKeyboardFocus()
+    }
+
     func surface(handle: BorrowedZellijSessionHandle) -> TerminalSurfaceView? {
         guard attachmentClosures[handle.id] == nil,
               let attachment = attachments[handle.id]

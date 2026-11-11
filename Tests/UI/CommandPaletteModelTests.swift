@@ -21,18 +21,15 @@ struct CommandPaletteModelTests {
         #expect(!commands.contains { $0.action == .restartHerdrSession(selection) })
         #expect(!commands.contains { $0.action == .deleteHerdrSession(selection) })
         let snapshot = WorkspaceSnapshot.fixture(hosts: [host])
-        let row = try #require(WorkspaceSidebarModel.sections(in: snapshot).first?.herdrSessionRows
-            .first)
+        let row = try #require(WorkspaceSidebarModel.sections(in: snapshot).first?
+            .sessionRows(for: .herdrTerminal).first)
         #expect(row.title == "review")
         #expect(WorkspaceSidebarRowActionModel.actions(for: row, in: snapshot).isEmpty)
-        #expect(!WorkspaceSidebarSectionActionModel.isVisible(
-            .herdrSessions,
-            host: host,
-            hasProjects: false
-        ))
-        #expect(WorkspaceSidebarSectionActionModel.isVisible(
-            .herdrTerminals, host: host, hasProjects: false
-        ))
+        // Desktop terminals alone do not make Herdr TUI creation available.
+        let newHerdr = WorkspaceSidebarHostMenuModel.entries(for: host)
+            .flatMap { $0 }
+            .first { $0.item == .newHerdrSession }
+        #expect(newHerdr?.isEnabled == false)
     }
 
     @Test("command palette includes global actions and ordered worktrees")
@@ -1212,7 +1209,7 @@ private func makeCommandPaletteCommands(
     tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
     supportsSettings: Bool = true,
     worktreeOrderRawValue: String = "",
-    tmuxSessionOrderRawValue: String = "",
+    sessionOrderRawValue: String = "",
     availableApplicationShortcuts: Set<ApplicationShortcutAction> = [
         .previousSibling,
         .nextSibling,
@@ -1237,7 +1234,7 @@ private func makeCommandPaletteCommands(
         tmuxSessionVisibility: tmuxSessionVisibility,
         supportsSettings: supportsSettings,
         worktreeOrderRawValue: worktreeOrderRawValue,
-        tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
+        sessionOrderRawValue: sessionOrderRawValue,
         availableApplicationShortcuts: availableApplicationShortcuts
     )
 }

@@ -108,15 +108,13 @@ public enum CommandPaletteModel {
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         supportsSettings: Bool = true,
         worktreeOrderRawValue: String = "",
-        tmuxSessionOrderRawValue: String = "",
+        sessionOrderRawValue: String = "",
         availableApplicationShortcuts: Set<ApplicationShortcutAction> = [
             .previousSibling,
             .nextSibling,
             .splitRight,
             .splitDown,
         ],
-        herdrSessionOrderRawValue: String = "",
-        zellijSessionOrderRawValue: String = "",
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         shortcuts: ResolvedApplicationShortcuts =
             ApplicationShortcutCatalog.compiledDefaults
@@ -232,15 +230,14 @@ public enum CommandPaletteModel {
             visibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue
         ))
         commands.append(contentsOf: herdrSessionCommands(
             in: snapshot,
             visibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
+            sessionOrderRawValue: sessionOrderRawValue,
             pendingHerdrSessions: pendingHerdrSessions
         ))
         commands.append(contentsOf: zellijSessionCommands(
@@ -248,9 +245,7 @@ public enum CommandPaletteModel {
             visibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: zellijSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue
         ))
         commands.append(contentsOf: newWorktreeCommands(
             in: snapshot,
@@ -373,6 +368,7 @@ public enum CommandPaletteModel {
         if supportsSettings {
             let domains: [SettingsDomain] = [
                 .appearance,
+                .sidebar,
                 .terminal,
                 .keyboard,
                 .worktrees,
@@ -481,14 +477,14 @@ public enum CommandPaletteModel {
         visibility: WorktreeVisibility,
         tmuxSessionVisibility: TmuxSessionVisibility,
         worktreeOrderRawValue: String,
-        tmuxSessionOrderRawValue: String
+        sessionOrderRawValue: String
     ) -> [WorkspaceCommandItem] {
         let sections = WorkspaceSidebarModel.sections(
             in: snapshot,
             visibility: visibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue
         )
         let sessions = sections.flatMap { section -> [(
             session: WorkspaceTmuxSessionSelection,
@@ -501,7 +497,7 @@ public enum CommandPaletteModel {
                 hostName: String,
                 canRequestKill: Bool,
                 keywords: [String]
-            )] = section.tmuxSessionRows.compactMap { row in
+            )] = section.sessionRows(for: .tmux).compactMap { row in
                 guard case let .tmuxSession(hostID, name, socketName) = row.target else {
                     return nil
                 }
@@ -657,8 +653,7 @@ public enum CommandPaletteModel {
         visibility: WorktreeVisibility,
         tmuxSessionVisibility: TmuxSessionVisibility,
         worktreeOrderRawValue: String,
-        tmuxSessionOrderRawValue: String,
-        herdrSessionOrderRawValue: String,
+        sessionOrderRawValue: String,
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
     ) -> [WorkspaceCommandItem] {
         WorkspaceSidebarModel.sections(
@@ -666,10 +661,11 @@ public enum CommandPaletteModel {
             visibility: visibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue
         ).flatMap { section in
-            section.herdrSessionRows.flatMap { row -> [WorkspaceCommandItem] in
+            (section.sessionRows(for: .herdrTerminal)
+                + section.sessionRows(for: .herdrTUI)
+            ).flatMap { row -> [WorkspaceCommandItem] in
                 guard case let .herdrSession(hostID, name, backend) = row.target else {
                     return []
                 }
@@ -739,20 +735,16 @@ public enum CommandPaletteModel {
         visibility: WorktreeVisibility,
         tmuxSessionVisibility: TmuxSessionVisibility,
         worktreeOrderRawValue: String,
-        tmuxSessionOrderRawValue: String,
-        herdrSessionOrderRawValue: String,
-        zellijSessionOrderRawValue: String
+        sessionOrderRawValue: String
     ) -> [WorkspaceCommandItem] {
         WorkspaceSidebarModel.sections(
             in: snapshot,
             visibility: visibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
-            tmuxSessionOrderRawValue: tmuxSessionOrderRawValue,
-            herdrSessionOrderRawValue: herdrSessionOrderRawValue,
-            zellijSessionOrderRawValue: zellijSessionOrderRawValue
+            sessionOrderRawValue: sessionOrderRawValue
         ).flatMap { section in
-            section.zellijSessionRows.flatMap { row -> [WorkspaceCommandItem] in
+            section.sessionRows(for: .zellij).flatMap { row -> [WorkspaceCommandItem] in
                 guard case let .zellijSession(hostID, name) = row.target else {
                     return []
                 }

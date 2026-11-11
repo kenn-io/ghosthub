@@ -33,7 +33,8 @@ running `app-container` must already exist there.
 
 ## Start a session
 
-1. Select the **+** beside the host's **Tmux Sessions** group.
+1. Select the **+** at the right end of the host's row in the sidebar and
+   choose **New tmux Session…**.
 2. Enter a new session name.
 3. Under **Start with**, choose the profile. **Login shell** is the default.
 4. Select **Create**.

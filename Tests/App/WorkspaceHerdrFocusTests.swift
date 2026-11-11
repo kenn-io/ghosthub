@@ -99,29 +99,8 @@ final class WorkspaceHerdrFocusTests: XCTestCase {
             await model.shutdown()
             await input.shutdown()
         }
-        // Require actual AppKit activation, including event dispatch, rather
-        // than a window subclass or a synthetic didBecomeKey notification.
-        let pumpEvents: () -> Void = {
-            let deadline = Date().addingTimeInterval(0.05)
-            while Date() < deadline,
-                  let event = NSApplication.shared.nextEvent(
-                      matching: .any, until: deadline, inMode: .default, dequeue: true
-                  ) {
-                NSApplication.shared.sendEvent(event)
-            }
-        }
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.finishLaunching()
-        NSApplication.shared.unhide(nil)
-        window.orderFrontRegardless()
-        window.makeKeyAndOrderFront(nil)
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline, !(window.isKeyWindow && NSApplication.shared.isActive) {
-            pumpEvents()
-        }
         defer { window.orderOut(nil) }
-        guard window.isKeyWindow, NSApplication.shared.isActive else {
+        guard activate(window) else {
             await model.shutdown()
             await input.shutdown()
             throw XCTSkip("Requires an active AppKit window")
@@ -212,5 +191,124 @@ final class WorkspaceHerdrFocusTests: XCTestCase {
         await input.shutdown()
     }
 
+    /// Returning to the Zellij session that is still on screen must give it
+    /// back the keyboard that a superseded Herdr open took away.
+    func testReturningToZellijDuringHerdrValidationRestoresFocus() async throws {
+        let database = try WorkspaceDatabase.inMemory()
+        let hostID = UUID()
+        let herdrSessions = [
+            HerdrSessionSummary(name: "agent", isDefault: false, state: .running, backend: .core),
+        ]
+        let snapshot = WorkspaceSnapshot.fixture(hosts: [.fixture(
+            id: hostID,
+            herdrSessions: herdrSessions,
+            zellijSessions: [ZellijSessionSummary(name: "editor")],
+            zellijAvailable: true
+        )])
+        let probeStarted = Mutex(false)
+        let releaseProbe = AsyncGate()
+        let script = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try "#!/bin/sh\nexec /bin/cat\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        defer { try? FileManager.default.removeItem(at: script) }
+
+        let zellijStore = TerminalSurfaceCoordinator(runtime: .shared)
+        var surface: TerminalSurfaceView?
+        zellijStore.onSurfaceCreated = { _, view in surface = view }
+        let model = try makeModel(
+            database: database, localHostID: hostID,
+            snapshot: snapshot,
+            nativeHerdrSurfaceStore: RecordingNativeSessionSurfaceStore(),
+            nativeZellijSurfaceStore: zellijStore,
+            nativeHerdrCorePathProvider: { _ in .success(script.path) },
+            nativeZellijPathProvider: { _ in .success(script.path) },
+            zellijSessionValidationDiscovery: { _, _ in .available(["editor"]) },
+            herdrSessionValidationDiscovery: { _, _, _ in
+                probeStarted.withLock { $0 = true }
+                await releaseProbe.wait()
+                return .available(herdrSessions, tuiAvailable: false)
+            }
+        )
+        let zellij = WorkspaceZellijSessionSelection(hostID: hostID, name: "editor")
+        model.openBorrowedZellijSession(zellij)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedZellijSurface()
+            return surface != nil
+        }
+        guard let input = surface else {
+            await model.shutdown()
+            XCTFail("No real terminal surface was created")
+            return
+        }
+        addTeardownBlock { @MainActor in
+            await model.shutdown()
+            await input.shutdown()
+        }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.title = "Ghosthub Zellij focus regression"
+        window.contentView = input
+        defer { window.orderOut(nil) }
+        guard activate(window) else {
+            throw XCTSkip("Requires an active AppKit window")
+        }
+        model.workspaceWindow = window
+        XCTAssertTrue(window.makeFirstResponder(input))
+
+        let opening = Task {
+            try await model.openBorrowedHerdrSession(.init(
+                hostID: hostID, name: "agent", backend: .core
+            ))
+        }
+        await waitUntilMainActor { probeStarted.withLock { $0 } }
+        XCTAssertTrue(probeStarted.withLock { $0 })
+        XCTAssertTrue(window.firstResponder !== input)
+        XCTAssertTrue(model.activeBorrowedZellijSelection == zellij)
+
+        model.selectFromUser(WorkspaceSelection(selectedHostID: hostID))
+        model.openBorrowedZellijSession(zellij)
+        XCTAssertTrue(window.firstResponder === input)
+
+        releaseProbe.open()
+        do {
+            try await opening.value
+            XCTFail("The superseded Herdr open completed")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Unexpected validation error: \(error)")
+        }
+        XCTAssertTrue(model.activeBorrowedZellijSelection == zellij)
+        XCTAssertNil(model.activeBorrowedHerdrSelection)
+        XCTAssertTrue(window.firstResponder === input)
+    }
+
+    /// Requires actual AppKit activation, including event dispatch, rather
+    /// than a window subclass or a synthetic didBecomeKey notification.
+    private func activate(_ window: NSWindow) -> Bool {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.finishLaunching()
+        NSApplication.shared.unhide(nil)
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, !(window.isKeyWindow && NSApplication.shared.isActive) {
+            pumpEvents()
+        }
+        return window.isKeyWindow && NSApplication.shared.isActive
+    }
+
+    private func pumpEvents() {
+        let deadline = Date().addingTimeInterval(0.05)
+        while Date() < deadline,
+              let event = NSApplication.shared.nextEvent(
+                  matching: .any, until: deadline, inMode: .default, dequeue: true
+              ) {
+            NSApplication.shared.sendEvent(event)
+        }
+    }
 }
 #endif
