@@ -1901,6 +1901,11 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Err(error) = self.workspace.select_host(selection.host_id()) {
+            self.diagnostic = Some(error.to_string());
+            cx.notify();
+            return;
+        }
         let snapshot = self.workspace.snapshot();
         if snapshot
             .active_selection()
@@ -1943,18 +1948,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result = self.workspace.open_kwt_worktree(
-            &target.host_id,
-            &target.endpoint,
-            &target.repository,
-            &target.project_path,
-            &target.registration_fingerprint,
-            &target.worktree_path,
-            target.generation.as_deref(),
-            &target.session_name,
-            target.tmux_socket_name.as_deref(),
-            target.tmux_attach_mode,
-        );
+        let result = self.open_worktree(target);
         if let Err(error) = result {
             self.diagnostic = Some(error.to_string());
         } else {
@@ -1966,6 +1960,22 @@ impl RootView {
             window.focus(&self.focus);
         }
         cx.notify();
+    }
+
+    fn open_worktree(&self, target: &WorktreeOpenTarget) -> Result<(), workspace::WorkspaceError> {
+        self.workspace.select_host(&target.host_id)?;
+        self.workspace.open_kwt_worktree(
+            &target.host_id,
+            &target.endpoint,
+            &target.repository,
+            &target.project_path,
+            &target.registration_fingerprint,
+            &target.worktree_path,
+            target.generation.as_deref(),
+            &target.session_name,
+            target.tmux_socket_name.as_deref(),
+            target.tmux_attach_mode,
+        )
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -3270,7 +3280,11 @@ impl RootView {
 
     fn request_session_kill(&mut self, selection: &SessionSelection, cx: &mut Context<Self>) {
         self.pending_worktree_navigation = None;
-        match self.workspace.request_session_kill(selection) {
+        match self
+            .workspace
+            .select_host(selection.host_id())
+            .and_then(|()| self.workspace.request_session_kill(selection))
+        {
             Ok(()) => self.diagnostic = None,
             Err(error) => self.diagnostic = Some(error.to_string()),
         }
@@ -3309,7 +3323,11 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.workspace.restart_herdr_session(selection) {
+        match self
+            .workspace
+            .select_host(selection.host_id())
+            .and_then(|()| self.workspace.restart_herdr_session(selection))
+        {
             Ok(()) => {
                 self.diagnostic = None;
                 self.observed_presentation_id = None;
@@ -3330,7 +3348,11 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         self.pending_worktree_navigation = None;
-        match self.workspace.request_herdr_lifecycle(selection, action) {
+        match self
+            .workspace
+            .select_host(selection.host_id())
+            .and_then(|()| self.workspace.request_herdr_lifecycle(selection, action))
+        {
             Ok(()) => self.diagnostic = None,
             Err(error) => self.diagnostic = Some(error.to_string()),
         }
@@ -3591,18 +3613,7 @@ impl RootView {
                     }
                     self.project_dialog = None;
                     self.restore_focus = true;
-                    if let Err(error) = self.workspace.open_kwt_worktree(
-                        &open.host_id,
-                        &open.endpoint,
-                        &open.repository,
-                        &open.project_path,
-                        &open.registration_fingerprint,
-                        &open.worktree_path,
-                        open.generation.as_deref(),
-                        &open.session_name,
-                        open.tmux_socket_name.as_deref(),
-                        open.tmux_attach_mode,
-                    ) {
+                    if let Err(error) = self.open_worktree(&open) {
                         self.diagnostic = Some(error.to_string());
                     } else {
                         self.diagnostic = None;
@@ -7313,7 +7324,7 @@ impl RootView {
         tree.into_any_element()
     }
 
-    #[allow(clippy::too_many_lines)] // Host selection, connection controls and disclosure share one row.
+    #[allow(clippy::too_many_lines)] // Connection controls and disclosure share one row.
     fn host_header(
         &self,
         host_index: usize,
@@ -7357,7 +7368,6 @@ impl RootView {
                     .text_color(rgb(0xd2_d7_df))
                     .child(host.name().to_owned()),
             );
-        let select_host_id = host.id().to_owned();
         let menu_host_id = host.id().to_owned();
         host_header = host_header
             .cursor_pointer()
@@ -7374,8 +7384,8 @@ impl RootView {
                 }),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                if let Err(error) = this.workspace.select_host(&select_host_id) {
-                    this.diagnostic = Some(error.to_string());
+                if !this.collapsed_hosts.remove(&collapse_id) {
+                    this.collapsed_hosts.insert(collapse_id.clone());
                 }
                 cx.notify();
             }));
@@ -7398,18 +7408,20 @@ impl RootView {
                     .text_color(rgb(0x8f_96_a3))
                     .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
                     .child(action.label())
-                    .on_click(cx.listener(move |this, _, _, cx| match action {
-                        HostHeaderAction::Cancel => this.cancel_host_connection(&host_id, cx),
-                        HostHeaderAction::Connect
-                        | HostHeaderAction::Refresh
-                        | HostHeaderAction::Retry => this.connect_host(&host_id, cx),
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        match action {
+                            HostHeaderAction::Cancel => this.cancel_host_connection(&host_id, cx),
+                            HostHeaderAction::Connect
+                            | HostHeaderAction::Refresh
+                            | HostHeaderAction::Retry => this.connect_host(&host_id, cx),
+                        }
                     })),
             );
         }
         host_header
             .child(
                 div()
-                    .id(gpui::SharedString::from(format!("collapse-{}", host.id())))
                     .w(px(20.0))
                     .h(px(28.0))
                     .flex()
@@ -7422,14 +7434,7 @@ impl RootView {
                         el.opacity(0.0)
                             .group_hover(format!("host-{}", host.id()), |style| style.opacity(1.0))
                     })
-                    .child(if collapsed { "▸" } else { "▾" })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.collapsed_hosts.remove(&collapse_id) {
-                            this.collapsed_hosts.insert(collapse_id.clone());
-                        }
-                        cx.stop_propagation();
-                        cx.notify();
-                    })),
+                    .child(if collapsed { "▸" } else { "▾" }),
             )
             .child(Self::host_create_button(host, cx))
             .into_any_element()

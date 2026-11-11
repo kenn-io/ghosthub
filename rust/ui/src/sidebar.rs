@@ -462,11 +462,6 @@ impl RootView {
         element
             .when(interactive, |el| {
                 el.on_click(cx.listener(move |this, _, window, cx| {
-                    if let Err(error) = this.workspace.select_host(selection.host_id()) {
-                        this.diagnostic = Some(error.to_string());
-                        cx.notify();
-                        return;
-                    }
                     if stopped {
                         this.restart_herdr_session(&selection, window, cx);
                     } else {
@@ -484,11 +479,6 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         if let Some(selection) = self.session_navigation_target(backwards) {
-            if let Err(error) = self.workspace.select_host(selection.host_id()) {
-                self.diagnostic = Some(error.to_string());
-                cx.notify();
-                return;
-            }
             self.select_session(&selection, window, cx);
         }
     }
