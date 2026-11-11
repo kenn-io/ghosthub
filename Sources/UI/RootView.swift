@@ -1076,7 +1076,20 @@ public struct RootView: View {
             selectedHostID: terminal.hostID
         )
         // The scene model closes the current peer only after validation.
-        handlers.openBackendTerminal?(terminal)
+        let name = snapshot.host(id: terminal.hostID)?.backendTerminals
+            .first { $0.matches(terminal) }?.title ?? terminal.address
+        herdrPresentationIntent.start(
+            operation: { _ in
+                try await handlers.openBackendTerminal?(terminal)
+            },
+            onFailure: { error in
+                presentNonWorktreeWorkspaceAlert(.herdrLifecycleFailure(
+                    session: name,
+                    action: "open",
+                    message: error.localizedDescription
+                ))
+            }
+        )
     }
 
     private func startHerdrSessionActivation(

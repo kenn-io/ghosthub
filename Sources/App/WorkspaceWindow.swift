@@ -1076,7 +1076,7 @@ struct WorkspaceWindow: View {
                     sceneModel.cancelPendingZellijPresentation()
                 },
                 openBackendTerminal: { [sceneModel] selection in
-                    sceneModel.openBackendTerminal(selection)
+                    try await sceneModel.openBackendTerminal(selection)
                 },
                 closeBackendTerminal: { [sceneModel] selection in
                     sceneModel.closeBackendTerminal(selection)

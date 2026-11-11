@@ -17,6 +17,11 @@ test, and documentation-only changes are omitted.
   with a **rex** label, and in the Command Palette. Closing one in Ghosthub leaves its
   program running in Rex.
 
+### Changed
+
+- A window that Ghosthub 0.13 saved with a Herdr desktop terminal open
+  reopens without that terminal. Select it again in the sidebar.
+
 ### Fixed
 
 - Commands in new Zellij sessions on your Mac now find programs that

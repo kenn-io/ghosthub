@@ -76,9 +76,13 @@ final class NativeBackendTerminalCoordinator {
         )
     }
 
+    /// Starts an attach client. `validated` is the SSH connection that
+    /// confirmed the terminal exists; the attach refuses a different route,
+    /// so a changed SSH alias cannot reach a same-named terminal elsewhere.
     func attach(
         _ selection: WorkspaceBackendTerminalSelection,
-        host: CommandHost
+        host: CommandHost,
+        validated: SSHConnectionArgumentsSnapshot? = nil
     ) -> BorrowedBackendTerminalHandle {
         if let existing = handlesBySelection[selection],
            targetHostsByHandle[existing.id] != host {
@@ -119,7 +123,7 @@ final class NativeBackendTerminalCoordinator {
                         selection.hostID,
                         info
                     )
-                    connection = try await sshConnection?.snapshot(validating: nil)
+                    connection = try await sshConnection?.snapshot(validating: validated)
                         ?? SSHConnectionArgumentsSnapshot(arguments: [])
                 } else {
                     sshConnection = nil
@@ -198,6 +202,13 @@ final class NativeBackendTerminalCoordinator {
     ) {
         provisioningTasks.removeValue(forKey: handle.id)
         guard handlesBySelection[handle.selection] == handle else { return }
+        if case KwtSSHLeaseError.routeChanged = error {
+            attachmentClosures[handle.id] = .launchFailed
+            onStateChanged?(handle, .disconnected(
+                reason: Self.routeChangedReason
+            ))
+            return
+        }
         attachmentClosures[handle.id] =
             SSHConnectionFailure.retryableTransportFailure(error) == nil
                 ? .launchFailed
@@ -206,6 +217,10 @@ final class NativeBackendTerminalCoordinator {
             reason: error.localizedDescription
         ))
     }
+
+    static let routeChangedReason =
+        "The SSH connection changed since Ghosthub found this terminal. "
+            + "Reopen it from the sidebar to use the current connection."
 
     func detach(_ selection: WorkspaceBackendTerminalSelection) {
         guard let handle = handlesBySelection[selection] else { return }

@@ -333,7 +333,10 @@ extension WorkspaceSceneModel {
             var updated = selection
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
-            openBackendTerminal(terminal)
+            backendTerminalShortcutNavigationTask?.cancel()
+            backendTerminalShortcutNavigationTask = Task { [weak self] in
+                try? await self?.openBackendTerminal(terminal)
+            }
             return true
         case .host, .project:
             return false

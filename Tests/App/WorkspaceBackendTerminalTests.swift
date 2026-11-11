@@ -21,6 +21,7 @@ struct WorkspaceBackendTerminalTests {
 
     private struct Environment {
         var database: WorkspaceDatabase
+        var localHostID: UUID
         var host: HostSummary
         var snapshot: WorkspaceSnapshot
 
@@ -31,35 +32,77 @@ struct WorkspaceBackendTerminalTests {
 
     private func environment(
         terminals: [BackendTerminalSummary] = [rexTerminal, coreTerminal],
-        herdrSessions: [HerdrSessionSummary] = []
+        herdrSessions: [HerdrSessionSummary] = [],
+        remote: Bool = false
     ) throws -> Environment {
-        let host = HostSummary(
+        let local = HostSummary(
             id: UUID(),
             configKey: "local",
             name: "This Mac",
             kind: .selfHost,
             platform: .macOS,
-            herdrSessions: herdrSessions,
-            herdrAvailable: !herdrSessions.isEmpty,
-            backendTerminals: terminals
+            herdrSessions: remote ? [] : herdrSessions,
+            herdrAvailable: !remote && !herdrSessions.isEmpty,
+            backendTerminals: remote ? [] : terminals
         )
+        let host = remote
+            ? HostSummary(
+                id: UUID(),
+                configKey: "builder",
+                name: "Builder",
+                kind: .remote,
+                platform: .linux,
+                sshDestination: "dev@builder",
+                backendTerminals: terminals
+            )
+            : local
         return try Environment(
             database: WorkspaceDatabase.inMemory(),
+            localHostID: local.id,
             host: host,
-            snapshot: WorkspaceSnapshot(hosts: [host], projects: [], worktrees: [])
+            snapshot: WorkspaceSnapshot(
+                hosts: remote ? [local, host] : [local], projects: [], worktrees: []
+            )
         )
+    }
+
+    /// Backend listings and SSH routes the fake host reports. Tests change
+    /// them to model a terminal ending or an SSH alias moving.
+    private final class FakeHost: Sendable {
+        let terminals: Mutex<[BackendTerminalSummary]>
+        let failure = Mutex<BackendTerminalCommandError?>(nil)
+        /// The route a validation sees, then the route an attach is given.
+        let validationRoute = Mutex("sha256:route-a")
+        let attachRoute = Mutex("sha256:route-a")
+        let attaches = Mutex(0)
+
+        init(_ terminals: [BackendTerminalSummary]) {
+            self.terminals = Mutex(terminals)
+        }
+
+        func listing(_ kind: BackendTerminalKind) -> BackendTerminalDiscoveryResult {
+            if let error = failure.withLock({ $0 }) {
+                return .failure(error)
+            }
+            return .available(terminals.withLock { $0 }.filter { $0.kind == kind })
+        }
     }
 
     private func makeTerminalModel(
         _ environment: Environment,
         store: RecordingNativeSessionSurfaceStore,
-        discovery: @escaping WorkspaceSceneModel.BackendTerminalDiscovery = { _ in [:] },
-        herdrStore: RecordingNativeSessionSurfaceStore? = nil
+        fake: FakeHost? = nil,
+        discovery: WorkspaceSceneModel.BackendTerminalDiscovery? = nil,
+        herdrStore: RecordingNativeSessionSurfaceStore? = nil,
+        workspaceInventoryStore: WorkspaceInventoryStore? = nil,
+        startServices: Bool = false
     ) throws -> WorkspaceSceneModel {
-        try makeModel(
+        let fake = fake ?? FakeHost(environment.host.backendTerminals)
+        return try makeModel(
             database: environment.database,
-            localHostID: environment.host.id,
+            localHostID: environment.localHostID,
             snapshot: environment.snapshot,
+            workspaceInventoryStore: workspaceInventoryStore,
             nativeHerdrSurfaceStore: herdrStore,
             nativeBackendTerminalSurfaceStore: store,
             nativeBackendTerminalExecutableProvider: { kind, _, _ in
@@ -67,8 +110,24 @@ struct WorkspaceBackendTerminalTests {
             },
             nativeHerdrPathProvider: { _ in .success("/opt/test/herdr") },
             herdrPaneSplitCapabilityProvider: { _, _, _, _ in .success(nil) },
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            herdrSSHConnectionSnapshotProvider: { _ in
+                SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
+                    routeIdentity: fake.validationRoute.withLock { $0 }
+                ))
+            },
+            tmuxSessionDiscovery: { _ in .success([]) },
             herdrSessionDiscovery: { _ in .available(environment.host.herdrSessions) },
-            backendTerminalDiscovery: discovery
+            backendTerminalDiscovery: discovery ?? { _ in
+                [.rex: fake.listing(.rex), .herdrCore: fake.listing(.herdrCore)]
+            },
+            backendTerminalValidationDiscovery: { _, kind, _ in fake.listing(kind) },
+            presentationSSHConnectionProvider: { _, _ in
+                fake.attaches.withLock { $0 += 1 }
+                return testKwtSSHAttachment(routeIdentity: fake.attachRoute.withLock { $0 })
+            },
+            tmuxReconnectIntervals: [.milliseconds(10)],
+            startServices: startServices
         )
     }
 
@@ -84,6 +143,19 @@ struct WorkspaceBackendTerminalTests {
         }
     }
 
+    /// Ends the attach client of the surface opened last.
+    private func closeNewestSurface(
+        _ store: RecordingNativeSessionSurfaceStore,
+        closed: inout Set<UUID>,
+        exitCode: UInt32
+    ) throws {
+        let (id, close) = try #require(store.surface.closeObservers.first {
+            !closed.contains($0.key)
+        })
+        closed.insert(id)
+        close(false, exitCode)
+    }
+
     @Test("a local Rex terminal attaches through Ghosthub's kwt in its own surface")
     func localRexAttach() async throws {
         let environment = try environment()
@@ -91,7 +163,7 @@ struct WorkspaceBackendTerminalTests {
         let model = try makeTerminalModel(environment, store: store)
         let rex = environment.selection(Self.rexTerminal)
 
-        model.openBackendTerminal(rex)
+        try await model.openBackendTerminal(rex)
         await launchSurface(model, store: store)
 
         #expect(model.activeBackendTerminalSelection == rex)
@@ -108,7 +180,9 @@ struct WorkspaceBackendTerminalTests {
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeTerminalModel(environment, store: store)
 
-        model.openBackendTerminal(environment.selection(Self.rexTerminal))
+        await #expect(throws: BackendTerminalPresentationError.self) {
+            try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+        }
 
         #expect(model.activeBackendTerminalSelection == nil)
         await model.shutdown()
@@ -131,7 +205,7 @@ struct WorkspaceBackendTerminalTests {
         }
         let tuiKey = try #require(herdrStore.requestedKeys.last)
         let core = environment.selection(Self.coreTerminal)
-        model.openBackendTerminal(core)
+        try await model.openBackendTerminal(core)
         await launchSurface(model, store: store)
 
         #expect(model.activeBorrowedHerdrSelection == nil)
@@ -150,7 +224,7 @@ struct WorkspaceBackendTerminalTests {
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeTerminalModel(environment, store: store)
         let rex = environment.selection(Self.rexTerminal)
-        model.openBackendTerminal(rex)
+        try await model.openBackendTerminal(rex)
         await launchSurface(model, store: store)
         let key = try #require(store.requestedKeys.last)
 
@@ -167,17 +241,15 @@ struct WorkspaceBackendTerminalTests {
     func reconnect() async throws {
         let environment = try environment()
         let store = RecordingNativeSessionSurfaceStore()
-        let listed = Mutex<[BackendTerminalSummary]>([Self.rexTerminal])
-        let model = try makeTerminalModel(environment, store: store, discovery: { _ in
-            [.rex: .available(listed.withLock { $0 })]
-        })
+        let fake = FakeHost([Self.rexTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
         let rex = environment.selection(Self.rexTerminal)
-        model.openBackendTerminal(rex)
+        try await model.openBackendTerminal(rex)
         await launchSurface(model, store: store)
 
         // The attach client exits after a detach; the terminal still runs.
-        let close = try #require(store.surface.closeObservers.values.first)
-        close(false, 0)
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 0)
         #expect(model.activeBackendTerminalSelection == rex)
         #expect(model.activeBorrowedBackendTerminalConnectionState != .connected)
         let attachments = store.requestedKeys.count
@@ -186,9 +258,8 @@ struct WorkspaceBackendTerminalTests {
         #expect(model.activeBackendTerminalSelection == rex)
 
         // The program ended, so Rex no longer lists the block.
-        let reattached = try #require(store.surface.closeObservers.values.first)
-        reattached(false, 1)
-        listed.withLock { $0 = [] }
+        try closeNewestSurface(store, closed: &closed, exitCode: 1)
+        fake.terminals.withLock { $0 = [] }
         model.reconnectActiveBackendTerminalNow()
         await waitUntilMainActor { model.activeBackendTerminalSelection == nil }
         #expect(model.snapshot.host(id: environment.host.id)?.backendTerminals
@@ -237,9 +308,9 @@ struct WorkspaceBackendTerminalTests {
     func restoration() async throws {
         let environment = try environment(terminals: [])
         let store = RecordingNativeSessionSurfaceStore()
-        let model = try makeTerminalModel(environment, store: store, discovery: { _ in
-            [.rex: .available([Self.rexTerminal])]
-        })
+        let model = try makeTerminalModel(
+            environment, store: store, fake: FakeHost([Self.rexTerminal])
+        )
         let rex = environment.selection(Self.rexTerminal)
         model.beginRestoration(WorkspaceWindowState(
             windowID: UUID(),
@@ -255,5 +326,176 @@ struct WorkspaceBackendTerminalTests {
         #expect(model.activeBackendTerminalSelection == rex)
         #expect(model.restorationState(windowID: UUID()).backendTerminal?.address == rex.address)
         await model.shutdown()
+    }
+
+    @Test("a failed open leaves the terminal that is already open")
+    func failedOpenKeepsCurrentView() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal, Self.coreTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        await launchSurface(model, store: store)
+        let key = try #require(store.requestedKeys.last)
+
+        fake.failure.withLock {
+            $0 = .commandFailed(.herdrCore, status: 255, stderr: "Connection refused")
+        }
+        await #expect(throws: BackendTerminalCommandError.self) {
+            try await model.openBackendTerminal(environment.selection(Self.coreTerminal))
+        }
+
+        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(!store.removedKeys.contains(key))
+        #expect(model.activeBorrowedBackendTerminalConnectionState == .connected)
+        await model.shutdown()
+    }
+
+    @Test("a dropped SSH connection reattaches by itself and a clean detach stays detached")
+    func automaticReconnect() async throws {
+        let environment = try environment(remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeTerminalModel(environment, store: store)
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        await launchSurface(model, store: store)
+
+        // OpenSSH exits with status 255 when the connection drops.
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 255)
+        await launchSurface(model, store: store, after: 1)
+        #expect(model.activeBackendTerminalSelection == rex)
+
+        try closeNewestSurface(store, closed: &closed, exitCode: 0)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!model.backendTerminalReconnectSupervisorIsRunning)
+        #expect(Set(store.requestedKeys).count == 2)
+        #expect(model.activeBorrowedBackendTerminalConnectionState != .connected)
+        await model.shutdown()
+    }
+
+    @Test("an attach refuses an SSH route other than the one that listed the terminal")
+    func changedRouteOnOpen() async throws {
+        let environment = try environment(remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.coreTerminal])
+        fake.attachRoute.withLock { $0 = "sha256:route-b" }
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+
+        try await model.openBackendTerminal(environment.selection(Self.coreTerminal))
+        await waitUntilMainActor {
+            if case .disconnected = model.activeBorrowedBackendTerminalConnectionState {
+                return true
+            }
+            return false
+        }
+
+        #expect(model.activeBorrowedBackendTerminalConnectionState == .disconnected(
+            reason: NativeBackendTerminalCoordinator.routeChangedReason
+        ))
+        #expect(store.requestedKeys.isEmpty)
+        await model.shutdown()
+    }
+
+    @Test("a reconnect never moves a terminal to a different SSH route")
+    func changedRouteOnReconnect() async throws {
+        let environment = try environment(remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.coreTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        try await model.openBackendTerminal(environment.selection(Self.coreTerminal))
+        await launchSurface(model, store: store)
+
+        // The SSH alias now names another machine, which also has a "t7".
+        fake.validationRoute.withLock { $0 = "sha256:route-b" }
+        fake.attachRoute.withLock { $0 = "sha256:route-b" }
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 255)
+        await waitUntilMainActor { !model.backendTerminalReconnectSupervisorIsRunning
+            && model.activeBorrowedBackendTerminalConnectionState == .disconnected(
+                reason: NativeBackendTerminalCoordinator.routeChangedReason
+            )
+        }
+
+        #expect(Set(store.requestedKeys).count == 1)
+        #expect(fake.attaches.withLock { $0 } == 1)
+        await model.shutdown()
+    }
+
+    @Test("a scheduled sweep lets a slow discovery finish")
+    func slowDiscoveryFinishes() async throws {
+        let environment = try environment(terminals: [])
+        let store = RecordingNativeSessionSurfaceStore()
+        let cadence = AsyncGate()
+        let discovery = BlockingBackendDiscovery(listing: [.rex: .available([Self.rexTerminal])])
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            discovery: { _ in discovery.discover() },
+            workspaceInventoryStore: makeCadenceInventoryStore(cadence: cadence)
+        )
+
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor { discovery.starts == 1 }
+        await cadence.waitUntilWaiting()
+        cadence.open()
+        try await Task.sleep(for: .milliseconds(100))
+        discovery.release()
+
+        await waitUntilMainActor {
+            model.snapshot.host(id: environment.host.id)?.backendTerminals
+                == [Self.rexTerminal]
+        }
+        #expect(discovery.starts == 1)
+        await model.shutdown()
+    }
+
+    @Test("refresh completion waits for backend terminal discovery")
+    func completionWaitsForBackendTerminals() async throws {
+        let environment = try environment(terminals: [])
+        let discovery = BlockingBackendDiscovery(listing: [:])
+        let model = try makeTerminalModel(
+            environment,
+            store: RecordingNativeSessionSurfaceStore(),
+            discovery: { _ in discovery.discover() },
+            startServices: true
+        )
+
+        await waitUntilMainActor { discovery.starts == 1 }
+        #expect(!model.isWorkspaceInventoryRefreshComplete)
+
+        discovery.release()
+        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+        await model.shutdown()
+    }
+}
+
+/// Holds the first backend terminal discovery until released.
+private final class BlockingBackendDiscovery: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var count = 0
+    private let listing: [BackendTerminalKind: BackendTerminalDiscoveryResult]
+
+    init(listing: [BackendTerminalKind: BackendTerminalDiscoveryResult]) {
+        self.listing = listing
+    }
+
+    func discover() -> [BackendTerminalKind: BackendTerminalDiscoveryResult] {
+        let first = lock.withLock {
+            count += 1
+            return count == 1
+        }
+        if first {
+            semaphore.wait()
+        }
+        return listing
+    }
+
+    var starts: Int { lock.withLock { count } }
+
+    func release() {
+        semaphore.signal()
     }
 }

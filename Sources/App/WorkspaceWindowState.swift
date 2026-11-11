@@ -164,6 +164,11 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
     /// Captured immediately before an update, independently of native Resume.
     var frame: WorkspaceWindowFrame? = nil
 
+    private enum CodingKeys: String, CodingKey {
+        case windowID, navigation, tmux, herdr, zellij, backendTerminal
+        case customTitle, frame
+    }
+
     static func fresh(windowID: UUID = UUID()) -> Self {
         Self(windowID: windowID, navigation: nil, tmux: nil)
     }
@@ -771,5 +776,37 @@ enum WorkspaceWindowRestorationResolver {
 
     private static func isValidOptional(_ value: String?) -> Bool {
         value.map(isNonblank) ?? true
+    }
+}
+
+extension WorkspaceWindowState {
+    /// Ghosthub 0.13 saved a Herdr desktop terminal as a Herdr session with
+    /// `backend: "core"`. Its name is a terminal address, not a session name,
+    /// so restoring it as a session could attach an unrelated Herdr session
+    /// with the same name. Such an entry is dropped; the window reopens
+    /// without it.
+    private struct SavedHerdrBackend: Decodable {
+        var backend: String?
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        windowID = try container.decode(UUID.self, forKey: .windowID)
+        navigation = try container.decodeIfPresent(
+            WorkspaceNavigationDescriptor.self, forKey: .navigation
+        )
+        tmux = try container.decodeIfPresent(WorkspaceTmuxDescriptor.self, forKey: .tmux)
+        let savedBackend = try container.decodeIfPresent(
+            SavedHerdrBackend.self, forKey: .herdr
+        )?.backend
+        herdr = savedBackend == nil
+            ? try container.decodeIfPresent(WorkspaceHerdrDescriptor.self, forKey: .herdr)
+            : nil
+        zellij = try container.decodeIfPresent(WorkspaceZellijDescriptor.self, forKey: .zellij)
+        backendTerminal = try container.decodeIfPresent(
+            WorkspaceBackendTerminalDescriptor.self, forKey: .backendTerminal
+        )
+        customTitle = try container.decodeIfPresent(String.self, forKey: .customTitle)
+        frame = try container.decodeIfPresent(WorkspaceWindowFrame.self, forKey: .frame)
     }
 }

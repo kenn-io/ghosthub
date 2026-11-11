@@ -393,6 +393,23 @@ struct WorkspaceWindowStateTests {
         #expect(decoded.herdr?.sessionName == "editor")
     }
 
+    @Test("a Herdr desktop terminal saved by Ghosthub 0.13 does not reopen as a Herdr session")
+    func savedDesktopTerminalIsDropped() throws {
+        let windowID = UUID()
+        let saved = Data("""
+        {"windowID":"\(windowID.uuidString)",
+         "navigation":{"hostKey":"local"},
+         "herdr":{"hostKey":"local","sessionName":"t7","backend":"core"}}
+        """.utf8)
+
+        let decoded = try JSONDecoder().decode(WorkspaceWindowState.self, from: saved)
+
+        #expect(decoded.windowID == windowID)
+        #expect(decoded.navigation?.hostKey == "local")
+        #expect(decoded.herdr == nil)
+        #expect(decoded.backendTerminal == nil)
+    }
+
     @Test("Zellij descriptor round-trips through scene state")
     func zellijDescriptorRoundTrips() throws {
         let state = WorkspaceWindowState(

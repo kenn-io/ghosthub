@@ -477,6 +477,10 @@ func makeModel(
     WorkspaceSceneModel.HerdrSessionDiscovery = { _ in .unavailable },
     backendTerminalDiscovery: @escaping
     WorkspaceSceneModel.BackendTerminalDiscovery = { _ in [:] },
+    backendTerminalValidationDiscovery: @escaping
+    WorkspaceSceneModel.BackendTerminalValidationDiscovery = { _, _, _ in
+        .unavailable
+    },
     zellijSessionDiscovery: @escaping
     WorkspaceSceneModel.ZellijSessionDiscovery = { _ in .unavailable },
     zellijSessionValidationDiscovery:
@@ -660,6 +664,7 @@ func makeModel(
         tmuxSessionValidationDiscovery: tmuxSessionValidationDiscovery,
         herdrSessionDiscovery: herdrSessionDiscovery,
         backendTerminalDiscovery: backendTerminalDiscovery,
+        backendTerminalValidationDiscovery: backendTerminalValidationDiscovery,
         zellijSessionDiscovery: zellijSessionDiscovery,
         zellijSessionValidationDiscovery:
         zellijSessionValidationDiscovery ?? { host, _ in
