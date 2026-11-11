@@ -44,6 +44,56 @@ struct ZellijAttachmentInfoTests {
     }
 
     @Test(
+        "local Zellij inherits the login PATH, not the app's GUI PATH",
+        arguments: [ZellijAttachmentLaunchMode.attachExisting, .create]
+    )
+    func localLoginPath(_ mode: ZellijAttachmentLaunchMode) throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let bin = home.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try "export PATH=\"$HOME/bin:$PATH\"\n".write(
+            to: home.appendingPathComponent(".zprofile"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let executable = home.appendingPathComponent("zellij")
+        try "#!/bin/sh\nprintf '%s' \"$PATH\"\n".write(
+            to: executable,
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+        let command = try ZellijAttachmentInfo(
+            sessionName: "agents",
+            host: .local
+        ).attachCommand(zellijPath: executable.path, launchMode: mode)
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        // What an app opened from the Dock or Finder receives from launchd.
+        process.environment = [
+            "HOME": home.path,
+            "SHELL": "/bin/zsh",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        ]
+        process.standardOutput = output
+        try process.run()
+        process.waitUntilExit()
+        let path = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        #expect(process.terminationStatus == 0)
+        #expect(path.split(separator: ":").contains(Substring(bin.path)))
+    }
+
+    @Test(
         "attachment and creation reject names interpreted as flags or subcommands",
         arguments: ["", "-release", "--", "--create", "help", "options"]
     )

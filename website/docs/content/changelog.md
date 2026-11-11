@@ -10,6 +10,15 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Fixed
+
+- Commands in new Zellij sessions on your Mac now find programs that
+  `~/.zprofile` puts on PATH, such as Homebrew tools. Before, a
+  Ghosthub opened from the Dock or Finder started Zellij with the minimal
+  macOS PATH, so commands failed with "command not found". Zellij sessions
+  that were already running keep their old PATH until you kill and recreate
+  them.
+
 ## [0.13.1] - 2026-11-10
 
 Ghosthub now finds tmux on Macs and Linux hosts where only `~/.zshrc` sets up
