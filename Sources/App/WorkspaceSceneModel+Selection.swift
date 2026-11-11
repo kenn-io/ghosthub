@@ -165,6 +165,11 @@ extension WorkspaceSceneModel {
                 name: pending.name
             )
         }
+        if let pending = pendingBackendTerminalShortcutSelection {
+            return .backendTerminal(
+                hostID: pending.hostID, kind: pending.kind, address: pending.address
+            )
+        }
         if let active = activeBorrowedHerdrSelection {
             return .herdrSession(hostID: active.hostID, name: active.name)
         }
@@ -333,10 +338,7 @@ extension WorkspaceSceneModel {
             var updated = selection
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
-            backendTerminalShortcutNavigationTask?.cancel()
-            backendTerminalShortcutNavigationTask = Task { [weak self] in
-                try? await self?.openBackendTerminal(terminal)
-            }
+            startBackendTerminalShortcutNavigation(terminal)
             return true
         case .host, .project:
             return false
@@ -359,6 +361,34 @@ extension WorkspaceSceneModel {
             self?.herdrShortcutNavigationTask = nil
             self?.herdrShortcutNavigationID = nil
         }
+    }
+
+    /// The pending terminal stays the navigation cursor until its open
+    /// finishes, so repeated shortcuts walk past it. Any later navigation
+    /// cancels it before it can open.
+    private func startBackendTerminalShortcutNavigation(
+        _ terminal: WorkspaceBackendTerminalSelection
+    ) {
+        cancelPendingBackendTerminalShortcutNavigation()
+        let navigationID = UUID()
+        backendTerminalShortcutNavigationID = navigationID
+        pendingBackendTerminalShortcutSelection = terminal
+        backendTerminalShortcutNavigationTask = Task { @MainActor [weak self] in
+            try? await self?.openBackendTerminal(terminal)
+            guard self?.backendTerminalShortcutNavigationID == navigationID else {
+                return
+            }
+            self?.pendingBackendTerminalShortcutSelection = nil
+            self?.backendTerminalShortcutNavigationTask = nil
+            self?.backendTerminalShortcutNavigationID = nil
+        }
+    }
+
+    func cancelPendingBackendTerminalShortcutNavigation() {
+        backendTerminalShortcutNavigationTask?.cancel()
+        backendTerminalShortcutNavigationTask = nil
+        backendTerminalShortcutNavigationID = nil
+        pendingBackendTerminalShortcutSelection = nil
     }
 
     func cancelPendingHerdrShortcutNavigation() {

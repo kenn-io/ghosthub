@@ -263,14 +263,20 @@ every host's backends have reported.
 
 Opening a terminal lists its backend again over a frozen SSH connection. The
 current view stays until the terminal is confirmed, so a failed open leaves it
-in place and shows the error. The attach then requires that connection's route,
+in place and shows the error. While that check runs, the current terminal
+takes no keystrokes. The attach then requires that connection's route,
 so a changed SSH alias cannot reach a same-addressed terminal on another
 machine. Reconnect repeats that check on the route the terminal was opened
 over: a terminal that is still listed reattaches with a new client, one that is
 gone closes its presentation, and a changed route stops with a prompt to
 reopen. A dropped SSH connection (status 255), an SSH transport failure, or a
 surface that could not be created yet reconnects automatically with backoff; a
-clean detach, a failed launch, or an ended program waits for **Retry**.
+clean detach, a failed launch, or an ended program waits for **Retry**. A
+reconnect that needs authentication or host-key approval stops and offers
+**Review Connection**, then resumes after approval.
+
+Restoration stays pending until the terminal is confirmed. A transient failure
+lists the host again and retries; a terminal that ended is not restored.
 
 Ghosthub 0.13 saved a Herdr desktop terminal as a Herdr session. Restoration
 drops such an entry rather than attach a TUI session with the same name.

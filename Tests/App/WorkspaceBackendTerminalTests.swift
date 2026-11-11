@@ -33,6 +33,7 @@ struct WorkspaceBackendTerminalTests {
     private func environment(
         terminals: [BackendTerminalSummary] = [rexTerminal, coreTerminal],
         herdrSessions: [HerdrSessionSummary] = [],
+        zellijSessions: [ZellijSessionSummary] = [],
         remote: Bool = false
     ) throws -> Environment {
         let local = HostSummary(
@@ -43,7 +44,9 @@ struct WorkspaceBackendTerminalTests {
             platform: .macOS,
             herdrSessions: remote ? [] : herdrSessions,
             herdrAvailable: !remote && !herdrSessions.isEmpty,
-            backendTerminals: remote ? [] : terminals
+            backendTerminals: remote ? [] : terminals,
+            zellijSessions: zellijSessions,
+            zellijAvailable: !zellijSessions.isEmpty
         )
         let host = remote
             ? HostSummary(
@@ -75,9 +78,32 @@ struct WorkspaceBackendTerminalTests {
         let validationRoute = Mutex("sha256:route-a")
         let attachRoute = Mutex("sha256:route-a")
         let attaches = Mutex(0)
+        /// Failures returned once each, in order, before listings succeed.
+        let validationFailures = Mutex<[BackendTerminalCommandError]>([])
+        let executableFailures = Mutex<[BackendTerminalCommandError]>([])
+        /// Holds each validation until opened, when set.
+        let validationGate = Mutex<AsyncGate?>(nil)
 
         init(_ terminals: [BackendTerminalSummary]) {
             self.terminals = Mutex(terminals)
+        }
+
+        func validate(_ kind: BackendTerminalKind) async -> BackendTerminalDiscoveryResult {
+            if let gate = validationGate.withLock({ $0 }) {
+                await gate.wait()
+            }
+            if let error = validationFailures.withLock({ $0.isEmpty ? nil : $0.removeFirst() }) {
+                return .failure(error)
+            }
+            return listing(kind)
+        }
+
+        func executable(_ kind: BackendTerminalKind)
+            -> Result<String, BackendTerminalCommandError> {
+            if let error = executableFailures.withLock({ $0.isEmpty ? nil : $0.removeFirst() }) {
+                return .failure(error)
+            }
+            return .success(kind == .rex ? "/opt/test/kwt" : "/opt/test/herdr-core")
         }
 
         func listing(_ kind: BackendTerminalKind) -> BackendTerminalDiscoveryResult {
@@ -95,6 +121,9 @@ struct WorkspaceBackendTerminalTests {
         discovery: WorkspaceSceneModel.BackendTerminalDiscovery? = nil,
         herdrStore: RecordingNativeSessionSurfaceStore? = nil,
         workspaceInventoryStore: WorkspaceInventoryStore? = nil,
+        zellijSessionDiscovery: @escaping WorkspaceSceneModel.ZellijSessionDiscovery = {
+            _ in .unavailable
+        },
         startServices: Bool = false
     ) throws -> WorkspaceSceneModel {
         let fake = fake ?? FakeHost(environment.host.backendTerminals)
@@ -105,9 +134,7 @@ struct WorkspaceBackendTerminalTests {
             workspaceInventoryStore: workspaceInventoryStore,
             nativeHerdrSurfaceStore: herdrStore,
             nativeBackendTerminalSurfaceStore: store,
-            nativeBackendTerminalExecutableProvider: { kind, _, _ in
-                .success(kind == .rex ? "/opt/test/kwt" : "/opt/test/herdr-core")
-            },
+            nativeBackendTerminalExecutableProvider: { kind, _, _ in fake.executable(kind) },
             nativeHerdrPathProvider: { _ in .success("/opt/test/herdr") },
             herdrPaneSplitCapabilityProvider: { _, _, _, _ in .success(nil) },
             kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
@@ -121,7 +148,8 @@ struct WorkspaceBackendTerminalTests {
             backendTerminalDiscovery: discovery ?? { _ in
                 [.rex: fake.listing(.rex), .herdrCore: fake.listing(.herdrCore)]
             },
-            backendTerminalValidationDiscovery: { _, kind, _ in fake.listing(kind) },
+            backendTerminalValidationDiscovery: { _, kind, _ in await fake.validate(kind) },
+            zellijSessionDiscovery: zellijSessionDiscovery,
             presentationSSHConnectionProvider: { _, _ in
                 fake.attaches.withLock { $0 += 1 }
                 return testKwtSSHAttachment(routeIdentity: fake.attachRoute.withLock { $0 })
@@ -467,6 +495,223 @@ struct WorkspaceBackendTerminalTests {
 
         discovery.release()
         await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+        await model.shutdown()
+    }
+
+    @Test("a clean detach reports no reason that repeats its heading")
+    func cleanDetachHasNoReason() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeTerminalModel(environment, store: store)
+        try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+        await launchSurface(model, store: store)
+
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 0)
+
+        #expect(model.activeBorrowedBackendTerminalConnectionState == .disconnected(reason: nil))
+        await model.shutdown()
+    }
+
+    @Test("a connection that drops while Ghosthub finds the attach program reconnects")
+    func droppedExecutableLookupReconnects() async throws {
+        let environment = try environment(remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        fake.executableFailures.withLock {
+            $0 = [.commandFailed(
+                .rex, status: 255,
+                stderr: "ssh: connect to host builder port 22: Connection refused"
+            )]
+        }
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+
+        try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+        await launchSurface(model, store: store)
+
+        #expect(fake.attaches.withLock { $0 } == 2)
+        await model.shutdown()
+    }
+
+    @Test("a saved terminal is restored after a transient validation failure")
+    func restorationRetriesTransientFailure() async throws {
+        let environment = try environment(terminals: [])
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        fake.validationFailures.withLock {
+            $0 = [.commandFailed(.rex, status: 1, stderr: "server busy")]
+        }
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let rex = environment.selection(Self.rexTerminal)
+        let windowID = UUID()
+        model.beginRestoration(WorkspaceWindowState(
+            windowID: windowID,
+            navigation: .init(hostKey: "local", projectKey: nil, worktreeGeneration: nil),
+            tmux: nil,
+            backendTerminal: .init(hostKey: "local", kind: .rex, address: rex.address)
+        ))
+
+        model.startHerdrSessionDiscovery()
+        await launchSurface(model, store: store)
+
+        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.restorationState(windowID: windowID).backendTerminal?.address
+            == rex.address)
+        await model.shutdown()
+    }
+
+    @Test("a restoration retry waits out a sweep still listing another host")
+    func restorationRetryDuringSweep() async throws {
+        let environment = try environment(terminals: [Self.rexTerminal], remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        fake.validationFailures.withLock {
+            $0 = [.commandFailed(.rex, status: 1, stderr: "server busy")]
+        }
+        // This Mac's listing stays slow while the remote one is restored.
+        let slowLocal = BlockingBackendDiscovery(listing: [:])
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            fake: fake,
+            discovery: { host in
+                host == .local ? slowLocal.discover() : [.rex: fake.listing(.rex)]
+            }
+        )
+        let rex = environment.selection(Self.rexTerminal)
+        model.beginRestoration(WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(hostKey: "builder", projectKey: nil, worktreeGeneration: nil),
+            tmux: nil,
+            backendTerminal: .init(hostKey: "builder", kind: .rex, address: rex.address)
+        ))
+
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor {
+            slowLocal.starts == 1 && fake.validationFailures.withLock { $0.isEmpty }
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        slowLocal.release()
+        await launchSurface(model, store: store)
+
+        #expect(model.activeBackendTerminalSelection == rex)
+        await model.shutdown()
+    }
+
+    @Test("a reconnect that needs SSH approval asks for review and resumes after it")
+    func reconnectNeedsApproval() async throws {
+        let environment = try environment(remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        await launchSurface(model, store: store)
+
+        fake.validationFailures.withLock {
+            $0 = [.commandFailed(
+                .rex, status: 255, stderr: "ghosthub-kwt-ssh-error:ssh_interaction_required"
+            )]
+        }
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 255)
+        await waitUntilMainActor { model.sessionConnectionRecoveryRequest != nil }
+
+        guard case .needsAttention(_, true) = model.activeBackendTerminalRecoveryState else {
+            let state = String(describing: model.activeBackendTerminalRecoveryState)
+            Issue.record("expected a connection review, got \(state)")
+            await model.shutdown()
+            return
+        }
+        #expect(!model.backendTerminalReconnectSupervisorIsRunning)
+        let request = try #require(model.sessionConnectionRecoveryRequest)
+        #expect(request.hostID == environment.host.id)
+
+        model.resumeSessionReconnectAfterSSHRecovery(request)
+        await launchSurface(model, store: store, after: 1)
+        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalRecoveryState == nil)
+        await model.shutdown()
+    }
+
+    @Test("a Zellij session that fails to open leaves the open terminal")
+    func failedZellijOpenKeepsTerminal() async throws {
+        let environment = try environment(zellijSessions: [.init(name: "work")])
+        let store = RecordingNativeSessionSurfaceStore()
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            // The session ended after the sidebar listed it.
+            zellijSessionDiscovery: { _ in .available([]) }
+        )
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        await launchSurface(model, store: store)
+        let key = try #require(store.requestedKeys.last)
+
+        model.openBorrowedZellijSession(.init(hostID: environment.host.id, name: "work"))
+        await waitUntilMainActor { model.pendingZellijPresentationSelection == nil }
+
+        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBorrowedZellijSelection == nil)
+        #expect(!store.removedKeys.contains(key))
+        await model.shutdown()
+    }
+
+    @Test("repeated sibling shortcuts walk past a terminal that is still opening")
+    func repeatedSiblingShortcuts() async throws {
+        let terminals = ["01", "02", "03"].map {
+            BackendTerminalSummary(kind: .rex, address: "block:\($0)", title: "shell \($0)")
+        }
+        let environment = try environment(terminals: terminals)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost(terminals)
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let first = environment.selection(terminals[0])
+        try await model.openBackendTerminal(first)
+        model.selection.select(
+            .backendTerminal(hostID: first.hostID, kind: first.kind, address: first.address),
+            in: environment.snapshot
+        )
+        model.isFocusedWindow = true
+        let gate = AsyncGate()
+        fake.validationGate.withLock { $0 = gate }
+
+        #expect(model.performApplicationShortcut(.nextSibling))
+        #expect(model.performApplicationShortcut(.nextSibling))
+        gate.open()
+        await waitUntilMainActor { model.activeBackendTerminalSelection != first }
+
+        #expect(model.activeBackendTerminalSelection == environment.selection(terminals[2]))
+        await model.shutdown()
+    }
+
+    @Test("navigating elsewhere cancels a terminal shortcut that has not opened yet")
+    func navigationCancelsShortcut() async throws {
+        let terminals = ["01", "02"].map {
+            BackendTerminalSummary(kind: .rex, address: "block:\($0)", title: "shell \($0)")
+        }
+        let environment = try environment(terminals: terminals)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost(terminals)
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let first = environment.selection(terminals[0])
+        try await model.openBackendTerminal(first)
+        model.selection.select(
+            .backendTerminal(hostID: first.hostID, kind: first.kind, address: first.address),
+            in: environment.snapshot
+        )
+        model.isFocusedWindow = true
+        let gate = AsyncGate()
+        fake.validationGate.withLock { $0 = gate }
+
+        #expect(model.performApplicationShortcut(.nextSibling))
+        model.selectFromUser(WorkspaceSelection(selectedHostID: environment.host.id))
+        gate.open()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(model.pendingBackendTerminalShortcutSelection == nil)
+        #expect(model.activeBackendTerminalSelection == first)
         await model.shutdown()
     }
 }

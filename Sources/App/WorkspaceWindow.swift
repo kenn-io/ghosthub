@@ -852,11 +852,13 @@ struct WorkspaceWindow: View {
                     )
                 },
                 backendTerminalContentBuilder: {
-                    [sceneModel] host, terminal, defersTerminalResize, _ in
+                    [sceneModel] host, terminal, defersTerminalResize, actions in
                     sceneModel.borrowedBackendTerminalView(
                         host: host,
                         terminal: terminal,
-                        defersTerminalResize: defersTerminalResize
+                        defersTerminalResize: defersTerminalResize,
+                        onReconnectNow: actions.reconnectNow,
+                        onReviewConnection: actions.reviewConnection
                     )
                 },
                 settingsSheetBuilder: { settingsStore in

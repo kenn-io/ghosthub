@@ -44,6 +44,7 @@ final class NativeBackendTerminalCoordinator {
     private var attachmentClosures: [UUID: BorrowedSessionAttachmentClosure] = [:]
     private var launchedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
+    private var keyboardSuspendedHandles: Set<UUID> = []
     private var provisioningTasks: [UUID: Task<Void, Never>] = [:]
     private var isShuttingDown = false
 
@@ -189,7 +190,16 @@ final class NativeBackendTerminalCoordinator {
                 }
                 try? await sshConnection?.release()
             }
-            attachmentClosures[handle.id] = .launchFailed
+            // A connection that dropped during the lookup recovers like any
+            // other transport failure. A missing program does not.
+            if host.isRemote, case let .commandFailed(_, status, stderr) = error,
+               status == 255,
+               SSHConnectionFailure.classify(status: status, output: stderr).kind
+               == .transport {
+                attachmentClosures[handle.id] = .retryableTransportFailure
+            } else {
+                attachmentClosures[handle.id] = .launchFailed
+            }
             onStateChanged?(handle, .disconnected(
                 reason: error.localizedDescription
             ))
@@ -244,7 +254,29 @@ final class NativeBackendTerminalCoordinator {
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
+        keyboardSuspendedHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
+    }
+
+    func requestKeyboardFocus(handle: BorrowedBackendTerminalHandle) {
+        terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?
+            .requestKeyboardFocus()
+    }
+
+    /// Keeps a terminal on screen but stops it taking keystrokes, such as
+    /// while Ghosthub checks the terminal that will replace it.
+    func setKeyboardInteractionSuspended(
+        _ suspended: Bool,
+        handle: BorrowedBackendTerminalHandle
+    ) {
+        if suspended {
+            keyboardSuspendedHandles.insert(handle.id)
+        } else {
+            keyboardSuspendedHandles.remove(handle.id)
+        }
+        let view = terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))
+            as? TerminalSurfaceView
+        view?.isKeyboardInteractionSuspended = suspended
     }
 
     func attachmentClosure(
@@ -293,6 +325,8 @@ final class NativeBackendTerminalCoordinator {
             return nil
         }
         surface.terminalFindController = .unavailable
+        (surface as? TerminalSurfaceView)?.isKeyboardInteractionSuspended =
+            keyboardSuspendedHandles.contains(handle.id)
         if let error = surface.launchError {
             failSurfaceLaunch(
                 handle,
@@ -394,9 +428,14 @@ final class NativeBackendTerminalCoordinator {
         }
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
-        onStateChanged?(handle, .disconnected(
-            reason: "The attachment to this terminal closed."
-        ))
+        // A clean detach needs no explanation beyond its heading.
+        let reason: String? = switch attachmentClosures[handle.id] {
+        case let .processExited(code?):
+            "The attach client exited with status \(code)."
+        default:
+            nil
+        }
+        onStateChanged?(handle, .disconnected(reason: reason))
     }
 
     func shutdown() async {
@@ -414,6 +453,7 @@ final class NativeBackendTerminalCoordinator {
         attachmentClosures.removeAll()
         launchedHandles.removeAll()
         reportedConnectedAttachmentIDs.removeAll()
+        keyboardSuspendedHandles.removeAll()
         for handle in handles {
             terminalCoordinator.removeSurface(for: surfaceKey(handle))
         }

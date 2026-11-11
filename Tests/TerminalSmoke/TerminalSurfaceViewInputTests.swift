@@ -199,7 +199,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         ])
         XCTAssertEqual(created.status, 0, created.stderr)
         let terminal = try XCTUnwrap(listedTerminals().first, "Rex block was not listed")
-        XCTAssertEqual(terminal.detail.map { $0.hasPrefix("live / ") }, true)
+        XCTAssertEqual(terminal.detail, "live")
 
         let command = try BackendTerminalAttachmentInfo(terminal: terminal, host: .local)
             .attachCommand(executablePath: wrapper.path)

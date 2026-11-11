@@ -235,6 +235,7 @@ final class WorkspaceSceneModel: ObservableObject {
     /// reconnect never moves it to a different route.
     private var activeBackendTerminalRouteIdentity: String?
     private var backendTerminalRestorationTask: Task<Void, Never>?
+    private var backendTerminalPresentationValidationID: UUID?
     private let backendTerminalDiscovery: BackendTerminalDiscovery
     private let backendTerminalValidationDiscovery: BackendTerminalValidationDiscovery
     private var createdSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
@@ -387,6 +388,8 @@ final class WorkspaceSceneModel: ObservableObject {
     var herdrShortcutNavigationTask: Task<Void, Never>?
     var herdrShortcutNavigationID: UUID?
     var backendTerminalShortcutNavigationTask: Task<Void, Never>?
+    var backendTerminalShortcutNavigationID: UUID?
+    var pendingBackendTerminalShortcutSelection: WorkspaceBackendTerminalSelection?
     var activeBorrowedHerdrConnectionState: ConnectionState? {
         guard let activeBorrowedHerdrHandle else { return nil }
         return borrowedHerdrConnectionStates[activeBorrowedHerdrHandle.id]
@@ -412,6 +415,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var activeBorrowedZellijHandle: BorrowedZellijSessionHandle?
     @Published private var backendTerminalConnectionStates: [UUID: ConnectionState] = [:]
     @Published private(set) var activeBackendTerminalSelection: WorkspaceBackendTerminalSelection?
+    @Published private(set) var activeBackendTerminalRecoveryState:
+        NativeSessionRecoveryState?
     private var activeBackendTerminalHandle: BorrowedBackendTerminalHandle?
     var activeTerminalFindSurface:
         (any NativeSessionPaneSurfacing)? {
@@ -2233,6 +2238,8 @@ final class WorkspaceSceneModel: ObservableObject {
         zellijRestorationValidationTask = nil
         zellijRestorationValidationID = nil
         zellijRestorationRoute = nil
+        backendTerminalRestorationTask?.cancel()
+        backendTerminalRestorationTask = nil
     }
 
     func restorationState(windowID: UUID) -> WorkspaceWindowState {
@@ -2254,6 +2261,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func selectFromUser(_ newSelection: WorkspaceSelection) {
         cancelPendingRestoration()
         cancelPendingHerdrShortcutNavigation()
+        cancelPendingBackendTerminalShortcutNavigation()
         invalidateZellijPresentationIntent()
         userNavigationRevision &+= 1
         cancelPendingTmuxPreviewActivations()
@@ -2316,7 +2324,8 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         guard herdrRestorationValidationTask == nil,
-              zellijRestorationValidationTask == nil else { return }
+              zellijRestorationValidationTask == nil,
+              backendTerminalRestorationTask == nil else { return }
         switch WorkspaceWindowRestorationResolver.resolve(
             pendingRestoration,
             in: snapshot,
@@ -2359,8 +2368,12 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 return
             case let .backendTerminal(terminal):
-                applyRestoredSelection(resolvedSelection)
-                restoreBackendTerminal(terminal)
+                beginBackendTerminalRestoration(
+                    selection: resolvedSelection,
+                    terminal: terminal,
+                    expectedState: pendingRestoration
+                )
+                return
             case nil:
                 applyRestoredSelection(resolvedSelection)
             }
@@ -9347,6 +9360,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         guard activeBorrowedTmuxSelection == nil,
               activeBorrowedHerdrSelection == nil,
+              activeBackendTerminalSelection == nil,
               activeBorrowedZellijSelection == nil
               || activeBorrowedZellijSelection == selection
         else { return }
@@ -14542,6 +14556,9 @@ final class WorkspaceSceneModel: ObservableObject {
     func resumeSessionReconnectAfterSSHRecovery(
         _ recoveryRequest: SessionConnectionRecoveryRequest
     ) {
+        if resumeBackendTerminalReconnectAfterSSHRecovery(recoveryRequest) {
+            return
+        }
         if case .needsAttention(_, true) = activeBorrowedHerdrRecoveryState,
            sessionConnectionRecoveryRequest == recoveryRequest,
            var context = activeHerdrReconnectContext,
@@ -15480,9 +15497,36 @@ extension WorkspaceSceneModel {
         if activeBackendTerminalSelection == selection,
            let handle = activeBackendTerminalHandle,
            nativeBackendTerminalCoordinator.attachmentClosure(handle) == nil {
+            // Reselected while another open was checking: take input again.
+            backendTerminalPresentationValidationID = nil
+            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
+                false, handle: handle
+            )
+            nativeBackendTerminalCoordinator.requestKeyboardFocus(handle: handle)
             return
         }
         cancelPendingTmuxPreviewActivations()
+        // The current terminal stays visible while the new one is checked,
+        // but it must not take the keystrokes meant for the new one.
+        let validationID = UUID()
+        backendTerminalPresentationValidationID = validationID
+        let previousHandle = activeBackendTerminalHandle
+        if let previousHandle {
+            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
+                true, handle: previousHandle
+            )
+        }
+        workspaceWindow?.makeFirstResponder(nil)
+        defer {
+            if backendTerminalPresentationValidationID == validationID {
+                backendTerminalPresentationValidationID = nil
+                if let previousHandle {
+                    nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
+                        false, handle: previousHandle
+                    )
+                }
+            }
+        }
         let validated = try await validatedBackendTerminal(
             selection, title: terminal.title, on: host
         )
@@ -15538,25 +15582,59 @@ extension WorkspaceSceneModel {
         }
     }
 
-    private func restoreBackendTerminal(
-        _ selection: WorkspaceBackendTerminalSelection
+    /// Keeps the window's restoration pending until the terminal is
+    /// confirmed and presented. A transient failure lists the host again and
+    /// retries; a terminal that ended gives up on the saved terminal.
+    private func beginBackendTerminalRestoration(
+        selection resolvedSelection: WorkspaceSelection,
+        terminal: WorkspaceBackendTerminalSelection,
+        expectedState: WorkspaceWindowState
     ) {
-        guard let hostSummary = snapshot.host(id: selection.hostID),
-              let host = CommandHostResolver.resolve(hostSummary)
+        guard backendTerminalRestorationTask == nil,
+              let host = snapshot.host(id: terminal.hostID)
+              .flatMap(CommandHostResolver.resolve)
         else { return }
-        let navigationRevision = userNavigationRevision
-        backendTerminalRestorationTask?.cancel()
         backendTerminalRestorationTask = Task { [weak self] in
             guard let self else { return }
-            let validated = try? await validatedBackendTerminal(
-                selection, title: selection.address, on: host
-            )
-            guard let validated, !Task.isCancelled, !isShutDown,
-                  navigationRevision == userNavigationRevision
-            else { return }
-            backendTerminalRestorationTask = nil
-            presentBackendTerminal(selection, host: host, validated: validated)
+            let validated: SSHConnectionArgumentsSnapshot
+            do {
+                validated = try await validatedBackendTerminal(
+                    terminal, title: terminal.address, on: host
+                )
+            } catch is CancellationError {
+                return
+            } catch BackendTerminalPresentationError.ended,
+                BackendTerminalCommandError.unavailable {
+                finishBackendTerminalRestoration(expectedState) {
+                    cancelPendingRestoration()
+                }
+                return
+            } catch {
+                finishBackendTerminalRestoration(expectedState) {
+                    backendTerminalFreshHostIDs.remove(terminal.hostID)
+                    scheduleBackendTerminalDiscovery()
+                }
+                return
+            }
+            guard !Task.isCancelled else { return }
+            finishBackendTerminalRestoration(expectedState) {
+                applyRestoredSelection(resolvedSelection)
+                presentBackendTerminal(terminal, host: host, validated: validated)
+                pendingRestoration = nil
+                pendingRestorationLaunchIntent = nil
+                isWorkspaceRestorationPending = false
+                suppressesAutomaticWorktreeSessionOpen = false
+            }
         }
+    }
+
+    private func finishBackendTerminalRestoration(
+        _ expectedState: WorkspaceWindowState,
+        _ finish: () -> Void
+    ) {
+        backendTerminalRestorationTask = nil
+        guard !isShutDown, pendingRestoration == expectedState else { return }
+        finish()
     }
 
     private func presentBackendTerminal(
@@ -15594,6 +15672,7 @@ extension WorkspaceSceneModel {
         activeBackendTerminalSelection = selection
         activeBackendTerminalHandle = handle
         activeBackendTerminalRouteIdentity = validated.routeIdentity
+        activeBackendTerminalRecoveryState = nil
         backendTerminalConnectionStates[handle.id] = .connecting
     }
 
@@ -15606,6 +15685,7 @@ extension WorkspaceSceneModel {
         activeBackendTerminalSelection = nil
         activeBackendTerminalHandle = nil
         activeBackendTerminalRouteIdentity = nil
+        activeBackendTerminalRecoveryState = nil
         nativeBackendTerminalCoordinator.detach(selection)
     }
 
@@ -15641,6 +15721,12 @@ extension WorkspaceSceneModel {
         host: CommandHost,
         afterDelay: Bool
     ) {
+        if host.isRemote {
+            activeBackendTerminalRecoveryState = .reconnecting(
+                message: "Waiting for \(hostName(for: selection.hostID)). "
+                    + "Ghosthub will reconnect automatically."
+            )
+        }
         backendTerminalReconnectSupervisor.isWaitingForAuthentication = { [weak self] in
             self?.isWaitingForSSHBrowserAuthentication(on: host) == true
         }
@@ -15675,8 +15761,17 @@ extension WorkspaceSceneModel {
             return .stop
         } catch is CancellationError {
             return .stop
-        } catch {
+        } catch BackendTerminalCommandError.cancelled {
             return .retry
+        } catch let BackendTerminalCommandError.commandFailed(_, status, stderr)
+            where status == 255 && host.isRemote {
+            return backendTerminalRecoveryDecision(
+                SSHConnectionFailure.classify(status: status, output: stderr),
+                hostID: selection.hostID
+            )
+        } catch {
+            failActiveBackendTerminal(error.localizedDescription)
+            return .stop
         }
         guard activeBackendTerminalSelection == selection else { return .stop }
         if let openedRoute, validated.routeIdentity != openedRoute {
@@ -15687,7 +15782,60 @@ extension WorkspaceSceneModel {
         return .stop
     }
 
+    /// Only a transport failure retries by itself. A prompt waits for the
+    /// user to review the connection; a changed host key or configuration
+    /// waits for the user to fix it.
+    private func backendTerminalRecoveryDecision(
+        _ classification: SSHConnectionFailure.Classification,
+        hostID: UUID
+    ) -> SessionReconnectDecision {
+        let diagnostic = classification.diagnostic
+        switch classification.kind {
+        case .transport:
+            activeBackendTerminalRecoveryState = .reconnecting(
+                message: diagnostic.summary + " Ghosthub will reconnect automatically."
+            )
+            return .retry
+        case .authenticationRequired, .hostKeyReviewRequired:
+            let message = diagnostic.summary + " " + diagnostic.recoverySuggestion
+            activeBackendTerminalRecoveryState = .needsAttention(
+                message: message, canReviewConnection: true
+            )
+            if sessionConnectionRecoveryRequest == nil {
+                sessionConnectionRecoveryRequest = SessionConnectionRecoveryRequest(
+                    hostID: hostID, message: message
+                )
+            }
+            return .stop
+        case .hostKeyChanged, .configurationChanged:
+            activeBackendTerminalRecoveryState = .needsAttention(
+                message: diagnostic.summary + " " + diagnostic.recoverySuggestion,
+                canReviewConnection: false
+            )
+            sessionConnectionRecoveryRequest = nil
+            return .stop
+        }
+    }
+
+    /// Resumes after the user approved the connection that a reconnect
+    /// stopped for.
+    func resumeBackendTerminalReconnectAfterSSHRecovery(
+        _ request: SessionConnectionRecoveryRequest
+    ) -> Bool {
+        guard case .needsAttention(_, true) = activeBackendTerminalRecoveryState,
+              sessionConnectionRecoveryRequest == request,
+              let selection = activeBackendTerminalSelection,
+              selection.hostID == request.hostID,
+              let host = snapshot.host(id: selection.hostID)
+              .flatMap(CommandHostResolver.resolve)
+        else { return false }
+        sessionConnectionRecoveryRequest = nil
+        startBackendTerminalReconnect(selection, host: host, afterDelay: false)
+        return true
+    }
+
     private func failActiveBackendTerminal(_ reason: String) {
+        activeBackendTerminalRecoveryState = nil
         guard let handle = activeBackendTerminalHandle else { return }
         backendTerminalConnectionStates[handle.id] = .disconnected(reason: reason)
     }
@@ -15701,6 +15849,10 @@ extension WorkspaceSceneModel {
     ) {
         guard activeBackendTerminalHandle == handle else { return }
         backendTerminalConnectionStates[handle.id] = state
+        if state == .connected, activeBackendTerminalRecoveryState != nil {
+            activeBackendTerminalRecoveryState = nil
+            sessionConnectionRecoveryRequest = nil
+        }
         guard case .disconnected = state,
               let selection = activeBackendTerminalSelection,
               let host = snapshot.host(id: handle.hostID)
@@ -15719,7 +15871,9 @@ extension WorkspaceSceneModel {
     func borrowedBackendTerminalView(
         host: HostSummary,
         terminal: WorkspaceBackendTerminalSelection,
-        defersTerminalResize: Bool
+        defersTerminalResize: Bool,
+        onReconnectNow: @escaping () -> Void = {},
+        onReviewConnection: @escaping () -> Void = {}
     ) -> AnyView? {
         guard CommandHostResolver.resolve(host) != nil else {
             return AnyView(
@@ -15744,6 +15898,7 @@ extension WorkspaceSceneModel {
                 hostName: host.name,
                 isRemoteHost: host.kind == .remote,
                 connectionState: backendTerminalConnectionStates[handle.id],
+                recoveryState: activeBackendTerminalRecoveryState,
                 attachmentClosure:
                 nativeBackendTerminalCoordinator.attachmentClosure(handle),
                 defersTerminalResize: defersTerminalResize,
@@ -15760,6 +15915,8 @@ extension WorkspaceSceneModel {
                 onRetryRequest: { [weak self] in
                     self?.reconnectBackendTerminal(terminal)
                 },
+                onReconnectNow: onReconnectNow,
+                onReviewConnection: onReviewConnection,
                 onHostSettingsRequest: { [weak self] in
                     SettingsStore.shared.selectedDomain = .hosts
                     self?.isSettingsPresented = true

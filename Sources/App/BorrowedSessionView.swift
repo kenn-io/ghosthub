@@ -106,7 +106,10 @@ struct BorrowedSessionView: View {
                             : "network.slash"
                     )
                 } description: {
-                    Text(disconnectionReason)
+                    // The heading already says a clean detach happened.
+                    if attachmentClosure != .detached {
+                        Text(disconnectionReason)
+                    }
                 } actions: {
                     Button(
                         attachmentClosure == .detached ? "Reconnect" : "Retry",
