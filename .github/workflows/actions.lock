@@ -16,7 +16,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         - 'astral-sh/setup-uv@v10.3.2'
-        - 'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe'
+        - 'kenn-io/actions@1791c94d02222ed022f31d41eab3118e4f4fcc15'
     '.github/workflows/macos-compatibility.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
@@ -130,7 +130,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe'
+        - 'kenn-io/actions@1791c94d02222ed022f31d41eab3118e4f4fcc15'
         - 'step-security/action-setup@8beec6731697ff7a074963eaa56f6d8e02e1c399'
         - 'step-security/action-setup@v6.1.0'
     '.github/workflows/workflow-validation.yml':
@@ -217,6 +217,13 @@ dependencies:
         commit: 'sha1-07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
         owner_id: 115962839
         repo_id: 846733598
+    'kenn-io/actions@1791c94d02222ed022f31d41eab3118e4f4fcc15':
+        ref: 'main'
+        commit: 'sha1-1791c94d02222ed022f31d41eab3118e4f4fcc15'
+        owner_id: 259885253
+        repo_id: 1427332808
+        uses:
+            - 'actions/setup-node@v7.1.0'
     'kenn-io/actions@6a8b4227ec7ce3c28c6b042b735781b1601211f4':
         ref: 'main'
         commit: 'sha1-6a8b4227ec7ce3c28c6b042b735781b1601211f4'
@@ -224,13 +231,6 @@ dependencies:
         repo_id: 1427332808
         uses:
             - 'actions/setup-node@v7.1.0'
-    'kenn-io/actions@b523fb403607f01de5eec5f4556c7668544c70fe':
-        ref: 'main'
-        commit: 'sha1-b523fb403607f01de5eec5f4556c7668544c70fe'
-        owner_id: 259885253
-        repo_id: 1427332808
-        uses:
-            - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     'step-security/action-setup@8beec6731697ff7a074963eaa56f6d8e02e1c399':
         ref: 'v6.1.0'
         commit: 'sha1-8beec6731697ff7a074963eaa56f6d8e02e1c399'
