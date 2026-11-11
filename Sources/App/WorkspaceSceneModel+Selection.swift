@@ -162,14 +162,19 @@ extension WorkspaceSceneModel {
         if let pending = pendingHerdrShortcutSelection {
             return .herdrSession(
                 hostID: pending.hostID,
-                name: pending.name, backend: pending.backend
+                name: pending.name
             )
         }
         if let active = activeBorrowedHerdrSelection {
-            return .herdrSession(hostID: active.hostID, name: active.name, backend: active.backend)
+            return .herdrSession(hostID: active.hostID, name: active.name)
         }
         if let active = activeBorrowedZellijSelection {
             return .zellijSession(hostID: active.hostID, name: active.name)
+        }
+        if let active = activeBackendTerminalSelection {
+            return .backendTerminal(
+                hostID: active.hostID, kind: active.kind, address: active.address
+            )
         }
         if let active = activeBorrowedTmuxSelection {
             if let worktreeID = active.worktreeID {
@@ -300,16 +305,16 @@ extension WorkspaceSceneModel {
             selectFromUser(updated)
             openBorrowedTmuxSession(.init(hostID: hostID, name: name, socketName: socketName))
             return true
-        case let .herdrSession(hostID, name, backend):
+        case let .herdrSession(hostID, name):
             guard snapshot.host(id: hostID)?.herdrSessions.contains(
-                where: { $0.name == name && $0.backend == backend && $0.state == .running }
+                where: { $0.name == name && $0.state == .running }
             ) == true else { return false }
             var updated = selection
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
             startHerdrShortcutNavigation(.init(
                 hostID: hostID,
-                name: name, backend: backend
+                name: name
             ))
             return true
         case let .zellijSession(hostID, name):
@@ -317,6 +322,18 @@ extension WorkspaceSceneModel {
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
             openBorrowedZellijSession(.init(hostID: hostID, name: name))
+            return true
+        case let .backendTerminal(hostID, kind, address):
+            let terminal = WorkspaceBackendTerminalSelection(
+                hostID: hostID, kind: kind, address: address
+            )
+            guard snapshot.host(id: hostID)?.backendTerminals.contains(
+                where: { $0.matches(terminal) }
+            ) == true else { return false }
+            var updated = selection
+            updated.select(target, in: snapshot, visibility: worktreeVisibility)
+            selectFromUser(updated)
+            openBackendTerminal(terminal)
             return true
         case .host, .project:
             return false

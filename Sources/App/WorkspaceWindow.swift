@@ -802,6 +802,8 @@ struct WorkspaceWindow: View {
                 sceneModel.activeBorrowedHerdrSelection,
                 activeZellijSession:
                 sceneModel.activeBorrowedZellijSelection,
+                activeBackendTerminal:
+                sceneModel.activeBackendTerminalSelection,
                 pendingHerdrSessions:
                 sceneModel.pendingHerdrSessionSelections,
                 sessionConnectionRecoveryRequest:
@@ -847,6 +849,14 @@ struct WorkspaceWindow: View {
                         defersTerminalResize: defersTerminalResize,
                         onReconnectNow: actions.reconnectNow,
                         onReviewConnection: actions.reviewConnection
+                    )
+                },
+                backendTerminalContentBuilder: {
+                    [sceneModel] host, terminal, defersTerminalResize, _ in
+                    sceneModel.borrowedBackendTerminalView(
+                        host: host,
+                        terminal: terminal,
+                        defersTerminalResize: defersTerminalResize
                     )
                 },
                 settingsSheetBuilder: { settingsStore in
@@ -1065,6 +1075,12 @@ struct WorkspaceWindow: View {
                 cancelPendingZellijPresentation: { [sceneModel] in
                     sceneModel.cancelPendingZellijPresentation()
                 },
+                openBackendTerminal: { [sceneModel] selection in
+                    sceneModel.openBackendTerminal(selection)
+                },
+                closeBackendTerminal: { [sceneModel] selection in
+                    sceneModel.closeBackendTerminal(selection)
+                },
                 prepareZellijSessionKill: { [sceneModel] selection in
                     try await sceneModel.prepareZellijSessionKill(selection)
                 },
@@ -1119,6 +1135,9 @@ struct WorkspaceWindow: View {
                 },
                 reconnectActiveZellijSessionNow: { [sceneModel] in
                     sceneModel.reconnectActiveZellijSessionNow()
+                },
+                reconnectActiveBackendTerminalNow: { [sceneModel] in
+                    sceneModel.reconnectActiveBackendTerminalNow()
                 },
                 resumeSessionReconnectAfterSSHRecovery: {
                     [sceneModel] request in
@@ -1321,6 +1340,8 @@ struct WorkspaceWindow: View {
                     sceneModel.activeBorrowedHerdrSelection,
                     activeZellijSession:
                     sceneModel.activeBorrowedZellijSelection,
+                    activeBackendTerminal:
+                    sceneModel.activeBackendTerminalSelection,
                     in: sceneModel.snapshot
                 ),
                 customTitle: customWindowTitle,
@@ -1632,6 +1653,7 @@ struct WorkspaceWindow: View {
             activeTmuxSession: sceneModel.activeBorrowedTmuxSelection,
             activeHerdrSession: sceneModel.activeBorrowedHerdrSelection,
             activeZellijSession: sceneModel.activeBorrowedZellijSelection,
+            activeBackendTerminal: sceneModel.activeBackendTerminalSelection,
             in: sceneModel.snapshot
         )?.title ?? "Ghosthub"
     }

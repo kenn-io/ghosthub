@@ -35,12 +35,10 @@ public enum HerdrExecutableResult: Equatable, Sendable {
 public enum HerdrExecutable {
     public static let marker = "GHOSTHUB_HERDR_PATH"
 
-    public static func command(backend: HerdrBackend = .tui) -> String {
-        let executable = backend == .core ? "herdr-core" : "herdr"
-        let marker = backend == .core ? "GHOSTHUB_HC_PATH" : marker
-        return [
+    public static func command() -> String {
+        [
             HerdrEnvironment.unsetCommand,
-            "ghosthub_herdr_path=$(command -v \(executable)) || exit 127",
+            "ghosthub_herdr_path=$(command -v herdr) || exit 127",
             "[ -n \"$ghosthub_herdr_path\" ] || exit 127",
             "case \"$ghosthub_herdr_path\" in /*) ;; *) exit 127 ;; esac",
             "[ -x \"$ghosthub_herdr_path\" ] || exit 127",
@@ -51,8 +49,7 @@ public enum HerdrExecutable {
     public static func parse(
         status: Int32,
         stdout: String,
-        stderr: String,
-        backend: HerdrBackend = .tui
+        stderr: String
     ) -> HerdrExecutableResult {
         if status == 127 {
             return .unavailable
@@ -65,7 +62,6 @@ public enum HerdrExecutable {
             separator: "\n",
             omittingEmptySubsequences: false
         ).map(String.init)
-        let marker = backend == .core ? "GHOSTHUB_HC_PATH" : marker
         guard let markerIndex = lines.lastIndex(of: marker),
               lines.indices.contains(markerIndex + 1) else {
             return .unavailable

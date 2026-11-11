@@ -71,7 +71,7 @@ struct NewHerdrSessionSheet: View {
     }
 
     private var existingNames: Set<String> {
-        Set(selectedHost.herdrSessions.filter { $0.backend == .tui }.map(\.name))
+        Set(selectedHost.herdrSessions.map(\.name))
     }
 
     private var canCreate: Bool {

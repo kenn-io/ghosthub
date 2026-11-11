@@ -3,13 +3,16 @@ import GhosthubTransport
 import GhosthubUI
 import SwiftUI
 
-struct BorrowedZellijSessionView: View {
-    var handle: BorrowedZellijSessionHandle
+/// Presents one borrowed client surface, such as a Zellij session or a
+/// backend terminal, with its connection and recovery states.
+struct BorrowedSessionView: View {
+    var sessionName: String
+    var disconnectedMessage: String
     var hostName: String
     var isRemoteHost: Bool
     var connectionState: ConnectionState?
     var recoveryState: NativeSessionRecoveryState?
-    var attachmentClosure: BorrowedZellijAttachmentClosure?
+    var attachmentClosure: BorrowedSessionAttachmentClosure?
     var defersTerminalResize: Bool
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
@@ -20,12 +23,13 @@ struct BorrowedZellijSessionView: View {
     @Environment(\.terminalBackgroundAppearance) private var backgroundAppearance
 
     init(
-        handle: BorrowedZellijSessionHandle,
+        sessionName: String,
+        disconnectedMessage: String,
         hostName: String,
         isRemoteHost: Bool,
         connectionState: ConnectionState?,
         recoveryState: NativeSessionRecoveryState? = nil,
-        attachmentClosure: BorrowedZellijAttachmentClosure? = nil,
+        attachmentClosure: BorrowedSessionAttachmentClosure? = nil,
         defersTerminalResize: Bool = false,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
@@ -34,7 +38,8 @@ struct BorrowedZellijSessionView: View {
         onReviewConnection: @escaping () -> Void = {},
         onHostSettingsRequest: @escaping () -> Void
     ) {
-        self.handle = handle
+        self.sessionName = sessionName
+        self.disconnectedMessage = disconnectedMessage
         self.hostName = hostName
         self.isRemoteHost = isRemoteHost
         self.connectionState = connectionState
@@ -51,7 +56,7 @@ struct BorrowedZellijSessionView: View {
 
     var body: some View {
         if let surfaceView = surface() {
-            NativeZellijTerminalView(
+            NativeBorrowedTerminalView(
                 surfaceView: surfaceView,
                 defersTerminalResize: defersTerminalResize,
                 onCloseRequest: onCloseRequest
@@ -112,7 +117,7 @@ struct BorrowedZellijSessionView: View {
                     }
                 }
             } else {
-                ProgressView("Opening \(handle.name)…")
+                ProgressView("Opening \(sessionName)…")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -136,7 +141,7 @@ struct BorrowedZellijSessionView: View {
         case let .reconnecting(message), let .needsAttention(message, _):
             message
         case nil:
-            disconnectionReason ?? "The Zellij session disconnected."
+            disconnectionReason ?? disconnectedMessage
         }
     }
 
@@ -162,11 +167,11 @@ struct BorrowedZellijSessionView: View {
         guard case let .disconnected(reason) = connectionState else {
             return nil
         }
-        return reason ?? "The Zellij session disconnected."
+        return reason ?? disconnectedMessage
     }
 }
 
-private struct NativeZellijTerminalView: View {
+private struct NativeBorrowedTerminalView: View {
     @ObservedObject var surfaceView: TerminalSurfaceView
     var defersTerminalResize: Bool
     var onCloseRequest: () -> Void

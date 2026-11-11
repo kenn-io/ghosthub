@@ -202,11 +202,13 @@ enum WorkspacePresentationLifecycle {
     static func deactivateSessionsForNavigation(
         hideTmux: () -> Void,
         deactivateHerdr: () -> Void,
-        deactivateZellij: () -> Void
+        deactivateZellij: () -> Void,
+        deactivateBackendTerminal: () -> Void = {}
     ) {
         hideTmux()
         deactivateHerdr()
         deactivateZellij()
+        deactivateBackendTerminal()
     }
 
     static func openHerdrSession(
@@ -383,12 +385,24 @@ struct HerdrSessionPresentationLifecycleModifier: ViewModifier {
     }
 }
 
-/// Closes an active Zellij client when navigation leaves its host-level route.
-struct ZellijSessionPresentationLifecycleModifier: ViewModifier {
+/// A borrowed session shown on its host's route, such as a Zellij session or
+/// a backend terminal.
+protocol HostRoutedSessionSelection: Equatable {
+    var hostID: UUID { get }
+}
+
+extension WorkspaceZellijSessionSelection: HostRoutedSessionSelection {}
+extension WorkspaceBackendTerminalSelection: HostRoutedSessionSelection {}
+
+/// Closes an active host-level client, such as Zellij or a backend terminal,
+/// when navigation leaves its host route.
+struct HostRoutedSessionPresentationLifecycleModifier<
+    Session: HostRoutedSessionSelection
+>: ViewModifier {
     let selection: WorkspaceSelection
-    let activeSession: WorkspaceZellijSessionSelection?
+    let activeSession: Session?
     var suppressesDeactivation = false
-    let deactivate: (WorkspaceZellijSessionSelection) -> Void
+    let deactivate: (Session) -> Void
 
     func body(content: Content) -> some View {
         content

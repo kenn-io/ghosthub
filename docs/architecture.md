@@ -31,19 +31,19 @@ reconnect is always a fresh attachment.
 - **Directory workspace:** one kwt-registered plain directory with an exact
   tmux session name and no Git children.
 - **Session:** an ordinary tmux session, running/stopped Herdr TUI session,
-  live Herdr core terminal, or active Zellij session on a host. Core terminal
-  support is currently macOS-only.
+  backend terminal (a live Herdr core terminal or Rex block), or active Zellij
+  session on a host. Backend terminal support is currently macOS-only.
 
 The sidebar is a host-wide session navigator. Hosts are its only grouping
 level. Under each host, one session list shows directly discovered tmux
-sessions, running or stopped Herdr TUI sessions, live Herdr core terminals, and
-active Zellij sessions, including sessions that were not created by Ghosthub or
-kwt. A backend label on each row (a chip, colored text, or a dot) tells the
+sessions, running or stopped Herdr TUI sessions, live Herdr core terminals, Rex
+blocks, and active Zellij sessions, including sessions that were not created by
+Ghosthub or kwt. A backend label on each row (a chip, colored text, or a dot) tells the
 backends apart. The options menu beside the sidebar title and **Settings →
 Sidebar** both set the label, sort, row height, and which worktree rows show. The list follows one saved
 manual order or a sort by name, backend, or agent attention; stopped Herdr
 sessions always sit last. A quiet **Projects** group below the sessions shows
-repository hierarchies followed by flat registered-directory rows. The four
+repository hierarchies followed by flat registered-directory rows. The
 inventories are independent; kwt worktrees and directory workspaces remain
 tmux-backed. Users may hide matching standalone tmux sessions
 from navigation with case-sensitive wildcard patterns; discovery retains the
@@ -190,13 +190,14 @@ Missing or offline targets fail soft and remain pending across later inventory
 refreshes. Explicit user navigation cancels pending restoration so a stale
 scene can never take the window back.
 Herdr restoration requires a completed fresh Herdr probe for the restored host
-and exact running backend/name or core address; cached pre-refresh rows never
-authorize attachment. Core terminals and older TUI sessions have distinct
-identities. See [Herdr attachment](terminal-sessions.md#native-herdr-attachment)
+and exact running session name; backend terminal restoration requires a fresh
+backend-terminal listing with the exact kind and address. Cached pre-refresh
+rows never authorize attachment. Core terminals and older TUI sessions have
+distinct identities. See [Herdr attachment](terminal-sessions.md#native-herdr-attachment)
 for discovery, client ownership, and lifecycle boundaries.
 Zellij restoration has the same fresh-inventory requirement for the exact
-active name. A captured scene contains one tmux, Herdr, or Zellij descriptor,
-or none, never more than one.
+active name. A captured scene contains one tmux, Herdr, Zellij, or backend-terminal
+descriptor, or none, never more than one.
 A scene captured without an active native presentation restores its navigation
 without opening or creating the selected worktree or directory session; the
 user explicitly selects the workspace to attach again.
@@ -963,6 +964,7 @@ Ghosthub does not scan the host for repositories.
 | `Sources/Transport/` | Shared local/SSH routing, quoting, and command execution primitives |
 | `Sources/Tmux/` | Native tmux discovery and attachment command model |
 | `Sources/Herdr/` | Native Herdr discovery and attachment command model |
+| `Sources/BackendTerminal/` | Herdr Core and Rex terminal discovery and attachment command model |
 | `Sources/Zellij/` | Native Zellij discovery and attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |

@@ -70,7 +70,7 @@ public enum KeyboardNavigationModel {
                     return targets
                 }
             }
-        case .tmuxSession, .herdrSession, .zellijSession:
+        case .tmuxSession, .herdrSession, .backendTerminal, .zellijSession:
             // Sessions share one list per host; stopped Herdr sessions are
             // skipped because opening one restarts it.
             for section in sections {

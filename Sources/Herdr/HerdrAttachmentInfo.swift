@@ -10,18 +10,15 @@ public struct HerdrAttachmentInfo: Equatable, Sendable {
     public let sessionName: String
     public let isDefault: Bool
     public let host: CommandHost
-    public let backend: HerdrBackend
 
     public init(
         sessionName: String,
         isDefault: Bool,
-        host: CommandHost,
-        backend: HerdrBackend = .tui
+        host: CommandHost
     ) {
         self.sessionName = sessionName
         self.isDefault = isDefault
         self.host = host
-        self.backend = backend
     }
 
     public func attachCommand(
@@ -69,14 +66,12 @@ public struct HerdrAttachmentInfo: Equatable, Sendable {
         herdrPath: String,
         launchMode: HerdrAttachmentLaunchMode
     ) -> String {
-        let arguments: [String] = switch (backend, launchMode) {
-        case (.core, _):
-            [herdrPath, "attach", sessionName]
-        case (.tui, .attachExisting):
+        let arguments: [String] = switch launchMode {
+        case .attachExisting:
             [herdrPath, "session", "attach", sessionName]
-        case (.tui, .launchOrAttach) where isDefault:
+        case .launchOrAttach where isDefault:
             [herdrPath]
-        case (.tui, .launchOrAttach):
+        case .launchOrAttach:
             [herdrPath, "--session", sessionName]
         }
         let invocation = arguments.map(shellQuotedCommandArgument)

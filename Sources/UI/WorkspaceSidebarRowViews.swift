@@ -39,6 +39,11 @@ extension WorkspaceSidebarSessionBackend {
                 .init(srgbRed: 0.22, green: 0.37, blue: 0.78, alpha: 1),
                 .init(srgbRed: 0.52, green: 0.64, blue: 0.95, alpha: 1)
             )
+        case .rex:
+            (
+                .init(srgbRed: 0.36, green: 0.40, blue: 0.47, alpha: 1),
+                .init(srgbRed: 0.66, green: 0.71, blue: 0.78, alpha: 1)
+            )
         }
         return NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

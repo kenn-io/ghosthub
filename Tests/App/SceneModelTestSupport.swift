@@ -331,11 +331,12 @@ func makeModel(
     nativeTmuxSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
     nativeHerdrSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
     nativeZellijSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
+    nativeBackendTerminalSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
+    nativeBackendTerminalExecutableProvider:
+    NativeBackendTerminalCoordinator.ExecutableProvider? = nil,
     nativeTmuxPathProvider:
     (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
     nativeHerdrPathProvider: (@Sendable (CommandHost)
-        -> Result<String, HerdrCommandError>)? = nil,
-    nativeHerdrCorePathProvider: (@Sendable (CommandHost)
         -> Result<String, HerdrCommandError>)? = nil,
     nativeZellijPathProvider: (@Sendable (CommandHost)
         -> Result<String, ZellijCommandError>)? = nil,
@@ -474,6 +475,8 @@ func makeModel(
     WorkspaceSceneModel.TmuxSessionValidationDiscovery? = nil,
     herdrSessionDiscovery: @escaping
     WorkspaceSceneModel.HerdrSessionDiscovery = { _ in .unavailable },
+    backendTerminalDiscovery: @escaping
+    WorkspaceSceneModel.BackendTerminalDiscovery = { _ in [:] },
     zellijSessionDiscovery: @escaping
     WorkspaceSceneModel.ZellijSessionDiscovery = { _ in .unavailable },
     zellijSessionValidationDiscovery:
@@ -613,9 +616,10 @@ func makeModel(
         nativeTmuxSurfaceStore: nativeTmuxSurfaceStore,
         nativeHerdrSurfaceStore: nativeHerdrSurfaceStore,
         nativeZellijSurfaceStore: nativeZellijSurfaceStore,
+        nativeBackendTerminalSurfaceStore: nativeBackendTerminalSurfaceStore,
+        nativeBackendTerminalExecutableProvider: nativeBackendTerminalExecutableProvider,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
         nativeHerdrPathProvider: nativeHerdrPathProvider,
-        nativeHerdrCorePathProvider: nativeHerdrCorePathProvider,
         nativeZellijPathProvider: nativeZellijPathProvider,
         herdrPaneSplitCapabilityProvider: herdrPaneSplitCapabilityProvider,
         herdrPaneSplitter: herdrPaneSplitter,
@@ -655,6 +659,7 @@ func makeModel(
         tmuxSessionDiscovery: tmuxSessionDiscovery,
         tmuxSessionValidationDiscovery: tmuxSessionValidationDiscovery,
         herdrSessionDiscovery: herdrSessionDiscovery,
+        backendTerminalDiscovery: backendTerminalDiscovery,
         zellijSessionDiscovery: zellijSessionDiscovery,
         zellijSessionValidationDiscovery:
         zellijSessionValidationDiscovery ?? { host, _ in
@@ -669,7 +674,7 @@ func makeModel(
         presentationSSHAcquisitionCoordinator,
         presentationSSHEnvironment: presentationSSHEnvironment,
         herdrSessionValidationDiscovery:
-        herdrSessionValidationDiscovery ?? { host, _, _ in
+        herdrSessionValidationDiscovery ?? { host, _ in
             await herdrSessionDiscovery(host)
         },
         herdrSessionExactProbe: herdrSessionExactProbe ?? {

@@ -644,38 +644,73 @@ struct WorkspaceWindowStateTests {
         )
     }
 
-    @Test("core restoration never opens a TUI session with the same address")
-    func coreRestoration() throws {
+    @Test("a backend terminal restores only from fresh inventory listing its exact address")
+    func backendTerminalRestoration() throws {
         let fixture = RestorationFixture.local(sessionName: "t7")
         let hostID = fixture.selection.selectedHostID
         var snapshot = fixture.snapshot
+        // A Herdr TUI session with the same name is not the terminal.
         snapshot.hosts[0].herdrSessions = [.init(name: "t7", isDefault: false, state: .running)]
         let selection = WorkspaceSelection(selectedHostID: hostID)
         let state = WorkspaceWindowState(
             windowID: UUID(),
             navigation: .init(hostKey: "local", projectKey: nil, worktreeGeneration: nil),
             tmux: nil,
-            herdr: .init(hostKey: "local", sessionName: "t7", backend: .core)
+            backendTerminal: .init(hostKey: "local", kind: .herdrCore, address: "t7")
         )
         let restored = try JSONDecoder().decode(
             WorkspaceWindowState.self,
             from: JSONEncoder().encode(state)
         )
         #expect(WorkspaceWindowRestorationResolver.resolve(
-            restored, in: snapshot, herdrFreshHostIDs: [hostID]
+            restored, in: snapshot, herdrFreshHostIDs: [hostID],
+            backendTerminalFreshHostIDs: [hostID]
         ) == .pending(selection: selection))
-        snapshot.hosts[0].herdrSessions.append(.init(
-            name: "t7",
-            isDefault: false,
-            state: .running,
-            backend: .core
-        ))
+        snapshot.hosts[0].backendTerminals = [
+            .init(kind: .rex, address: "t7"),
+            .init(kind: .herdrCore, address: "t7"),
+        ]
         #expect(WorkspaceWindowRestorationResolver.resolve(
-            restored, in: snapshot, herdrFreshHostIDs: [hostID]
+            restored, in: snapshot
+        ) == .pending(selection: selection))
+        #expect(WorkspaceWindowRestorationResolver.resolve(
+            restored, in: snapshot, backendTerminalFreshHostIDs: [hostID]
         ) == .ready(
             selection: selection,
-            presentation: .herdr(.init(hostID: hostID, name: "t7", backend: .core))
+            presentation: .backendTerminal(
+                .init(hostID: hostID, kind: .herdrCore, address: "t7")
+            )
         ))
+    }
+
+    @Test("capture keeps the active backend terminal only on its host-level route")
+    func backendTerminalCapture() {
+        let fixture = RestorationFixture.local(sessionName: "t7")
+        let hostID = fixture.selection.selectedHostID
+        let terminal = WorkspaceBackendTerminalSelection(
+            hostID: hostID, kind: .rex, address: "block:aa"
+        )
+        let captured = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: WorkspaceSelection(selectedHostID: hostID),
+            activeTmux: nil,
+            activeBackendTerminal: terminal,
+            snapshot: fixture.snapshot
+        )
+        #expect(captured.backendTerminal == .init(
+            hostKey: "local", kind: .rex, address: "block:aa"
+        ))
+        #expect(captured.herdr == nil)
+        let contradictory = WorkspaceWindowState.capture(
+            windowID: UUID(),
+            selection: WorkspaceSelection(selectedHostID: hostID),
+            activeTmux: nil,
+            activeZellij: .init(hostID: hostID, name: "editor"),
+            activeBackendTerminal: terminal,
+            snapshot: fixture.snapshot
+        )
+        #expect(contradictory.backendTerminal == nil)
+        #expect(contradictory.zellij == nil)
     }
 
     @Test("Zellij restoration requires fresh exact active inventory")

@@ -181,16 +181,22 @@ private enum Sample {
 
     static func herdr(
         _ name: String,
-        title: String? = nil,
-        backend: HerdrBackend,
         state: HerdrSessionState = .running
     ) -> WorkspaceSidebarRow {
         WorkspaceSidebarRow(
-            target: .herdrSession(hostID: hostID, name: name, backend: backend),
-            icon: backend == .core ? .herdrTerminal : .herdrSession,
-            title: title ?? name,
-            subtitle: backend == .core ? name : nil,
+            target: .herdrSession(hostID: hostID, name: name),
+            icon: .herdrSession,
+            title: name,
             herdrSessionState: state
+        )
+    }
+
+    static func herdrTerminal(_ address: String, title: String) -> WorkspaceSidebarRow {
+        WorkspaceSidebarRow(
+            target: .backendTerminal(hostID: hostID, kind: .herdrCore, address: address),
+            icon: .herdrTerminal,
+            title: title,
+            subtitle: address
         )
     }
 
@@ -204,11 +210,11 @@ private enum Sample {
             ),
             isSelected: true
         ),
-        Session(row: herdr("t7", title: "web-app / desktop-review", backend: .core)),
+        Session(row: herdrTerminal("t7", title: "web-app / desktop-review")),
         Session(row: tmux("release-watch"), attention: .approval(agent: "Codex")),
         Session(row: tmux("web-app-feat-checkout"), isWorktreeSession: true),
-        Session(row: herdr("release-review", backend: .tui)),
-        Session(row: herdr("archived", backend: .tui, state: .stopped)),
+        Session(row: herdr("release-review")),
+        Session(row: herdr("archived", state: .stopped)),
     ]
 
     static let worktreeSessionID = sessions[4].id

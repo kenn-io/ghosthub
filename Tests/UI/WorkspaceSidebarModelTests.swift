@@ -16,34 +16,36 @@ struct WorkspaceSidebarModelTests {
                 .init(name: "alpha", managed: false, windows: []),
             ],
             herdrSessions: [
-                .init(name: "t1", isDefault: false, state: .running),
-                .init(
-                    name: "t9",
-                    isDefault: false,
-                    state: .running,
-                    backend: .core,
-                    title: "review"
-                ),
+                .init(name: "t9", isDefault: false, state: .running),
             ],
             herdrAvailable: true,
+            backendTerminals: [
+                .init(kind: .herdrCore, address: "t9", title: "review"),
+                .init(kind: .rex, address: "block:aa", title: "vim", detail: "work / editor"),
+            ],
             zellijSessions: [.init(name: "docs")],
             zellijAvailable: true
         )
         let section = WorkspaceSidebarModel.sections(in: .fixture(hosts: [host]))[0]
 
         #expect(section.sessionRows.map(\.title) == [
-            "alpha", "zeta", "docs", "review", "t1",
+            "alpha", "zeta", "docs", "review", "t9", "vim",
         ])
         #expect(section.sessionRows.map(\.sessionBackend) == [
-            .tmux, .tmux, .zellij, .herdrTerminal, .herdrTUI,
+            .tmux, .tmux, .zellij, .herdrTerminal, .herdrTUI, .rex,
         ])
+        // A core terminal and a TUI session with the same name stay distinct.
         #expect(section.sessionRows(for: .herdrTerminal).map(\.target) == [
-            .herdrSession(hostID: hostID, name: "t9", backend: .core),
+            .backendTerminal(hostID: hostID, kind: .herdrCore, address: "t9"),
         ])
-        // Only desktop terminals show their address after the name.
+        #expect(section.sessionRows(for: .herdrTUI).map(\.target) == [
+            .herdrSession(hostID: hostID, name: "t9"),
+        ])
+        // Backend terminals show their address or Rex detail after the name.
         #expect(section.sessionRows.map(\.sessionDetail) == [
-            nil, nil, nil, "t9", nil,
+            nil, nil, nil, "t9", nil, "work / editor",
         ])
+        #expect(Set(section.sessionRows.compactMap(\.sessionOrderID)).count == 6)
     }
 
     @Test("a manual drag moves a session across backends")

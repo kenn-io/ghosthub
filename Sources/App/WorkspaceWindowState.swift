@@ -118,12 +118,17 @@ struct WorkspaceTmuxDescriptor: Codable, Hashable, Sendable {
 struct WorkspaceHerdrDescriptor: Codable, Hashable, Sendable {
     var hostKey: String
     var sessionName: String
-    var backend: HerdrBackend? = nil
 }
 
 struct WorkspaceZellijDescriptor: Codable, Hashable, Sendable {
     var hostKey: String
     var sessionName: String
+}
+
+struct WorkspaceBackendTerminalDescriptor: Codable, Hashable, Sendable {
+    var hostKey: String
+    var kind: BackendTerminalKind
+    var address: String
 }
 
 enum WorkspaceWindowLaunchIntent: Hashable, Sendable {
@@ -154,6 +159,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
     var tmux: WorkspaceTmuxDescriptor?
     var herdr: WorkspaceHerdrDescriptor? = nil
     var zellij: WorkspaceZellijDescriptor? = nil
+    var backendTerminal: WorkspaceBackendTerminalDescriptor? = nil
     var customTitle: String? = nil
     /// Captured immediately before an update, independently of native Resume.
     var frame: WorkspaceWindowFrame? = nil
@@ -168,6 +174,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         activeTmux: WorkspaceTmuxSessionSelection?,
         activeHerdr: WorkspaceHerdrSessionSelection? = nil,
         activeZellij: WorkspaceZellijSessionSelection? = nil,
+        activeBackendTerminal: WorkspaceBackendTerminalSelection? = nil,
         snapshot: WorkspaceSnapshot
     ) -> Self {
         let host = snapshot.host(id: selection.selectedHostID)
@@ -207,10 +214,12 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         // only when its host and worktree ownership match the captured
         // navigation; otherwise keep the navigation alone rather than
         // emitting a combination the resolver rejects outright.
-        let hasContradictoryPresentations = activeTmux != nil
-            && activeHerdr != nil
-            || activeTmux != nil && activeZellij != nil
-            || activeHerdr != nil && activeZellij != nil
+        let hasContradictoryPresentations = [
+            activeTmux != nil,
+            activeHerdr != nil,
+            activeZellij != nil,
+            activeBackendTerminal != nil,
+        ].filter { $0 }.count > 1
         let tmux = activeTmux.flatMap { active -> WorkspaceTmuxDescriptor? in
             guard !hasContradictoryPresentations else { return nil }
             guard let activeHost = snapshot.host(id: active.hostID),
@@ -276,7 +285,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
             else { return nil }
             return WorkspaceHerdrDescriptor(
                 hostKey: activeHost.configKey,
-                sessionName: active.name, backend: active.backend == .core ? .core : nil
+                sessionName: active.name
             )
         }
         let zellij = activeZellij.flatMap {
@@ -297,12 +306,32 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                 sessionName: active.name
             )
         }
+        let backendTerminal = activeBackendTerminal.flatMap {
+            active -> WorkspaceBackendTerminalDescriptor? in
+            guard !hasContradictoryPresentations,
+                  let activeHost = snapshot.host(id: active.hostID),
+                  let navigation,
+                  activeHost.configKey == navigation.hostKey,
+                  selection.selectedProjectID == nil,
+                  selection.selectedWorktreeID == nil,
+                  selection.selectedDirectoryWorkspaceID == nil,
+                  !active.address.trimmingCharacters(
+                      in: .whitespacesAndNewlines
+                  ).isEmpty
+            else { return nil }
+            return WorkspaceBackendTerminalDescriptor(
+                hostKey: activeHost.configKey,
+                kind: active.kind,
+                address: active.address
+            )
+        }
         return Self(
             windowID: windowID,
             navigation: navigation,
             tmux: tmux,
             herdr: herdr,
-            zellij: zellij
+            zellij: zellij,
+            backendTerminal: backendTerminal
         )
     }
 
@@ -442,6 +471,7 @@ enum WorkspaceRestoredPresentation: Equatable, Sendable {
     case tmux(WorkspaceTmuxSessionSelection)
     case herdr(WorkspaceHerdrSessionSelection)
     case zellij(WorkspaceZellijSessionSelection)
+    case backendTerminal(WorkspaceBackendTerminalSelection)
 }
 
 enum WorkspaceRestorationResolution: Equatable, Sendable {
@@ -464,6 +494,7 @@ enum WorkspaceWindowRestorationResolver {
         launchIntent: WorkspaceWindowLaunchIntent? = nil,
         herdrFreshHostIDs: Set<UUID> = [],
         zellijFreshHostIDs: Set<UUID> = [],
+        backendTerminalFreshHostIDs: Set<UUID> = [],
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
     ) -> WorkspaceRestorationResolution {
         guard let navigation = state.navigation,
@@ -484,6 +515,7 @@ enum WorkspaceWindowRestorationResolver {
             state.tmux != nil,
             state.herdr != nil,
             state.zellij != nil,
+            state.backendTerminal != nil,
         ].filter { $0 }.count
         guard presentationCount <= 1 else {
             return .invalid
@@ -539,6 +571,16 @@ enum WorkspaceWindowRestorationResolver {
             else { return .invalid }
         }
 
+        if let terminal = state.backendTerminal {
+            guard isNonblank(terminal.hostKey),
+                  isNonblank(terminal.address),
+                  terminal.hostKey == navigation.hostKey,
+                  navigation.projectKey == nil,
+                  navigation.worktreeGeneration == nil,
+                  navigation.directoryWorkspacePath == nil
+            else { return .invalid }
+        }
+
         guard let host = snapshot.hosts.first(where: {
             $0.configKey == navigation.hostKey
         }) else {
@@ -581,12 +623,12 @@ enum WorkspaceWindowRestorationResolver {
         if let herdr = state.herdr {
             let herdrSelection = WorkspaceHerdrSessionSelection(
                 hostID: host.id,
-                name: herdr.sessionName, backend: herdr.backend ?? .tui
+                name: herdr.sessionName
             )
             guard herdrFreshHostIDs.contains(host.id),
                   !pendingHerdrSessions.contains(herdrSelection),
                   host.herdrSessions.contains(where: {
-                      $0.matches(herdrSelection)
+                      $0.name == herdr.sessionName
                           && $0.state == .running
                   })
             else { return .pending(selection: selection) }
@@ -609,6 +651,23 @@ enum WorkspaceWindowRestorationResolver {
             return .ready(
                 selection: selection,
                 presentation: .zellij(zellijSelection)
+            )
+        }
+
+        if let terminal = state.backendTerminal {
+            let terminalSelection = WorkspaceBackendTerminalSelection(
+                hostID: host.id,
+                kind: terminal.kind,
+                address: terminal.address
+            )
+            guard backendTerminalFreshHostIDs.contains(host.id),
+                  host.backendTerminals.contains(where: {
+                      $0.matches(terminalSelection)
+                  })
+            else { return .pending(selection: selection) }
+            return .ready(
+                selection: selection,
+                presentation: .backendTerminal(terminalSelection)
             )
         }
 

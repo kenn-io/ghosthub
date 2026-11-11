@@ -11,7 +11,10 @@ public enum WorkspaceNavigationTarget: Hashable, Sendable {
     case tmuxSession(hostID: UUID, name: String, socketName: String? = nil)
     /// A running Herdr session discovered independently of tmux and projects.
     /// Selection remains host-scoped; Herdr owns its internal workspace state.
-    case herdrSession(hostID: UUID, name: String, backend: HerdrBackend = .tui)
+    case herdrSession(hostID: UUID, name: String)
+    /// One Herdr Core or Rex terminal. The backend owns its layout and
+    /// lifetime; Ghosthub attaches only this terminal.
+    case backendTerminal(hostID: UUID, kind: BackendTerminalKind, address: String)
     /// A running Zellij session discovered independently of tmux and projects.
     /// Zellij owns its tabs, panes, layout, history, and process lifetime.
     case zellijSession(hostID: UUID, name: String)
@@ -87,7 +90,8 @@ public extension WorkspaceSelection {
             selectedWorktreeID = nil
             selectedDirectoryWorkspaceID = workspace.id
         case let .tmuxSession(hostID, _, _),
-             let .herdrSession(hostID, _, _),
+             let .herdrSession(hostID, _),
+             let .backendTerminal(hostID, _, _),
              let .zellijSession(hostID, _):
             guard snapshot.host(id: hostID) != nil else {
                 return

@@ -180,3 +180,15 @@ struct RemoteExitStatusStore {
         try? FileManager.default.removeItem(at: url)
     }
 }
+
+/// How a borrowed Zellij or backend-terminal attachment ended.
+enum BorrowedSessionAttachmentClosure: Equatable {
+    case detached
+    case processExited(code: UInt32?)
+    case launchFailed
+    /// SSH transport failed before the terminal client could start.
+    case retryableTransportFailure
+    /// The terminal surface could not be created. Transient — no display was
+    /// available to render it — so recovery keeps trying instead of latching.
+    case surfaceUnavailable
+}

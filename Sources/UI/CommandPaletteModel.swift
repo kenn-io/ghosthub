@@ -13,6 +13,7 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case addProject(UUID)
     case openTmuxSession(WorkspaceTmuxSessionSelection)
     case openHerdrSession(WorkspaceHerdrSessionSelection)
+    case openBackendTerminal(WorkspaceBackendTerminalSelection)
     case openZellijSession(WorkspaceZellijSessionSelection)
     case restartHerdrSession(WorkspaceHerdrSessionSelection)
     case stopHerdrSession(WorkspaceHerdrSessionSelection)
@@ -239,6 +240,13 @@ public enum CommandPaletteModel {
             worktreeOrderRawValue: worktreeOrderRawValue,
             sessionOrderRawValue: sessionOrderRawValue,
             pendingHerdrSessions: pendingHerdrSessions
+        ))
+        commands.append(contentsOf: backendTerminalCommands(
+            in: snapshot,
+            visibility: worktreeVisibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            sessionOrderRawValue: sessionOrderRawValue
         ))
         commands.append(contentsOf: zellijSessionCommands(
             in: snapshot,
@@ -663,30 +671,16 @@ public enum CommandPaletteModel {
             worktreeOrderRawValue: worktreeOrderRawValue,
             sessionOrderRawValue: sessionOrderRawValue
         ).flatMap { section in
-            (section.sessionRows(for: .herdrTerminal)
-                + section.sessionRows(for: .herdrTUI)
-            ).flatMap { row -> [WorkspaceCommandItem] in
-                guard case let .herdrSession(hostID, name, backend) = row.target else {
+            section.sessionRows(for: .herdrTUI).flatMap { row -> [WorkspaceCommandItem] in
+                guard case let .herdrSession(hostID, name) = row.target else {
                     return []
                 }
-                let session = WorkspaceHerdrSessionSelection(
-                    hostID: hostID,
-                    name: name, backend: backend
-                )
+                let session = WorkspaceHerdrSessionSelection(hostID: hostID, name: name)
                 guard !pendingHerdrSessions.contains(session) else { return [] }
                 let keywords = [
                     "herdr", "session", name,
                     section.host.name, section.row.title,
                 ]
-                if backend == .core {
-                    return [WorkspaceCommandItem(
-                        id: "open-herdr-session-\(session.id)",
-                        title: "Open Herdr terminal: \(row.title)",
-                        subtitle: "\(name) on \(section.host.name)",
-                        keywords: ["core", "terminal", "open", "attach", row.title] + keywords,
-                        action: .openHerdrSession(session)
-                    )]
-                }
                 switch row.herdrSessionState {
                 case .running:
                     return [
@@ -727,6 +721,43 @@ public enum CommandPaletteModel {
                     return []
                 }
             }
+        }
+    }
+
+    private static func backendTerminalCommands(
+        in snapshot: WorkspaceSnapshot,
+        visibility: WorktreeVisibility,
+        tmuxSessionVisibility: TmuxSessionVisibility,
+        worktreeOrderRawValue: String,
+        sessionOrderRawValue: String
+    ) -> [WorkspaceCommandItem] {
+        WorkspaceSidebarModel.sections(
+            in: snapshot,
+            visibility: visibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            sessionOrderRawValue: sessionOrderRawValue
+        ).flatMap { section in
+            (section.sessionRows(for: .herdrTerminal) + section.sessionRows(for: .rex))
+                .compactMap { row -> WorkspaceCommandItem? in
+                    guard case let .backendTerminal(hostID, kind, address) = row.target else {
+                        return nil
+                    }
+                    let terminal = WorkspaceBackendTerminalSelection(
+                        hostID: hostID, kind: kind, address: address
+                    )
+                    let backend = kind == .rex ? "Rex" : "Herdr"
+                    return WorkspaceCommandItem(
+                        id: "open-backend-terminal-\(terminal.id)",
+                        title: "Open \(backend) terminal: \(row.title)",
+                        subtitle: "\(row.subtitle ?? address) on \(section.host.name)",
+                        keywords: [
+                            backend.lowercased(), "terminal", "open", "attach",
+                            row.title, address, section.host.name, section.row.title,
+                        ],
+                        action: .openBackendTerminal(terminal)
+                    )
+                }
         }
     }
 

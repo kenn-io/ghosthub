@@ -106,7 +106,8 @@ before trying them.
 Ghosthub on macOS also opens individual terminals from the newer Herdr
 desktop app. Its [split layout stays in Herdr desktop](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
 See [Herdr desktop terminals](https://ghosthub.ai/docs/sessions/#herdr-desktop-terminals)
-for setup and scope.
+for setup and scope. It opens individual [Rex terminals](https://ghosthub.ai/docs/sessions/#rex-terminals)
+the same way, on this Mac and on SSH hosts.
 
 ## Work with your agents
 

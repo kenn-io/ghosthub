@@ -134,6 +134,7 @@ public extension HostSummary {
         tmuxInventoryIsAuthoritative: Bool = true,
         herdrSessions: [HerdrSessionSummary] = [],
         herdrAvailable: Bool = false,
+        backendTerminals: [BackendTerminalSummary] = [],
         zellijSessions: [ZellijSessionSummary] = [],
         zellijAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
@@ -159,6 +160,7 @@ public extension HostSummary {
             tmuxInventoryIsAuthoritative: tmuxInventoryIsAuthoritative,
             herdrSessions: herdrSessions,
             herdrAvailable: herdrAvailable,
+            backendTerminals: backendTerminals,
             zellijSessions: zellijSessions,
             zellijAvailable: zellijAvailable,
             decodedConnectionState:

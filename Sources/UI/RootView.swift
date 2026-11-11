@@ -126,6 +126,9 @@ public struct RootView: View {
     private var activeZellijSession: WorkspaceZellijSessionSelection? {
         display.activeZellijSession
     }
+    private var activeBackendTerminal: WorkspaceBackendTerminalSelection? {
+        display.activeBackendTerminal
+    }
     public var body: some View {
         let _ = RenderWorkCounters.countRootBodyEvaluation()
         contentWithNotifications
@@ -382,7 +385,7 @@ public struct RootView: View {
                 )
             )
             .modifier(
-                ZellijSessionPresentationLifecycleModifier(
+                HostRoutedSessionPresentationLifecycleModifier(
                     selection: selection,
                     activeSession: activeZellijSession,
                     suppressesDeactivation:
@@ -391,6 +394,18 @@ public struct RootView: View {
                         pending: peerTakeoverNavigationSelection
                     ),
                     deactivate: { _ in deactivateZellijSession() }
+                )
+            )
+            .modifier(
+                HostRoutedSessionPresentationLifecycleModifier(
+                    selection: selection,
+                    activeSession: activeBackendTerminal,
+                    suppressesDeactivation:
+                    WorkspacePresentationLifecycle.isPeerTakeoverNavigation(
+                        selection,
+                        pending: peerTakeoverNavigationSelection
+                    ),
+                    deactivate: { _ in deactivateBackendTerminal() }
                 )
             )
             .onChange(of: selection) { _, newSelection in
@@ -709,6 +724,7 @@ public struct RootView: View {
             tmuxSessionVisibility: tmuxSessionVisibility,
             activeTmuxSession: activeTmuxSession,
             activeHerdrSession: activeHerdrSession,
+            activeBackendTerminal: activeBackendTerminal,
             activeZellijSession: activeZellijSession,
             activeTmuxSessionIsConnected:
             display.activeTmuxSessionIsConnected,
@@ -737,6 +753,9 @@ public struct RootView: View {
             onOpenHerdrSession: { session in
                 activateHerdrSession(session)
             },
+            onOpenBackendTerminal: { terminal in
+                activateBackendTerminal(terminal)
+            },
             onOpenZellijSession: { session in
                 activateZellijSession(session)
             },
@@ -748,6 +767,7 @@ public struct RootView: View {
                 deactivateHerdrSession()
                 handlers.cancelPendingZellijPresentation?()
                 deactivateZellijSession()
+                deactivateBackendTerminal()
             },
             onRequestKillTmuxSession: requestSessionKill,
             onRequestRenameTmuxSession: requestSessionRename,
@@ -1010,6 +1030,7 @@ public struct RootView: View {
     ) {
         deactivateHerdrSession()
         deactivateZellijSession()
+        deactivateBackendTerminal()
         if activeTmuxSession == session {
             tmuxSelectionBaseline = selectionBaseline ?? selection
             handlers.openTmuxSession?(session)
@@ -1046,6 +1067,16 @@ public struct RootView: View {
             session,
             open: { handlers.openZellijSession?($0) }
         )
+    }
+
+    private func activateBackendTerminal(
+        _ terminal: WorkspaceBackendTerminalSelection
+    ) {
+        peerTakeoverNavigationSelection = WorkspaceSelection(
+            selectedHostID: terminal.hostID
+        )
+        // The scene model closes the current peer only after validation.
+        handlers.openBackendTerminal?(terminal)
     }
 
     private func startHerdrSessionActivation(
@@ -1747,6 +1778,11 @@ public struct RootView: View {
         handlers.closeZellijSession?(previous)
     }
 
+    private func deactivateBackendTerminal() {
+        guard let previous = activeBackendTerminal else { return }
+        handlers.closeBackendTerminal?(previous)
+    }
+
     private func deactivateHerdrSession(
         _ expected: WorkspaceHerdrSessionSelection
     ) {
@@ -1825,15 +1861,16 @@ public struct RootView: View {
     private var terminalWorkspaceContent: some View {
         if activeTmuxSession == nil,
            activeHerdrSession == nil,
-           let activeZellijSession,
-           let host = snapshot.host(id: activeZellijSession.hostID),
-           let view = content.zellijSessionContentBuilder?(
+           activeZellijSession == nil,
+           let activeBackendTerminal,
+           let host = snapshot.host(id: activeBackendTerminal.hostID),
+           let view = content.backendTerminalContentBuilder?(
                host,
-               activeZellijSession.name,
+               activeBackendTerminal,
                isSidebarTransitioning,
                NativeSessionContentActions(
                    reconnectNow: {
-                       handlers.reconnectActiveZellijSessionNow?()
+                       handlers.reconnectActiveBackendTerminalNow?()
                    },
                    reviewConnection: {
                        reviewSSHHostKey(
@@ -1853,7 +1890,38 @@ public struct RootView: View {
            ) {
             view
         } else if activeTmuxSession == nil,
+                  activeHerdrSession == nil,
+                  activeBackendTerminal == nil,
+                  let activeZellijSession,
+                  let host = snapshot.host(id: activeZellijSession.hostID),
+                  let view = content.zellijSessionContentBuilder?(
+                      host,
+                      activeZellijSession.name,
+                      isSidebarTransitioning,
+                      NativeSessionContentActions(
+                          reconnectNow: {
+                              handlers.reconnectActiveZellijSessionNow?()
+                          },
+                          reviewConnection: {
+                              reviewSSHHostKey(
+                                  host.id,
+                                  inventoryWarning: sessionRecoveryWarning(
+                                      for: host.id
+                                  ),
+                                  sessionRecoveryRequestID:
+                                  sessionRecoveryRequestRouter.recoveryRequestID(
+                                      for: host.id,
+                                      activeRequest:
+                                      display.sessionConnectionRecoveryRequest
+                                  )
+                              )
+                          }
+                      )
+                  ) {
+            view
+        } else if activeTmuxSession == nil,
                   activeZellijSession == nil,
+                  activeBackendTerminal == nil,
                   let activeHerdrSession,
                   let host = snapshot.host(id: activeHerdrSession.hostID),
                   let view = content.herdrSessionContentBuilder?(
@@ -1883,6 +1951,7 @@ public struct RootView: View {
             view
         } else if activeHerdrSession == nil,
                   activeZellijSession == nil,
+                  activeBackendTerminal == nil,
                   let presentedSession = selectedWorktreeTmuxSession
                   ?? activeTmuxSession,
                   let host = snapshot.host(id: presentedSession.hostID),
@@ -1967,6 +2036,7 @@ public struct RootView: View {
                           $0.tmuxSessions.isEmpty
                               && $0.herdrSessions.isEmpty
                               && $0.zellijSessions.isEmpty
+                              && $0.backendTerminals.isEmpty
                       }) {
                 VStack(spacing: 14) {
                     Text("Welcome to Ghosthub")
@@ -2104,9 +2174,16 @@ public struct RootView: View {
         case let .openHerdrSession(herdrSession):
             selectWorkspace(.herdrSession(
                 hostID: herdrSession.hostID,
-                name: herdrSession.name, backend: herdrSession.backend
+                name: herdrSession.name
             ))
             activateHerdrSession(herdrSession)
+        case let .openBackendTerminal(terminal):
+            selectWorkspace(.backendTerminal(
+                hostID: terminal.hostID,
+                kind: terminal.kind,
+                address: terminal.address
+            ))
+            activateBackendTerminal(terminal)
         case let .openZellijSession(zellijSession):
             selectWorkspace(.zellijSession(
                 hostID: zellijSession.hostID,
@@ -2143,7 +2220,8 @@ public struct RootView: View {
             WorkspacePresentationLifecycle.deactivateSessionsForNavigation(
                 hideTmux: hideTmuxSession,
                 deactivateHerdr: deactivateHerdrSession,
-                deactivateZellij: deactivateZellijSession
+                deactivateZellij: deactivateZellijSession,
+                deactivateBackendTerminal: deactivateBackendTerminal
             )
             selectWorkspace(target)
         case .showLogViewer:
@@ -2332,6 +2410,10 @@ public struct RootView: View {
         }
         if activeZellijSession != nil {
             deactivateZellijSession()
+            return
+        }
+        if activeBackendTerminal != nil {
+            deactivateBackendTerminal()
             return
         }
         if WorkspacePresentationLifecycle.closeBorrowedSessionIfActive(

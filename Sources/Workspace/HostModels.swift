@@ -412,8 +412,10 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var tmuxSessions: [TmuxSessionSummary]
     public var tmuxInventoryIsAuthoritative: Bool
     public var herdrSessions: [HerdrSessionSummary]
-    /// The TUI supports session creation; core-only hosts expose existing terminals.
+    /// The Herdr TUI is installed, so sessions can be created.
     public var herdrAvailable: Bool
+    /// Herdr Core and Rex terminals, each attached on its own.
+    public var backendTerminals: [BackendTerminalSummary]
     public var zellijSessions: [ZellijSessionSummary]
     public var zellijAvailable: Bool
     public var decodedConnectionState: HostConnectionState?
@@ -442,6 +444,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         tmuxInventoryIsAuthoritative: Bool = false,
         herdrSessions: [HerdrSessionSummary] = [],
         herdrAvailable: Bool = false,
+        backendTerminals: [BackendTerminalSummary] = [],
         zellijSessions: [ZellijSessionSummary] = [],
         zellijAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
@@ -469,6 +472,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.tmuxInventoryIsAuthoritative = tmuxInventoryIsAuthoritative
         self.herdrSessions = herdrSessions
         self.herdrAvailable = herdrAvailable
+        self.backendTerminals = backendTerminals
         self.zellijSessions = zellijSessions
         self.zellijAvailable = zellijAvailable
         self.decodedConnectionState = decodedConnectionState

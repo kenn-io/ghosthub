@@ -10,6 +10,13 @@ test, and documentation-only changes are omitted.
 
 ## [Unreleased]
 
+### Added
+
+- Open terminals from a running [Rex](https://www.superlogical.com/rex/docs)
+  server on your Mac or an SSH host. They appear in the host's session list
+  with a **rex** label, and in the Command Palette. Closing one in Ghosthub leaves its
+  program running in Rex.
+
 ### Fixed
 
 - Commands in new Zellij sessions on your Mac now find programs that
