@@ -14,26 +14,48 @@ struct RexInventoryTests {
         """
     }
 
-    @Test("Rex terminal blocks become attachable terminals named by their program title")
+    @Test("Rex terminal blocks become attachable terminals named as Rex names them")
     func runningServer() {
         let result = RexInventory.parse(status: 0, stdout: listing("""
         {"session_id":"session:a","session_label":"work","window_id":"window:1",
          "window_label":"editor","window_index":1,"block_id":"block:01a1-aa",
-         "label":"shell","title":"vim main.go","focused":true},
-        {"session_id":"session:a","session_label":"work","window_id":"window:1",
-         "window_label":"editor","window_index":1,"block_id":"block:01a1-bb",
-         "label":"logs","title":""}
+         "label":"shell","title":"vim main.go","name":"vim main.go","focused":true},
+        {"session_id":"session:b","session_label":"logs","window_id":"window:2",
+         "window_label":"Window 8be734c2","window_index":1,"block_id":"block:01a1-bb",
+         "label":"shell","name":""}
         """), stderr: "")
         #expect(result == .available([
             BackendTerminalSummary(
-                kind: .rex, address: "block:01a1-aa",
-                title: "vim main.go", detail: "work / editor"
+                kind: .rex, address: "block:01a1-aa", title: "vim main.go", detail: "work"
             ),
             BackendTerminalSummary(
-                kind: .rex, address: "block:01a1-bb",
-                title: "logs", detail: "work / editor"
+                kind: .rex, address: "block:01a1-bb", title: "shell", detail: "logs"
             ),
         ]))
+    }
+
+    @Test("panes that share a name are placed by window and pane number")
+    func panesShareAName() {
+        func pane(_ block: String, window: String, label: String, index: Int) -> String {
+            """
+            {"session_id":"session:a","session_label":"work","window_id":"\(window)",
+             "window_label":"\(label)","window_index":\(index),"block_id":"\(block)",
+             "label":"shell","name":"zsh ~"}
+            """
+        }
+        let result = RexInventory.parse(status: 0, stdout: listing([
+            pane("block:aa", window: "window:1", label: "Window 7fca5d29", index: 1),
+            pane("block:bb", window: "window:1", label: "Window 7fca5d29", index: 1),
+            pane("block:cc", window: "window:2", label: "build", index: 2),
+        ].joined(separator: ",")), stderr: "")
+        guard case let .available(terminals) = result else {
+            Issue.record("expected terminals, got \(result)")
+            return
+        }
+        #expect(terminals.map(\.title) == ["zsh ~", "zsh ~", "zsh ~"])
+        #expect(terminals.map(\.detail) == [
+            "work / window 1 / pane 1", "work / window 1 / pane 2", "work / build",
+        ])
     }
 
     @Test("a host without Rex, or with its server stopped, is silent", arguments: [

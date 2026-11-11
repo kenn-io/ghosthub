@@ -309,8 +309,11 @@ on `PATH`. `kwt rex ls --json` lists the account's running Rex server's blocks;
 `REX_SERVER` or `rex whoami --autostart=false`, so discovery never starts a Rex
 server. A host with Rex stopped or absent lists no Rex terminals.
 
-The row title is the block's program title, or its label when the program has
-no title; the detail is `session / window`. Only block IDs of the form
+The row title is the name Rex shows: the program's title, or else its
+foreground program and directory, such as `zsh ~`. The detail places the block:
+its session, its window when the session has several, and its pane number when
+the window has several. Rex's automatic `Window <id>` labels read as
+`window <position>`. Only block IDs of the form
 `block:<id>` reach kwt. Rex keeps the block's size in step with the Ghosthub
 surface while it is attached, and a fresh attachment repaints the current
 screen. When the block's program exits, kwt exits with its status.

@@ -26,7 +26,7 @@ struct BackendTerminalInventoryClientTests {
     GHOSTHUB_REX_JSON
     {"status":"running","terminals":[{"session_id":"session:a","session_label":"work",\
     "window_id":"window:1","window_label":"editor","window_index":1,\
-    "block_id":"block:01aa","label":"shell","title":"vim"}]}
+    "block_id":"block:01aa","label":"shell","title":"vim","name":"vim"}]}
     """
 
     private func client(
@@ -99,7 +99,7 @@ struct BackendTerminalInventoryClientTests {
         } else {
             #expect(rex == .available([
                 BackendTerminalSummary(
-                    kind: .rex, address: "block:01aa", title: "vim", detail: "work / editor"
+                    kind: .rex, address: "block:01aa", title: "vim", detail: "work"
                 ),
             ]))
         }

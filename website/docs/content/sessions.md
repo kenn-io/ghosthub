@@ -170,7 +170,8 @@ Ghosthub does not display Rex's windows or split layout.
    starts a stopped Rex server.
 2. Start a terminal in Rex, or run `rex run -- htop`.
 3. Expand the host in Ghosthub and select the terminal's **rex** row. The row
-   shows the program's title, followed by its Rex session and window. You can
+   shows the name Rex shows, such as `zsh ~`, followed by its Rex session and,
+   when needed, its window and pane number. You can
    also press ++shift+cmd+p++ and search for it.
 
 Switching away or pressing ++cmd+w++ detaches and leaves the program running.
