@@ -726,8 +726,9 @@ public struct SettingsView: View {
                     .frame(width: 210)
                 }
                 Text(
-                    "Sorting also lives in the menu at the top of the sidebar."
-                        + " Stopped Herdr sessions always sit at the bottom."
+                    "The options menu at the top of the sidebar changes"
+                        + " these settings too. Stopped Herdr sessions always"
+                        + " sit at the bottom."
                 )
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

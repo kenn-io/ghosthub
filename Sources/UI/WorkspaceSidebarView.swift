@@ -268,7 +268,7 @@ struct WorkspaceSidebarView: View {
     @Binding private var worktreeOrderRawValue: String
     @Binding private var sessionOrderRawValue: String
     let sidebarPreferences: SidebarPreferences
-    let onSetSessionSort: (SidebarSessionSort) -> Void
+    let onSidebarOptionChange: (SidebarOptionChange) -> Void
 
     init(
         snapshot: WorkspaceSnapshot,
@@ -360,7 +360,7 @@ struct WorkspaceSidebarView: View {
         worktreeOrderRawValue: Binding<String> = .constant(""),
         sessionOrderRawValue: Binding<String> = .constant(""),
         sidebarPreferences: SidebarPreferences = SidebarPreferences(),
-        onSetSessionSort: @escaping (SidebarSessionSort) -> Void = { _ in },
+        onSidebarOptionChange: @escaping (SidebarOptionChange) -> Void = { _ in },
         onWorktreeFlagFailure: @escaping (WorktreeSummary, String) -> Void = { _, _ in },
         onOpen: @escaping (WorktreeSummary) -> Void = { _ in }
     ) {
@@ -421,7 +421,7 @@ struct WorkspaceSidebarView: View {
         _worktreeOrderRawValue = worktreeOrderRawValue
         _sessionOrderRawValue = sessionOrderRawValue
         self.sidebarPreferences = sidebarPreferences
-        self.onSetSessionSort = onSetSessionSort
+        self.onSidebarOptionChange = onSidebarOptionChange
         self.onOpen = onOpen
     }
 
@@ -863,40 +863,17 @@ struct WorkspaceSidebarView: View {
                 .accessibilityLabel("Show workspace inventory issue")
                 .accessibilityValue(inventoryWarning)
             }
-            sessionSortMenu
+            SidebarOptionsMenu(
+                preferences: sidebarPreferences,
+                hidesWorktreeSessions: tmuxSessionVisibility.hideKwtManagedSessions,
+                hidesRootCheckout: visibility.hideRootWorktrees,
+                showsHiddenWorktrees: visibility.showHiddenWorktrees,
+                onChange: onSidebarOptionChange
+            )
         }
         .padding(.leading, 12)
         .padding(.trailing, 8)
         .padding(.vertical, 8)
-    }
-
-    private var sessionSortMenu: some View {
-        Menu {
-            Picker(
-                "Sort Sessions By",
-                selection: Binding(
-                    get: { sidebarPreferences.sessionSort },
-                    set: { onSetSessionSort($0) }
-                )
-            ) {
-                ForEach(SidebarSessionSort.allCases) { sort in
-                    Text(sort.title).tag(sort)
-                }
-            }
-            .pickerStyle(.inline)
-        } label: {
-            Label(sidebarPreferences.sessionSort.title, systemImage: "arrow.up.arrow.down")
-                .labelStyle(.titleAndIcon)
-                .font(.system(size: 11, weight: .medium))
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .foregroundStyle(.secondary)
-        .help("Sort sessions")
-        .accessibilityLabel("Sort sessions")
-        .accessibilityValue(sidebarPreferences.sessionSort.title)
-        .accessibilityIdentifier("sidebar-session-sort")
     }
 
     // MARK: - Empty state

@@ -35,9 +35,11 @@ public struct SettingsViewDraft: Equatable {
     public var copySelectionToClipboard: Bool
     public var sessionPreviewMode: SessionPreviewMode
     public var sidebar: SidebarPreferences
-    /// The sidebar header menu can change the sort while Settings is open;
-    /// Done keeps that choice unless this draft changed the sort itself.
-    private var loadedSidebarSessionSort: SidebarSessionSort
+    /// The sidebar's options menu can change these while Settings is open.
+    /// Closing Settings keeps each such choice unless this draft changed
+    /// the same option itself.
+    private var loadedSidebar: SidebarPreferences
+    private var loadedWorktreePreferences: WorktreePreferences
     public var hideRootCheckout: Bool
     public var showHiddenWorktreesByDefault: Bool
     public var hideKwtManagedSessions: Bool
@@ -73,7 +75,8 @@ public struct SettingsViewDraft: Equatable {
         copySelectionToClipboard = terminal.copySelectionToClipboard
         sessionPreviewMode = store.sessionPreviewMode
         sidebar = store.sidebarPreferences
-        loadedSidebarSessionSort = store.sidebarPreferences.sessionSort
+        loadedSidebar = store.sidebarPreferences
+        loadedWorktreePreferences = store.worktreePreferences
         hideRootCheckout = store.worktreePreferences.hideRootCheckout
         showHiddenWorktreesByDefault = store.worktreePreferences
             .showHiddenWorktreesByDefault
@@ -100,6 +103,15 @@ public struct SettingsViewDraft: Equatable {
         selectedSSHHostDraftID = selectedConfigKey.flatMap { key in
             drafts.first { $0.configKey == key }?.id
         } ?? drafts.first?.id
+    }
+
+    /// The draft's value when this draft changed it, else the store's.
+    private static func edited<Value: Equatable>(
+        _ draft: Value,
+        loaded: Value,
+        current: Value
+    ) -> Value {
+        draft == loaded ? current : draft
     }
 
     @MainActor
@@ -135,16 +147,40 @@ public struct SettingsViewDraft: Equatable {
         store.setHideMouseWhileTyping(hideMouseWhileTyping)
         store.setCopySelectionToClipboard(copySelectionToClipboard)
         store.setSessionPreviewMode(sessionPreviewMode)
-        var sidebarToPersist = sidebar
-        if sidebar.sessionSort == loadedSidebarSessionSort {
-            sidebarToPersist.sessionSort = store.sidebarPreferences.sessionSort
-        }
-        store.setSidebarPreferences(sidebarToPersist)
-        store.setHideRootCheckout(hideRootCheckout)
-        store.setShowHiddenWorktreesByDefault(
-            showHiddenWorktreesByDefault
-        )
-        store.setHideKwtManagedSessions(hideKwtManagedSessions)
+        let currentSidebar = store.sidebarPreferences
+        let currentWorktree = store.worktreePreferences
+        store.setSidebarPreferences(SidebarPreferences(
+            sessionSort: Self.edited(
+                sidebar.sessionSort,
+                loaded: loadedSidebar.sessionSort,
+                current: currentSidebar.sessionSort
+            ),
+            backendLabelStyle: Self.edited(
+                sidebar.backendLabelStyle,
+                loaded: loadedSidebar.backendLabelStyle,
+                current: currentSidebar.backendLabelStyle
+            ),
+            rowHeight: Self.edited(
+                sidebar.rowHeight,
+                loaded: loadedSidebar.rowHeight,
+                current: currentSidebar.rowHeight
+            )
+        ))
+        store.setHideRootCheckout(Self.edited(
+            hideRootCheckout,
+            loaded: loadedWorktreePreferences.hideRootCheckout,
+            current: currentWorktree.hideRootCheckout
+        ))
+        store.setShowHiddenWorktreesByDefault(Self.edited(
+            showHiddenWorktreesByDefault,
+            loaded: loadedWorktreePreferences.showHiddenWorktreesByDefault,
+            current: currentWorktree.showHiddenWorktreesByDefault
+        ))
+        store.setHideKwtManagedSessions(Self.edited(
+            hideKwtManagedSessions,
+            loaded: loadedWorktreePreferences.hideKwtManagedSessions,
+            current: currentWorktree.hideKwtManagedSessions
+        ))
         let didPersistTmuxSessionPatterns = store
             .setHiddenTmuxSessionPatterns(hiddenTmuxSessionPatterns)
         store.setShowMacOSNotifications(showMacOSNotifications)

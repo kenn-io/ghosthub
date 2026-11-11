@@ -38,8 +38,9 @@ The sidebar is a host-wide session navigator. Hosts are its only grouping
 level. Under each host, one session list shows directly discovered tmux
 sessions, running or stopped Herdr TUI sessions, live Herdr core terminals, and
 active Zellij sessions, including sessions that were not created by Ghosthub or
-kwt. A backend label on each row (a chip, colored text, or a dot, chosen in
-**Settings → Sidebar**) tells the backends apart. The list follows one saved
+kwt. A backend label on each row (a chip, colored text, or a dot) tells the
+backends apart. The options menu beside the sidebar title and **Settings →
+Sidebar** both set the label, sort, row height, and which worktree rows show. The list follows one saved
 manual order or a sort by name, backend, or agent attention; stopped Herdr
 sessions always sit last. A quiet **Projects** group below the sessions shows
 repository hierarchies followed by flat registered-directory rows. The four

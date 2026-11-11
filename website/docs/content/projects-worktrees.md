@@ -124,9 +124,9 @@ while the host is unreachable.
 ![Ghosthub showing a compact tmux window count on a worktree row](/docs/assets/guide-worktree-window-counts.png)
 
 By default, a live kwt-managed session appears only on its worktree row instead
-of being duplicated in the host's session list. Open **Settings → Sidebar** and
-turn off **Hide sessions that belong to a worktree** if you want both entries
-visible.
+of being duplicated in the host's session list. To show both entries, turn off
+**Hide Worktree Sessions** in the options menu beside **Workspaces** at the top
+of the sidebar.
 
 ## Flag worktrees
 

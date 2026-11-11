@@ -415,8 +415,8 @@ resurrection or deletes exited Zellij sessions.
 
 ## Arrange the session list
 
-Use the sort menu beside **Workspaces** at the top of the sidebar to order every
-host's session list:
+Select the options menu (the stacked lines beside **Workspaces** at the top of
+the sidebar) and choose how to order every host's session list:
 
 - **Manual** keeps the order you set by dragging rows. Drag a row onto another
   row to move it, across backends too. Sessions you have not placed yet appear
@@ -429,18 +429,20 @@ host's session list:
   keep their manual order.
 
 Stopped Herdr sessions always sit at the bottom. ++ctrl+tab++ and
-++ctrl+shift+tab++ follow the same order.
+++ctrl+shift+tab++ follow the same order. While a sort other than **Manual** is
+on, the options menu icon shows in the accent color.
 
-**Settings → Sidebar** offers the same sort choice, plus:
+The same menu changes the rest of the sidebar's settings at once:
 
-- **Backend label**: a **Chip** (the default), colored **Text**, or a small
+- **Backend Label**: a **Chip** (the default), colored **Text**, or a small
   colored **Dot** before the name.
-- **Row height**: **Regular** or **Compact**.
-- **Contents**: hide sessions that belong to a worktree, hide the root
-  checkout, and show hidden worktrees.
+- **Row Height**: **Regular** or **Compact**.
+- **Hide Worktree Sessions**, **Hide Root Checkout**, and **Show Hidden
+  Worktrees**.
 
-A sample sidebar at the top of the pane shows each choice before you apply it.
-Select **Done** to apply your changes.
+To compare choices before you apply them, select **Sidebar Settings…** in the
+menu or open **Settings → Sidebar**. A sample sidebar at the top of the pane
+shows each choice. Select **Done** to apply your changes.
 
 ## Hide standalone sessions
 
@@ -458,9 +460,8 @@ visible under its project.
 
 Kwt-managed sessions are also omitted from the host's session list by default
 because their worktrees remain the canonical entry. To show those duplicate
-session rows, turn off **Hide sessions that belong to a worktree** in
-**Settings → Sidebar**. The
-worktree's status glyph continues to reflect the live tmux session either way.
+session rows, turn off **Hide Worktree Sessions** in the sidebar's options
+menu. The worktree's status glyph continues to reflect the live tmux session either way.
 
 ## Ownership and safety
 

@@ -312,12 +312,6 @@ public final class SettingsStore: ObservableObject {
         )
     }
 
-    public func setSidebarSessionSort(_ sort: SidebarSessionSort) {
-        var updated = sidebarPreferences
-        updated.sessionSort = sort
-        setSidebarPreferences(updated)
-    }
-
     @discardableResult
     public func refreshShareAnonymousUsageData() -> Bool {
         _ = userDefaults.synchronize()

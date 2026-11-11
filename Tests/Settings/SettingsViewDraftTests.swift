@@ -69,23 +69,40 @@ struct SettingsViewDraftTests {
         #expect(makeStore(suiteName: suite).sidebarPreferences == draft.sidebar)
     }
 
-    @Test("closing Settings keeps a sort chosen from the sidebar meanwhile")
-    func sidebarSortFromHeaderSurvivesSettings() {
+    @Test("closing Settings keeps choices made from the sidebar options menu meanwhile")
+    func sidebarMenuChoicesSurviveSettings() {
         let store = makeStore()
         var untouched = SettingsViewDraft(store: store)
         var changed = SettingsViewDraft(store: store)
 
-        // The sidebar's sort menu changes the store while Settings is open.
-        store.setSidebarSessionSort(.name)
+        // The sidebar's options menu changes the store while Settings is open.
+        store.setSidebarPreferences(SidebarPreferences(
+            sessionSort: .name,
+            backendLabelStyle: .dot
+        ))
+        store.setHideKwtManagedSessions(true)
+        store.setShowHiddenWorktreesByDefault(true)
         untouched.sidebar.rowHeight = .compact
+        untouched.hideRootCheckout = true
         _ = untouched.persist(to: store)
-        #expect(store.sidebarPreferences.sessionSort == .name)
-        #expect(store.sidebarPreferences.rowHeight == .compact)
+        #expect(store.sidebarPreferences == SidebarPreferences(
+            sessionSort: .name,
+            backendLabelStyle: .dot,
+            rowHeight: .compact
+        ))
+        #expect(store.worktreePreferences.hideKwtManagedSessions)
+        #expect(store.worktreePreferences.showHiddenWorktreesByDefault)
+        #expect(store.worktreePreferences.hideRootCheckout)
 
-        // A sort the user picked in Settings itself still wins.
+        // A choice the user made in Settings itself still wins.
         changed.sidebar.sessionSort = .backend
+        changed.sidebar.backendLabelStyle = .text
+        changed.hideKwtManagedSessions = false
         _ = changed.persist(to: store)
         #expect(store.sidebarPreferences.sessionSort == .backend)
+        #expect(store.sidebarPreferences.backendLabelStyle == .text)
+        #expect(!store.worktreePreferences.hideKwtManagedSessions)
+        #expect(store.worktreePreferences.showHiddenWorktreesByDefault)
     }
 
     @Test("session preview mode persists without reloading libghostty")

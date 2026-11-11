@@ -810,9 +810,7 @@ public struct RootView: View {
             worktreeOrderRawValue: $worktreeOrderRawValue,
             sessionOrderRawValue: $sessionOrderRawValue,
             sidebarPreferences: settingsStore.sidebarPreferences,
-            onSetSessionSort: { sort in
-                settingsStore.setSidebarSessionSort(sort)
-            },
+            onSidebarOptionChange: applySidebarOptionChange,
             onWorktreeFlagFailure: { worktree, message in
                 presentNonWorktreeWorkspaceAlert(.worktreeFlagFailure(
                     worktree: worktree.name, message: message
@@ -977,6 +975,23 @@ public struct RootView: View {
     private func cancelSSHRecovery() {
         cancelSSHAuthenticationIfNeeded()
         sshHostKeyReview.dismiss()
+    }
+
+    private func applySidebarOptionChange(_ change: SidebarOptionChange) {
+        switch change {
+        case let .preferences(preferences):
+            settingsStore.setSidebarPreferences(preferences)
+        case let .hideWorktreeSessions(hidden):
+            settingsStore.setHideKwtManagedSessions(hidden)
+        case let .hideRootCheckout(hidden):
+            settingsStore.setHideRootCheckout(hidden)
+        case let .showHiddenWorktrees(shown):
+            settingsStore.setShowHiddenWorktreesByDefault(shown)
+        case .openSettings:
+            guard content.settingsSheetBuilder != nil else { return }
+            settingsStore.selectedDomain = .sidebar
+            isSettingsPresented = true
+        }
     }
 
     private func openHostSettings() {
