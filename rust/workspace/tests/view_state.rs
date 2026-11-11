@@ -13,6 +13,91 @@ use workspace::{
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn sidebar_edits_merge_across_windows_and_survive_restart_without_changing_hosts() {
+    use workspace::{BackendLabel, SidebarRowHeight, SidebarSort};
+    let root = std::env::temp_dir().join(format!(
+        "ghosthub-sidebar-{}-{}",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let value = root.to_string_lossy().into_owned();
+    let roots = Roots {
+        ghosthub_home: value.clone(),
+        config: value.clone(),
+        state: value.clone(),
+        helpers: value,
+    };
+    let config = ApplicationConfig::from_toml(
+        "[terminal]\nfont-size = 18\n[[ssh-host]]\nname = 'Studio'\nhostname = 'studio.example'\n",
+    )
+    .unwrap();
+    let workspace = Workspace::application_with_remote_hosts(
+        TerminalAppearance::default(),
+        None,
+        Vec::new(),
+        config,
+        roots.clone(),
+        None,
+        None,
+        Vec::new(),
+    );
+    let other = workspace.open_scene();
+    let before = other.snapshot().revision();
+    workspace
+        .update_sidebar(|settings| {
+            settings.backend_label = BackendLabel::Dot;
+            settings.row_height = SidebarRowHeight::Compact;
+            settings.hide_root_checkout = true;
+        })
+        .unwrap();
+    other
+        .update_sidebar(|settings| settings.session_sort = SidebarSort::Name)
+        .unwrap();
+    assert!(other.snapshot().revision() > before);
+    assert_eq!(
+        workspace.configured_sidebar().backend_label,
+        BackendLabel::Dot
+    );
+    assert_eq!(
+        workspace.configured_sidebar().session_sort,
+        SidebarSort::Name
+    );
+    let loaded = ApplicationConfig::load(&roots).unwrap();
+    assert_eq!(loaded.sidebar().row_height, SidebarRowHeight::Compact);
+    assert!(loaded.sidebar().hide_root_checkout);
+    assert_eq!(loaded.ssh_hosts()[0].name(), "Studio");
+    assert_eq!(loaded.terminal().font_size(), 18);
+    workspace.close();
+    assert!(
+        workspace
+            .update_sidebar(|settings| settings.backend_label = BackendLabel::Text)
+            .is_err()
+    );
+    assert_eq!(other.configured_sidebar().backend_label, BackendLabel::Dot);
+    other.close();
+    let restarted = Workspace::application_with_remote_hosts(
+        TerminalAppearance::default(),
+        None,
+        Vec::new(),
+        loaded,
+        roots,
+        None,
+        None,
+        Vec::new(),
+    );
+    assert_eq!(
+        restarted.configured_sidebar().session_sort,
+        SidebarSort::Name
+    );
+    assert_eq!(
+        restarted.configured_sidebar().backend_label,
+        BackendLabel::Dot
+    );
+    restarted.close();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn ready_host_may_have_an_empty_session_inventory() {
     let host = HostItem::wsl(
         "Ubuntu",

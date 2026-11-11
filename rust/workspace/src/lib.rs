@@ -40,6 +40,9 @@ mod remote_workspace;
 mod remote_zellij;
 mod runtime;
 mod scene;
+mod sidebar;
+
+pub use config::{BackendLabel, SidebarPreferences, SidebarRowHeight, SidebarSort};
 
 use pump::start_event_pump;
 use runtime::{

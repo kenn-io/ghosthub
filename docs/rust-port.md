@@ -763,12 +763,12 @@ in [Terminal Sessions](terminal-sessions.md), and invokes
 Other executable, permission, transport, and malformed-output failures remain a
 Herdr-scoped diagnostic and do not change tmux readiness or cached tmux rows.
 
-The inventory preserves both running and stopped sessions and publishes them in
-a separate compact Herdr group under the WSL host. Tmux and Herdr each own the
-creation action beside their group header; the host row owns refresh, not
-session creation. A refresh marks the host as connecting without discarding
-either cached group, so navigation remains stable while replacement inventory
-is in flight.
+The inventory preserves both running and stopped sessions in the host’s shared
+session list. Backend labels distinguish Herdr from tmux and Zellij. The host’s
+**+** menu creates sessions; right-click the host for **Refresh**. Connect,
+Cancel, and Retry remain visible when needed. A refresh marks the host as
+connecting without discarding cached rows, so navigation remains stable while
+replacement inventory is in flight.
 
 The Herdr executable and inventory are captured inside the same before/after
 WSL runtime check as tmux, so a distro restart cannot combine evidence from
@@ -810,8 +810,13 @@ inventory; other failures remain Zellij-scoped diagnostics and never hide tmux
 or Herdr inventory. Exited entries that Zellij could resurrect are deliberately
 excluded.
 
-The sidebar gives Zellij its own compact group and creation action. Opening an
-active row consumes an attach-only plan for `zellij attach <exact-name>`.
+The sidebar lists Zellij alongside tmux and Herdr TUI sessions, with a backend
+label on each row. The host’s visible **+** menu offers creation for each
+available backend and **Add Project…**. Right-click a session or select its
+hover **…** button to detach or end it. Herdr offers Stop for running sessions
+and Restart or Delete for stopped sessions; its default session cannot be
+deleted. Destructive actions keep their confirmation dialogs. Opening an
+active Zellij row consumes an attach-only plan for `zellij attach <exact-name>`.
 Creation consumes a non-cloneable one-shot launch for
 `zellij --session=<exact-name>`. Both run as ordinary local PTY clients, share the
 retained-presentation switcher with tmux and Herdr, and never replay creation
@@ -1292,9 +1297,11 @@ remains reusable when KWT later associates or disassociates the session with a
 project. KWT-only validation failures retain the fresh host inventory and are
 reported on the worktree action rather than disabling other multiplexers.
 
-The Rust sidebar projects KWT-owned default-socket tmux sessions under their
+By default, the Rust sidebar projects KWT-owned default-socket tmux sessions under their
 project/worktree rows and removes only those exact sessions from the unbound
-tmux group. Active and retained custom-socket presentations with an exact
+session list. Disabling **Hide sessions that belong to a worktree** also shows
+those discovered sessions and open worktree clients in the session list.
+With hiding enabled, active and retained custom-socket presentations with an exact
 current worktree owner remain accessible only from that row, whose live
 indicator reflects the presentation; they do not claim a genuinely separate
 default-socket session with the same name. Their navigation identity retains
@@ -1468,7 +1475,7 @@ connection.
 After admission, Host independently discovers tmux, Herdr, and Zellij inventory
 through the same reviewed lease. A missing or failed backend is backend-scoped
 and never disables the host or hides another backend; configured tmux failures
-remain visible beside the tmux group so its path can be corrected. Tmux
+remain visible beneath the host’s session list so its path can be corrected. Tmux
 attachment retains exact server PID, session ID,
 and creation-time authority. Running Herdr and active Zellij rows build their
 ordinary attach-only client argv after scrubbing inherited backend routing
@@ -1480,8 +1487,8 @@ remote terminfo database and selects `xterm-256color` when available, otherwise
 the verified `xterm` baseline. Attach and constructive paths use that same
 selection, and the reduced-color notice is published only after a fallback
 client is successfully presented.
-Each host's tmux, Herdr, and Zellij groups have independent disclosure controls;
-collapsing navigation never detaches a client or changes session lifetime.
+Each host has one session list and one disclosure control. Collapsing a host
+never detaches a client or changes session lifetime.
 
 The current remote UI supports discovery, attach-only presentation, retained
 switching, detach, one-shot tmux creation, confirmed tmux kill, the Herdr
@@ -1729,7 +1736,7 @@ Settings values flow through:
 config → workspace projection → UI-facing state → GPUI
 ~~~
 
-The Settings shell exposes durable Appearance, Terminal, and Hosts panes. Appearance
+The Settings shell exposes durable Appearance, Sidebar, Terminal, and Hosts panes. Appearance
 offers the same built-in terminal color families as Swift plus a Custom
 fallback, enumerates installed fixed-pitch fonts, offers standard terminal font
 sizes, and renders a substantial live preview. Valid appearance changes apply
@@ -1749,12 +1756,36 @@ is enabled. Hosts owns only
 `[[ssh-host]]` records. The shell's stable navigation, page header, list, and
 detail regions are the permanent container for the remaining Swift settings
 domains.
+Sidebar preferences apply immediately to every open window and persist under
+`[sidebar]` in `config.toml`. The default is Manual order with Chip labels and
+Regular rows. Manual order supports dragging across backends on the same host;
+new sessions follow the saved rows in backend/name order. Name sorting compares
+numbers naturally, and stopped Herdr sessions remain last in every mode.
+Ctrl-Tab and Ctrl-Shift-Tab move between openable sessions in the displayed
+order on the active host, skipping stopped Herdr sessions. Without an eligible
+neighbor, the terminal keeps the key. Host disclosure remains window-local.
+When the active worktree is hidden from the session list, navigation starts
+at the first or last available session on its host. Session action buttons
+have a separate trailing column, keep backend labels visible, and remain
+visible on the active row. The Sidebar options menu also exposes backend
+labels, row height, worktree-session visibility, and root-checkout visibility;
+Sidebar Settings opens the same preferences with a live preview.
+Worktree sessions are hidden from the session list by default; the root checkout
+remains visible under Projects. Settings edits preserve changes made in other
+windows, including a sort choice made from the sidebar menu.
+
+The Rust sidebar does not yet have agent-attention data or Needs Attention
+sorting, Herdr desktop terminals, session renaming, worktree diff/PR/check
+status, or hidden-worktree metadata. Those integrations remain separate parity
+work; no inactive controls are shown for them.
+
 The parity inventory is:
 
 | Swift domain | Rust state |
 | --- | --- |
 | Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
 | Appearance | Built-in themes, Custom colors, installed-font and size pickers, live preview, and atomic persistence |
+| Sidebar | Shared session list; Manual, Name, and Backend sorting; saved drag order; Chip, Text, or Dot labels; Regular or Compact rows; worktree-session and root-checkout visibility; live preview |
 | Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, remote clipboard writes, and atomic persistence |
 | Keyboard | Runtime shortcuts exist; pane not yet implemented |
 | Worktrees | Project/worktree workflows exist; preferences pane not yet implemented |
@@ -1795,6 +1826,14 @@ shell-integration-cursor = false
 mouse-hide-while-typing = true
 clipboard-write = true
 
+[sidebar]
+session-sort = "manual" # manual, name, backend
+backend-label = "chip" # chip, text, dot
+row-height = "regular" # regular, compact
+hide-worktree-sessions = true
+hide-root-checkout = false
+session-order = [] # Saved by dragging rows in Manual mode.
+
 [[ssh-host]]
 name = "Studio"
 hostname = "studio.example"
@@ -1805,7 +1844,7 @@ tmux-binary = "/opt/homebrew/bin/tmux"
 socket-directory = "/run/user/1000/tmux"
 ~~~
 
-Every WSL and terminal field is optional. SSH host name and hostname are
+Every WSL, terminal, and sidebar field is optional. SSH host name and hostname are
 required, while user, port, tmux path override, and socket directory are
 optional. Ghosthub resolves tmux, Herdr, and Zellij through the remote login
 environment by default; an explicit tmux path remains available for unusual

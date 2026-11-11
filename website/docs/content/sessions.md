@@ -482,16 +482,62 @@ configuration, updates, resurrection data, and process behavior.
 
 ## Rust source builds
 
-The unreleased Rust/Linux source build also supports local tmux, Herdr, and
-Zellij sessions, plus creating, opening, and ending tmux sessions on connected
-SSH hosts. Open a remote tmux row’s **…** menu and choose **Kill**, then
-confirm the session and host. A same-name replacement requires a new
-confirmation. Remote Herdr rows offer **Stop** for running sessions and
-**Restart** or **Delete** for stopped sessions. Stop and Delete ask for
-confirmation; closing a terminal only detaches. Herdr's default session cannot
-be deleted. Remote Zellij rows also offer confirmed **Kill**. Success closes
-matching clients across windows; cancellation preserves the session. A failed
-kill restores a still-active session only where navigation is unchanged.
+### Sidebar and settings
+
+The Rust development build for Linux and Windows shows tmux, Zellij, and
+Herdr TUI sessions in one list per host. The host’s **+** stays visible: use it
+to create a session or **Add Project…**. Right-click a session or select its
+**⋯** button for session actions. That button sits after the backend label,
+appears on hover, and stays visible on the active row. The arrow beside **+**
+collapses the host without closing its terminals.
+
+Right-click a host and choose **Refresh** to reread its inventory. **Connect**,
+**Cancel**, and **Retry** stay visible in the header when needed.
+
+Open the three-line **Sidebar options** button beside **Workspaces** and
+choose **Manual**, **Name**, or **Backend** to sort the list. The icon gains a
+filled circle when sorting by Name or Backend. In Manual mode, drag sessions
+into your preferred order, including across backends on the same host.
+Stopped Herdr sessions stay at the bottom.
+With a session open, **Ctrl-Tab** and **Ctrl-Shift-Tab** follow the displayed
+session order and skip stopped sessions.
+From a worktree hidden from the session list, these shortcuts open the first
+or last available session on the same host. If there is no destination,
+the terminal receives the shortcut.
+
+![The Rust sidebar with tmux, Zellij, and Herdr TUI sessions on Linux](/docs/assets/guide-rust-sidebar.png)
+
+The options menu also offers **Backend Label** (Chip, Text, or Dot), **Row
+Height** (Regular or Compact), **Hide Worktree Sessions**, and **Hide Root
+Checkout**. Choose **Sidebar Settings…** for a live preview of these choices.
+Changes save immediately and apply to every open window. You can also reach
+these settings through the gear button, then **Sidebar**.
+
+![Sidebar settings and the live preview in the Rust application on Linux](/docs/assets/guide-rust-sidebar-settings.png)
+
+Agent attention, Herdr desktop terminals, session renaming, hidden-worktree
+filtering, and worktree diff/PR/check indicators are still being added to the
+Rust port.
+
+### Session controls
+
+Right-click a session or select its **⋯** button. The available actions depend
+on the backend and whether the session is running:
+
+| Action | Result |
+| --- | --- |
+| **Detach** | Closes the active terminal presentation and leaves the session running. Closing the terminal has the same effect. |
+| **Kill Session…** (tmux or Zellij) | Asks for confirmation, then ends the session and its programs. |
+| **Stop Session…** (running Herdr) | Asks for confirmation, then ends every process while keeping the saved workspace layout. |
+| **Restart** (stopped Herdr) | Reopens the saved layout with new processes. Clicking the stopped row also restarts it. |
+| **Delete Session…** (stopped, named Herdr) | Asks for confirmation, then removes the session and its saved layout. Herdr’s default session cannot be deleted. |
+
+![The Rust session menu offers Restart and Delete for a stopped Herdr session](/docs/assets/guide-rust-session-actions.png)
+
+These controls apply to local Linux and connected SSH sessions. Success closes
+matching clients across windows; cancellation preserves the session. A
+same-name tmux replacement requires a new confirmation. A failed kill restores
+a still-active session only where navigation is unchanged.
 Zellij cannot distinguish an otherwise identical same-name replacement, and
 exited sessions stay hidden. See the [native Linux development guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
 for build instructions and native session controls. The Rust port supports

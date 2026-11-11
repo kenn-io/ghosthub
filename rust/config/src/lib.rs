@@ -1,5 +1,8 @@
 //! Configuration and path resolution for the Rust Ghosthub application.
 
+mod sidebar;
+pub use sidebar::{BackendLabel, SidebarPreferences, SidebarRowHeight, SidebarSort};
+
 use std::{
     collections::BTreeMap,
     fmt, fs,
@@ -81,6 +84,7 @@ pub struct ApplicationConfig {
     local: LocalSettings,
     wsl: WslSettings,
     terminal: TerminalAppearance,
+    sidebar: SidebarPreferences,
     ssh_hosts: Vec<SshHostSettings>,
 }
 
@@ -235,6 +239,27 @@ impl ApplicationConfig {
     }
 
     #[must_use]
+    pub const fn sidebar(&self) -> &SidebarPreferences {
+        &self.sidebar
+    }
+
+    /// Save sidebar preferences without changing hosts or terminal settings.
+    ///
+    /// # Errors
+    /// Returns an error if configuration cannot be written.
+    pub fn replace_sidebar(
+        &mut self,
+        roots: &Roots,
+        sidebar: SidebarPreferences,
+    ) -> Result<(), ConfigError> {
+        let mut candidate = self.clone();
+        candidate.sidebar = sidebar;
+        candidate.save(roots)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    #[must_use]
     pub fn ssh_hosts(&self) -> &[SshHostSettings] {
         &self.ssh_hosts
     }
@@ -342,6 +367,7 @@ struct ConfigFile {
     local: LocalFile,
     wsl: WslFile,
     terminal: TerminalFile,
+    sidebar: SidebarPreferences,
     #[serde(rename = "ssh-host")]
     ssh_hosts: Vec<SshHostFile>,
 }
@@ -507,6 +533,7 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
                     .clipboard_write
                     .unwrap_or(defaults.terminal.allow_remote_clipboard_write),
             },
+            sidebar: file.sidebar,
             ssh_hosts,
         })
     }
@@ -515,6 +542,7 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
 impl From<&ApplicationConfig> for ConfigFile {
     fn from(config: &ApplicationConfig) -> Self {
         Self {
+            sidebar: config.sidebar.clone(),
             local: LocalFile {
                 tmux_binary: Some(config.local.tmux_binary.clone()),
                 socket_directory: config.local.socket_directory.clone(),

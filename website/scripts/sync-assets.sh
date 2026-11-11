@@ -26,6 +26,9 @@ assets=(
   guide-rust-kwt-socket.png
   guide-rust-remote-directory.png
   guide-rust-appearance.png
+  guide-rust-sidebar.png
+  guide-rust-sidebar-settings.png
+  guide-rust-session-actions.png
   guide-rust-create-worktree.png
   guide-rust-remove-worktree.png
   guide-rust-force-remove-worktree.png

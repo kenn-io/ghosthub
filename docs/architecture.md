@@ -262,6 +262,14 @@ application or embeds a Rust runtime into it. Cross-platform parity is enforced
 through the repository-root contracts corpus rather than a shared process, FFI
 domain model, or live database.
 
+The Rust GPUI sidebar combines tmux, Herdr TUI, and Zellij rows in one list per
+host. Rendering, manual drag ordering, and session keyboard navigation use the
+same ordered projection while keeping each backend’s exact attachment and
+lifecycle authority. Sidebar settings and saved row order belong to the shared
+application configuration; a window edits only the chosen preference on the
+latest configuration. Host disclosure remains scene-local. See the
+[Rust settings inventory](rust-port.md) for the remaining data integrations.
+
 WSL is a terminal substrate, not an application startup dependency. On
 Windows, the composition root checks for the system-owned `wsl.exe` without
 executing it. When present, the first GPUI frame contains one synthetic WSL
