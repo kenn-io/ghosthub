@@ -100,10 +100,6 @@ struct SidebarSessionRowContent: View {
     var showsRecentOutput = false
     var isStopped = false
     var isSelected = false
-    /// True while the row's hover action covers the label's slot.
-    var hidesBackendLabel = false
-    /// Minimum width of the trailing slot, so a hover action fits.
-    var trailingSlotWidth: CGFloat = 0
     @Environment(\.accessibilityDifferentiateWithoutColor)
     private var differentiateWithoutColor
 
@@ -141,18 +137,14 @@ struct SidebarSessionRowContent: View {
                 .help("Recent tmux output")
                 .accessibilityHidden(true)
             }
-            ZStack(alignment: .trailing) {
-                Color.clear.frame(width: trailingSlotWidth, height: 1)
-                if labelStyle != .dot {
-                    SessionBackendLabel(
-                        backend: backend,
-                        style: labelStyle,
-                        isSelected: isSelected
-                    )
-                    .opacity(hidesBackendLabel ? 0 : 1)
-                }
+            if labelStyle != .dot {
+                SessionBackendLabel(
+                    backend: backend,
+                    style: labelStyle,
+                    isSelected: isSelected
+                )
+                .accessibilityHidden(true)
             }
-            .accessibilityHidden(true)
         }
     }
 

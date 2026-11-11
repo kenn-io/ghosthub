@@ -350,7 +350,8 @@ open or reopen it.
 
 ## Rename a standalone session
 
-Control-click a standalone session row and choose **Rename Session…**, or use
+Open a standalone session row's **⋯** menu, or Control-click the row, and
+choose **Rename Session…**, or use
 **Rename tmux session** in the Command Palette. The new name must be unique on
 that host and cannot contain periods, colons, or line breaks. An open session
 stays connected in every window that shows it and keeps its windows, panes, and
@@ -366,10 +367,11 @@ Renaming is unavailable on native Windows hosts.
 
 ## End a session deliberately
 
-To end a standalone session that Ghosthub knows is running, hover over its
-sidebar row and choose the subtle **×** control. For a kwt-backed session,
-open its worktree's **…** menu, or Control-click the row, and choose
-**Kill Session…**.
+Every session row has a small **⋯** menu just after its backend label. It
+appears when you hover over the row and stays visible on the selected row. To
+end a standalone tmux or active Zellij session, open that menu, or Control-click
+the row, and choose **Kill Session…**. For a kwt-backed session, open its
+worktree's **…** menu, or Control-click the row, and choose **Kill Session…**.
 
 Ghosthub confirms the host and exact tmux session before it sends
 `kill-session`. Ending a session terminates all of its windows, panes, and

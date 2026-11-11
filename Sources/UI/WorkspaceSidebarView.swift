@@ -1035,24 +1035,21 @@ struct WorkspaceSidebarView: View {
                 socketName: $0.socketName
             )]
         }
-        let usesDirectKillAction: Bool
-        if case .tmuxSession = row.target {
-            usesDirectKillAction = true
-        } else if case .zellijSession = row.target {
-            usesDirectKillAction = true
-        } else {
-            usesDirectKillAction = false
-        }
-        let hasSessionActions = runningTmuxSession != nil
-            || !herdrActions.isEmpty
-            || zellijSelection != nil
+        let sessionActionGroups = sessionActionGroups(
+            renamableTmuxSession: row.sessionBackend == nil
+                ? nil : renamableTmuxSession,
+            runningTmuxSession: runningTmuxSession,
+            zellijSelection: zellijSelection,
+            herdrActions: herdrActions
+        )
+        let hasSessionActions = !sessionActionGroups.isEmpty
         let isActionHovered = hasSessionActions
             && hoveredSessionActionControlRowID == row.id
         let actionPresentation = WorkspaceSessionActionPresentation(
             hasActions: hasSessionActions,
             isRowHovered: hoveredSessionActionRowID == row.id,
             isActionHovered: isActionHovered,
-            isSelected: false
+            isSelected: isSelected
         )
         return HStack(spacing: 0) {
             Button {
@@ -1150,10 +1147,9 @@ struct WorkspaceSidebarView: View {
                             agentAttention: agentAttention,
                             showsRecentOutput: isTmuxSessionWorking,
                             isStopped: row.herdrSessionState == .stopped,
-                            isSelected: isSelected,
-                            hidesBackendLabel: actionPresentation.isVisible,
-                            trailingSlotWidth: actionPresentation.reservedWidth
+                            isSelected: isSelected
                         )
+                        .padding(.trailing, actionPresentation.reservedWidth)
                     } else {
                         if let status = row.worktreeStatus {
                             SidebarWorktreeRowContent(
@@ -1216,83 +1212,13 @@ struct WorkspaceSidebarView: View {
         }
         .overlay(alignment: .trailing) {
             if hasSessionActions {
-                Group {
-                    if let tmuxSession = runningTmuxSession,
-                       usesDirectKillAction {
-                        Button {
-                            onRequestKillTmuxSession(tmuxSession)
-                        } label: {
-                            sessionActionLabel(
-                                actionPresentation,
-                                isActionHovered: isActionHovered,
-                                imageName: "xmark"
-                            )
-                        }
-                        .accessibilityLabel(
-                            "Kill tmux session \(tmuxSession.name)"
-                        )
-                        .accessibilityIdentifier(
-                            "kill-tmux-session-\(tmuxSession.id)"
-                        )
-                    } else if let tmuxSession = runningTmuxSession {
-                        NativePopupMenuButton(
-                            groups: [
-                                [
-                                    NativePopupMenuAction(
-                                        "Kill Session…",
-                                        role: .destructive
-                                    ) {
-                                        onRequestKillTmuxSession(tmuxSession)
-                                    },
-                                ],
-                            ]
-                        ) {
-                            sessionActionLabel(
-                                actionPresentation,
-                                isActionHovered: isActionHovered,
-                                imageName: "ellipsis"
-                            )
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(
-                                "Session actions for \(row.title)"
-                            )
-                        }
-                        .accessibilityHint(
-                            "Includes the option to kill this session."
-                        )
-                    } else if let zellijSelection {
-                        Button {
-                            onRequestKillZellijSession(zellijSelection)
-                        } label: {
-                            sessionActionLabel(
-                                actionPresentation,
-                                isActionHovered: isActionHovered,
-                                imageName: "xmark"
-                            )
-                        }
-                        .accessibilityLabel(
-                            "Kill Zellij session \(zellijSelection.name)"
-                        )
-                    } else {
-                        NativePopupMenuButton(
-                            groups: [herdrActions.compactMap(
-                                herdrPopupMenuAction
-                            )]
-                        ) {
-                            sessionActionLabel(
-                                actionPresentation,
-                                isActionHovered: isActionHovered,
-                                imageName: "ellipsis"
-                            )
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(
-                                "Session actions for \(row.title)"
-                            )
-                        }
-                        .accessibilityHint(
-                            "Includes Herdr lifecycle actions."
-                        )
-                    }
+                NativePopupMenuButton(groups: sessionActionGroups) {
+                    sessionActionLabel(
+                        actionPresentation,
+                        isActionHovered: isActionHovered
+                    )
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Session actions for \(row.title)")
                 }
                 .buttonStyle(.plain)
                 .onHover { isHovered in
@@ -1304,10 +1230,12 @@ struct WorkspaceSidebarView: View {
                         scheduleSessionActionHoverDismiss(row.id)
                     }
                 }
-                .help(
-                    usesDirectKillAction ? "Kill session…" : "Session actions"
+                .help("Session actions")
+                .padding(
+                    .trailing,
+                    WorkspaceSessionActionPresentation.trailingInset
+                        + reservedTrailingActionWidth
                 )
-                .padding(.trailing, 8 + reservedTrailingActionWidth)
             }
         }
         .onHover { isHovered in
@@ -1505,31 +1433,63 @@ struct WorkspaceSidebarView: View {
 
     private func sessionActionLabel(
         _ presentation: WorkspaceSessionActionPresentation,
-        isActionHovered: Bool,
-        imageName: String
+        isActionHovered: Bool
     ) -> some View {
         ZStack {
-            Color.clear
+            if isActionHovered {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(width: 16, height: 16)
+            }
             if presentation.isVisible {
-                Image(systemName: imageName)
-                    .font(.system(size: 10, weight: .semibold))
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(
+                        isActionHovered ? .primary : .secondary
+                    )
             }
         }
         .frame(
             width: presentation.hitTargetWidth,
-            height: sidebarPreferences.rowHeight.points - 4
+            height: sidebarPreferences.rowHeight.points
         )
-        .background {
-            if presentation.isVisible {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(
-                        Color.primary.opacity(
-                            isActionHovered ? 0.14 : 0.06
-                        )
-                    )
-            }
-        }
         .contentShape(Rectangle())
+    }
+
+    /// One menu for every backend, in the context menu's order.
+    private func sessionActionGroups(
+        renamableTmuxSession: WorkspaceTmuxSessionSelection?,
+        runningTmuxSession: WorkspaceTmuxSessionSelection?,
+        zellijSelection: WorkspaceZellijSessionSelection?,
+        herdrActions: [WorkspaceSidebarRowAction]
+    ) -> [[NativePopupMenuAction]] {
+        var groups: [[NativePopupMenuAction]] = []
+        if let renamableTmuxSession {
+            groups.append([NativePopupMenuAction("Rename Session…") {
+                onRequestRenameTmuxSession(renamableTmuxSession)
+            }])
+        }
+        if let runningTmuxSession {
+            groups.append([NativePopupMenuAction(
+                "Kill Session…",
+                role: .destructive
+            ) {
+                onRequestKillTmuxSession(runningTmuxSession)
+            }])
+        }
+        if let zellijSelection {
+            groups.append([NativePopupMenuAction(
+                "Kill Session…",
+                role: .destructive
+            ) {
+                onRequestKillZellijSession(zellijSelection)
+            }])
+        }
+        let herdrItems = herdrActions.compactMap(herdrPopupMenuAction)
+        if !herdrItems.isEmpty {
+            groups.append(herdrItems)
+        }
+        return groups
     }
 
     private func scheduleSessionActionHoverDismiss(

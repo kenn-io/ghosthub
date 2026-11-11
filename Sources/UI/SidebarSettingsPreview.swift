@@ -106,6 +106,7 @@ struct SidebarSettingsPreview: View {
             isStopped: session.row.herdrSessionState == .stopped,
             isSelected: session.isSelected
         )
+        .padding(.trailing, WorkspaceSessionActionPresentation.columnWidth)
         .padding(.horizontal, 8)
         .frame(minHeight: preferences.rowHeight.points)
         .background { rowBackground(session.id, isSelected: session.isSelected) }

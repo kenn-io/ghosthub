@@ -450,7 +450,7 @@ struct WorkspaceSidebarModelTests {
         )
     }
 
-    @Test("session actions appear on hover or selection without shifting rows")
+    @Test("session actions appear on hover or selection beside, not over, the label")
     func sessionActionsStayDiscoverableAndStable() {
         let idle = WorkspaceSessionActionPresentation(
             hasActions: true,
@@ -481,8 +481,17 @@ struct WorkspaceSidebarModelTests {
         #expect(selected.isVisible)
         #expect(hovered.isVisible)
         #expect(!unavailable.isVisible)
+        // Rows with and without actions keep their labels in one column.
         #expect(idle.reservedWidth == selected.reservedWidth)
-        #expect(selected.hitTargetWidth >= 28)
+        #expect(unavailable.reservedWidth == selected.reservedWidth)
+        // The control fits the space after the label, so it never covers it.
+        #expect(
+            WorkspaceSessionActionPresentation.trailingInset
+                + selected.hitTargetWidth
+                <= WorkspaceSessionActionPresentation.rowTrailingPadding
+                + selected.reservedWidth
+        )
+        #expect(unavailable.hitTargetWidth == 0)
     }
 
     @Test("worktree actions reserve one stable slot with or without a session")

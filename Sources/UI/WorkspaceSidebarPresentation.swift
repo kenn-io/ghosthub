@@ -116,8 +116,17 @@ struct TmuxSessionPreviewMountModifier: ViewModifier {
     }
 }
 
+/// The session row's ⋯ menu sits in a thin column of its own after the
+/// backend label, so the label never moves or hides.
 struct WorkspaceSessionActionPresentation: Equatable {
-    static let controlWidth: CGFloat = 28
+    /// Width every session row adds after its label, with or without
+    /// actions, so labels line up down the list.
+    static let columnWidth: CGFloat = 14
+    /// The row's ordinary trailing padding, which the control also uses.
+    static let rowTrailingPadding: CGFloat = 8
+    static let trailingInset: CGFloat = 2
+    static let controlWidth: CGFloat =
+        columnWidth + rowTrailingPadding - trailingInset
 
     let isVisible: Bool
     let reservedWidth: CGFloat
@@ -131,7 +140,7 @@ struct WorkspaceSessionActionPresentation: Equatable {
     ) {
         isVisible = hasActions
             && (isRowHovered || isActionHovered || isSelected)
-        reservedWidth = hasActions ? Self.controlWidth : 0
+        reservedWidth = Self.columnWidth
         hitTargetWidth = hasActions ? Self.controlWidth : 0
     }
 }
