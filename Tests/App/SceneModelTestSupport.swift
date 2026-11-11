@@ -803,6 +803,7 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var onPreviewGridSize: ((TmuxGridSize) -> Void)?
     var onClearPreviewGrid: (() -> Void)?
     private(set) var programmaticPastes: [String] = []
+    private(set) var keyboardFocusRequestCount = 0
 
     init(
         launchError: Error? = nil,
@@ -825,6 +826,10 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     func clearPreviewGridSize() {
         clearPreviewGridCount += 1
         onClearPreviewGrid?()
+    }
+
+    func requestKeyboardFocus() {
+        keyboardFocusRequestCount += 1
     }
 
     @discardableResult

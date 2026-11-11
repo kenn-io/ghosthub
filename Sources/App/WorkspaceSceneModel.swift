@@ -10447,7 +10447,18 @@ final class WorkspaceSceneModel: ObservableObject {
                         )
                         return retained.handle
                     }
+                    let returnsToShownTerminal = intent == .userInitiated
+                        && activeBorrowedTmuxHandle == retained.handle
                     activateTmuxPresentation(retained)
+                    // A shown terminal stays mounted, so its appear-time
+                    // focus does not rerun. A Herdr open superseded by this
+                    // return may have cleared the window's first responder.
+                    if returnsToShownTerminal,
+                       activeBorrowedTmuxHandle == retained.handle {
+                        nativeTmuxSessionCoordinator.requestKeyboardFocus(
+                            handle: retained.handle
+                        )
+                    }
                 }
                 return retained.handle
             }
