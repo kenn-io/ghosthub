@@ -30,7 +30,11 @@ public struct ZellijAttachmentInfo: Equatable, Sendable {
         )
         switch host {
         case .local:
-            return attach
+            // The first client starts the session's server, and every pane
+            // inherits its environment. A Ghosthub opened from the Dock or
+            // Finder has only launchd's bare PATH, so start Zellij from the
+            // account login shell as remote hosts do.
+            return surfaceAccountLoginShellCommand(attach)
         case let .ssh(info):
             guard info.platform == .posix else {
                 throw ZellijCommandError.unsupportedPlatform
