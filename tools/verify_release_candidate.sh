@@ -2,7 +2,8 @@
 # Verifies a downloaded Ghosthub release candidate the way a new user's Mac
 # sees it: checksums, Gatekeeper on a quarantined DMG, the notarization
 # ticket, the app signature and identity, its version, and the bundled kwt.
-# Run it on a Mac that has never built Ghosthub.
+# Run it on a Mac that has never built Ghosthub. The ticket check needs Xcode
+# or the Command Line Tools.
 #
 # Usage: verify_release_candidate.sh <artifact-directory> <version>
 set -eu
@@ -28,12 +29,17 @@ cd "$artifacts"
 shasum -a 256 -c "$dmg.sha256" || fail "$dmg.sha256 does not match"
 shasum -a 256 -c SHA256SUMS || fail "SHA256SUMS does not match"
 
+# stapler ships with Xcode or the Command Line Tools. Without them the ticket
+# check would fail and wrongly blame the candidate.
+xcrun --find stapler >/dev/null 2>&1 \
+    || fail "stapler is unavailable; install Xcode or the Command Line Tools"
+
 # A browser download carries this attribute; Gatekeeper then evaluates the
 # DMG and anything run from it as a new user's Mac would.
 xattr -w com.apple.quarantine \
     "0081;$(printf '%x' "$(date +%s)");Safari;" "$dmg"
 
-stapler validate "$dmg" || fail "the DMG has no valid notarization ticket"
+xcrun stapler validate "$dmg" || fail "the DMG has no valid notarization ticket"
 spctl --assess --type open --context context:primary-signature -vv "$dmg" \
     2>&1 | tee /dev/stderr | grep -q "source=Notarized Developer ID" \
     || fail "Gatekeeper does not accept the DMG as notarized"

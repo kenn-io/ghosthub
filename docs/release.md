@@ -433,7 +433,9 @@ remain valid after download.
 
 Download the candidate artifact and verify it on an Apple Silicon Mac that
 has never built Ghosthub, so no local build or signing state can hide a
-packaging problem. The check runs headless, so an SSH session is enough:
+packaging problem. The check runs headless, so an SSH session is enough. The
+Mac needs Xcode or the Command Line Tools for the ticket check; the script
+stops with that message when they are missing:
 
 ```bash
 version="$(tr -d '[:space:]' < RELEASE_VERSION)"
