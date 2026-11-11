@@ -28,6 +28,13 @@ impl SidebarSession {
         }
     }
 
+    fn action_selection(&self) -> &SessionSelection {
+        match self {
+            Self::Session(row) => &row.kill_selection,
+            Self::Herdr(row) => &row.selection,
+        }
+    }
+
     fn stopped(&self) -> bool {
         matches!(self, Self::Herdr(row) if row.inventory.as_ref().is_some_and(|item| item.state() == HerdrSessionState::Stopped))
     }
@@ -395,7 +402,8 @@ impl RootView {
                 (!actions.is_empty()).then(|| group.clone()),
             ));
         if !actions.is_empty() {
-            let context_selection = selection.clone();
+            let action_selection = row.action_selection().clone();
+            let context_selection = action_selection.clone();
             let context_actions = actions.clone();
             element = element
                 .on_mouse_down(
@@ -417,7 +425,7 @@ impl RootView {
                         .child(Self::session_action_menu_button(
                             0,
                             order_id(&selection),
-                            selection.clone(),
+                            action_selection,
                             actions,
                             group,
                             cx,
@@ -486,6 +494,11 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         if let Some(selection) = self.session_navigation_target(backwards) {
+            if let Err(error) = self.workspace.select_host(selection.host_id()) {
+                self.diagnostic = Some(error.to_string());
+                cx.notify();
+                return;
+            }
             self.select_session(&selection, window, cx);
         }
     }

@@ -1,13 +1,15 @@
 use super::{
-    Context, FluentBuilder, GpuiMouseButton, HostItem, InteractiveElement, IntoElement,
-    KeyDownEvent, NewSessionKind, ParentElement, RootView, SidebarSort, StatefulInteractiveElement,
-    Styled, Window, div, popup_position, px, rgb, session_creation_available, tooltip,
+    Context, FluentBuilder, GpuiMouseButton, HostHeaderAction, HostItem, InteractiveElement,
+    IntoElement, KeyDownEvent, NewSessionKind, ParentElement, RootView, SidebarSort,
+    StatefulInteractiveElement, Styled, Window, div, host_header_action, popup_position, px, rgb,
+    session_creation_available, tooltip,
 };
 
 #[derive(Clone)]
 pub(crate) enum SidebarMenu {
     Sort,
     Create(String),
+    Host(String),
 }
 
 pub(crate) fn sort_title(sort: SidebarSort) -> &'static str {
@@ -104,7 +106,7 @@ impl RootView {
             .into_any_element()
     }
 
-    fn open_sidebar_menu(
+    pub(crate) fn open_sidebar_menu(
         &mut self,
         menu: SidebarMenu,
         point: gpui::Point<gpui::Pixels>,
@@ -123,6 +125,22 @@ impl RootView {
             return;
         };
         match menu {
+            SidebarMenu::Host(host_id) => {
+                let snapshot = self.workspace.snapshot();
+                let Some(host) = snapshot.hosts().iter().find(|host| host.id() == host_id) else {
+                    return;
+                };
+                if index != 0 {
+                    return;
+                }
+                match host_header_action(host.connection()) {
+                    HostHeaderAction::Cancel => self.cancel_host_connection(&host_id, cx),
+                    HostHeaderAction::Connect
+                    | HostHeaderAction::Refresh
+                    | HostHeaderAction::Retry => self.connect_host(&host_id, cx),
+                }
+                window.focus(&self.focus);
+            }
             SidebarMenu::Sort => {
                 if let Some(sort) = SORTS.get(index)
                     && let Err(error) = self
@@ -163,6 +181,16 @@ impl RootView {
         let (menu, point) = self.sidebar_menu.as_ref()?;
         let snapshot = self.workspace.snapshot();
         let options: Vec<(String, Option<String>)> = match menu {
+            SidebarMenu::Host(id) => {
+                let host = snapshot.hosts().iter().find(|host| host.id() == id)?;
+                let action = host_header_action(host.connection());
+                let title = match action {
+                    HostHeaderAction::Refresh => "Refresh",
+                    HostHeaderAction::Cancel => "Cancel Connection",
+                    _ => action.label(),
+                };
+                vec![(title.to_owned(), None)]
+            }
             SidebarMenu::Sort => SORTS
                 .iter()
                 .map(|sort| {

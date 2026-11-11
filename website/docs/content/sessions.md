@@ -444,6 +444,9 @@ to create a session or **Add Project…**. Right-click a session or hover its ro
 and select **…** for session actions. The arrow beside **+** collapses the
 host without closing its terminals.
 
+Right-click a host and choose **Refresh** to reread its inventory. **Connect**,
+**Cancel**, and **Retry** stay visible in the header when needed.
+
 Choose **Manual**, **Name**, or **Backend** beside **Workspaces** to sort the
 list. In Manual mode, drag sessions into your preferred order, including
 across backends on the same host. Stopped Herdr sessions stay at the bottom.

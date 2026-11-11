@@ -213,6 +213,37 @@ fn showing_worktree_sessions_preserves_the_exact_open_and_kill_target() {
 }
 
 #[test]
+fn unregistered_worktree_reopens_its_client_but_kills_the_discovered_session() {
+    let host = settings::sample_host().with_kwt_inventory(Vec::new(), Vec::new());
+    let retained = SessionSelection::kwt_workspace(
+        "preview",
+        "studio.example",
+        "atlas/main",
+        KwtTmuxAttachMode::Direct,
+        None,
+        "/projects/atlas",
+        None,
+    );
+    let rows = sessions(
+        &host,
+        None,
+        std::slice::from_ref(&retained),
+        &SidebarPreferences::default(),
+    );
+    let row = rows
+        .iter()
+        .find(|row| row.selection().session() == "atlas/main")
+        .unwrap();
+    assert!(row.can_navigate());
+    assert_eq!(row.selection(), &retained);
+    assert_eq!(row.actions(), [SessionRowAction::KillSession]);
+    assert_eq!(
+        row.action_selection(),
+        &SessionSelection::new("preview", "studio.example", "atlas/main")
+    );
+}
+
+#[test]
 fn retained_session_navigation_survives_missing_inventory() {
     let host = HostItem::ssh(
         "studio",
@@ -267,6 +298,7 @@ fn visible_worktree_session_keeps_its_active_presentation_without_a_duplicate_ro
         .collect();
     assert_eq!(matching.len(), 1);
     assert_eq!(matching[0].selection(), &active);
+    assert_eq!(matching[0].action_selection(), &active);
     assert!(matching[0].active());
     assert_eq!(
         matching[0].actions(),

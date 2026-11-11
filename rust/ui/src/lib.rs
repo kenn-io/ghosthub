@@ -7313,6 +7313,7 @@ impl RootView {
         tree.into_any_element()
     }
 
+    #[allow(clippy::too_many_lines)] // Host selection, connection controls and disclosure share one row.
     fn host_header(
         &self,
         host_index: usize,
@@ -7357,8 +7358,21 @@ impl RootView {
                     .child(host.name().to_owned()),
             );
         let select_host_id = host.id().to_owned();
+        let menu_host_id = host.id().to_owned();
         host_header = host_header
             .cursor_pointer()
+            .on_mouse_down(
+                GpuiMouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.open_sidebar_menu(
+                        SidebarMenu::Host(menu_host_id.clone()),
+                        event.position,
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Err(error) = this.workspace.select_host(&select_host_id) {
                     this.diagnostic = Some(error.to_string());
@@ -7367,29 +7381,31 @@ impl RootView {
             }));
         let host_id = host.id().to_owned();
         let action = host_header_action(host.connection());
-        host_header = host_header.child(
-            div()
-                .id((action.element_id(), host_index))
-                .flex_none()
-                .h(px(24.0))
-                .min_w(px(24.0))
-                .px_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_sm()
-                .cursor_pointer()
-                .text_xs()
-                .text_color(rgb(0x8f_96_a3))
-                .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
-                .child(action.label())
-                .on_click(cx.listener(move |this, _, _, cx| match action {
-                    HostHeaderAction::Cancel => this.cancel_host_connection(&host_id, cx),
-                    HostHeaderAction::Connect
-                    | HostHeaderAction::Refresh
-                    | HostHeaderAction::Retry => this.connect_host(&host_id, cx),
-                })),
-        );
+        if host.connection() != HostConnectionState::Ready {
+            host_header = host_header.child(
+                div()
+                    .id((action.element_id(), host_index))
+                    .flex_none()
+                    .h(px(24.0))
+                    .min_w(px(24.0))
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(0x8f_96_a3))
+                    .hover(|style| style.bg(rgb(0x25_2a34)).text_color(rgb(0xd2_d7_df)))
+                    .child(action.label())
+                    .on_click(cx.listener(move |this, _, _, cx| match action {
+                        HostHeaderAction::Cancel => this.cancel_host_connection(&host_id, cx),
+                        HostHeaderAction::Connect
+                        | HostHeaderAction::Refresh
+                        | HostHeaderAction::Retry => this.connect_host(&host_id, cx),
+                    })),
+            );
+        }
         host_header
             .child(
                 div()
@@ -8035,6 +8051,7 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSession {
     selection: SessionSelection,
+    kill_selection: SessionSelection,
     state: TreeSessionState,
     show_endpoint: bool,
 }
@@ -8376,6 +8393,14 @@ fn tree_sessions(
                 (false, false, false, _) => TreeSessionState::Cached,
             };
             TreeSession {
+                // A retained client can outlive its project. Keep it for opening,
+                // but use the ordinary inventory target for destructive confirmation.
+                kill_selection: if discovered && !host_owns_worktree_presentation(host, &selection)
+                {
+                    SessionSelection::new(host.id(), host.endpoint(), selection.session())
+                } else {
+                    selection.clone()
+                },
                 state,
                 show_endpoint: selection.endpoint() != host.endpoint(),
                 selection,
@@ -8488,6 +8513,7 @@ fn tree_zellij_sessions(
             };
             TreeSession {
                 show_endpoint: selection.endpoint() != host.endpoint(),
+                kill_selection: selection.clone(),
                 selection,
                 state,
             }
@@ -10970,10 +10996,12 @@ mod tests {
 
         assert!(active[0].state.can_kill());
         assert!(retained[0].state.can_kill());
+        assert_eq!(active[0].kill_selection, selection);
+        assert_eq!(retained[0].kill_selection, selection);
     }
 
     #[test]
-    fn host_connection_actions_stay_on_the_host_row() {
+    fn host_connection_state_selects_connect_cancel_refresh_or_retry() {
         assert_eq!(
             host_header_action(HostConnectionState::Disconnected),
             HostHeaderAction::Connect

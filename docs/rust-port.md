@@ -763,12 +763,12 @@ in [Terminal Sessions](terminal-sessions.md), and invokes
 Other executable, permission, transport, and malformed-output failures remain a
 Herdr-scoped diagnostic and do not change tmux readiness or cached tmux rows.
 
-The inventory preserves both running and stopped sessions and publishes them in
-a separate compact Herdr group under the WSL host. Tmux and Herdr each own the
-creation action beside their group header; the host row owns refresh, not
-session creation. A refresh marks the host as connecting without discarding
-either cached group, so navigation remains stable while replacement inventory
-is in flight.
+The inventory preserves both running and stopped sessions in the host’s shared
+session list. Backend labels distinguish Herdr from tmux and Zellij. The host’s
+**+** menu creates sessions; right-click the host for **Refresh**. Connect,
+Cancel, and Retry remain visible when needed. A refresh marks the host as
+connecting without discarding cached rows, so navigation remains stable while
+replacement inventory is in flight.
 
 The Herdr executable and inventory are captured inside the same before/after
 WSL runtime check as tmux, so a distro restart cannot combine evidence from
