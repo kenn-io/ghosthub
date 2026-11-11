@@ -60,11 +60,14 @@ spctl --assess --type execute -vv "$app" 2>&1 | tee /dev/stderr \
     | grep -q "source=Notarized Developer ID" \
     || fail "Gatekeeper does not accept Ghosthub.app as notarized"
 
-signature=$(codesign -dv "$app" 2>&1)
-printf '%s\n' "$signature" | grep -qx "Identifier=$bundle_id" \
-    || fail "the bundle identifier is not $bundle_id"
-printf '%s\n' "$signature" | grep -qx "TeamIdentifier=$team_id" \
-    || fail "the Developer ID team is not $team_id"
+# Pin the app and its Developer ID team before running anything from it.
+# codesign evaluates the requirement against the signature and certificate
+# chain, so a crafted signing identifier cannot imitate it the way it could
+# imitate lines of `codesign -dv` output.
+requirement="anchor apple generic and identifier \"$bundle_id\""
+requirement="$requirement and certificate leaf[subject.OU] = \"$team_id\""
+codesign --verify -R="$requirement" "$app" \
+    || fail "Ghosthub.app is not $bundle_id signed by Developer ID team $team_id"
 
 plist="$app/Contents/Info.plist"
 app_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
