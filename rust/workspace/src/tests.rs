@@ -184,6 +184,7 @@ fn consumed_remote_launch_failure_remains_pending_for_reconciliation() {
                     target: target.clone(),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -288,6 +289,7 @@ fn queued_remote_attachment_recaptures_newer_same_connection_inventory() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -1215,6 +1217,31 @@ fn worktree_startup_rejects_an_early_guard_failure_before_inventory() {
     };
     assert!(error.to_string().contains("registration_changed"));
     assert!(observations.is_empty());
+}
+
+#[test]
+fn worktree_startup_preserves_unstructured_client_errors() {
+    let error = wait_for_worktree_client_startup(
+        AttachTerm::Xterm256Color,
+        &CancellationToken::new(),
+        &[Duration::ZERO],
+        || {
+            Ok(TerminalStartup::Exited {
+                code: 1,
+                output_tail: "open terminal failed: not a terminal\r\n".to_owned(),
+            })
+        },
+        || panic!("an exited client cannot authorize an attachment"),
+    )
+    .unwrap_err();
+    let WorktreeClientStartupError::Failed(error) = error else {
+        panic!("an ordinary client error is not a terminfo fallback");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("open terminal failed: not a terminal")
+    );
 }
 
 #[test]
@@ -6531,6 +6558,96 @@ fn stale_kwt_publication_cannot_replace_the_current_project_tree() {
 }
 
 #[test]
+fn missing_kwt_helper_keeps_ownership_unknown_and_preserves_cached_workspaces() {
+    let runtime = Arc::new(ManualRefreshRuntime::default());
+    let snapshot = HostSnapshot::test_fixture(
+        "Ubuntu",
+        "boot",
+        42,
+        vec![
+            session::DiscoveredSession::new(
+                "review",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            ),
+            session::DiscoveredSession::new(
+                "custom-project",
+                session::SessionIdentity::new(100, "$2", 201),
+                0,
+            ),
+        ],
+    );
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").unwrap(),
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").unwrap(),
+    );
+    let workspace = Workspace::application_with_services(
+        TerminalAppearance::default(),
+        Some(spec),
+        Arc::new(FixedDiscovery::new(snapshot.clone())),
+        runtime.clone(),
+    );
+    workspace.connect_enabled_hosts().unwrap();
+    runtime.run_next_work();
+    let inventory = KwtInventory::parse(
+        br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
+        br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"project-id","session_name":"custom-project","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
+        br#"[{"name":"scratch","path":"/work/scratch","session_name":"custom-directory","session_live":false,"tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
+    ).unwrap();
+    let generation = workspace
+        .scene
+        .runtime
+        .kwt_refresh_generation
+        .load(Ordering::Acquire);
+    publish_kwt_inventory(
+        &workspace.scene,
+        generation,
+        snapshot.endpoint(),
+        snapshot.runtime(),
+        &inventory,
+    );
+    let selection = SessionSelection::new("wsl", "Ubuntu", "review");
+    let request = workspace.session_rename_request(&selection).unwrap();
+    let managed = SessionSelection::new("wsl", "Ubuntu", "custom-project");
+    assert!(workspace.session_rename_request(&managed).is_err());
+
+    workspace.refresh().unwrap();
+
+    assert!(workspace.session_rename_request(&managed).is_err());
+    assert!(workspace.session_rename_request(&selection).is_err());
+    assert!(
+        workspace
+            .rename_session(&request, "custom-project")
+            .is_err()
+    );
+    assert!(
+        workspace
+            .rename_session(&request, "custom-directory")
+            .is_err()
+    );
+    assert!(
+        workspace
+            .rename_session(&request, "unmanaged-name")
+            .is_err()
+    );
+    let refreshed = workspace.snapshot();
+    let host = &refreshed.hosts()[0];
+    assert_eq!(
+        host.projects()[0].worktrees()[0].session_name(),
+        "custom-project"
+    );
+    assert_eq!(
+        host.directory_workspaces()[0].session_name(),
+        "custom-directory"
+    );
+    assert_eq!(
+        host.kwt_diagnostic().unwrap().kind(),
+        DiagnosticKind::ExecutableNotFound
+    );
+    workspace.close();
+}
+
+#[test]
 fn background_cadence_refreshes_ready_hosts_and_reuses_the_admitted_host() {
     let runtime = Arc::new(ManualRefreshRuntime::default());
     let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
@@ -7094,6 +7211,7 @@ fn cancelled_remote_connection_cannot_publish_a_late_failure() {
                 cancellation: Some(cancellation.clone()),
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -7155,6 +7273,7 @@ fn remote_cancellation_waits_for_inventory_publication() {
                 cancellation: Some(cancellation.clone()),
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -7263,6 +7382,7 @@ fn stale_lease_exit_cannot_cancel_its_replacement_connection() {
                 cancellation: Some(replacement.clone()),
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 8,
             },
@@ -7326,6 +7446,7 @@ fn newer_navigation_cancels_a_queued_remote_attachment() {
                 cancellation: None,
                 constructive_cancellation: None,
                 session_recoveries: Vec::new(),
+                renames: Vec::new(),
                 attachment_attempts: vec![RemoteAttachmentAttempt {
                     scene: workspace.scene.id,
                     navigation_generation: 7,
@@ -7392,6 +7513,7 @@ fn navigation_in_one_scene_leaves_other_scenes_remote_attempts_in_flight() {
                 cancellation: None,
                 constructive_cancellation: None,
                 session_recoveries: Vec::new(),
+                renames: Vec::new(),
                 attachment_attempts: vec![
                     RemoteAttachmentAttempt {
                         scene: a.scene.id,
@@ -7496,6 +7618,7 @@ fn concurrent_scene_attachment_attempts_coexist_on_one_host() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -7591,6 +7714,7 @@ fn navigation_in_another_scene_leaves_remote_construction_active() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 1,
             },
@@ -7656,6 +7780,7 @@ fn superseded_remote_attachment_cannot_cross_the_launch_fence() {
                 cancellation: None,
                 constructive_cancellation: None,
                 session_recoveries: Vec::new(),
+                renames: Vec::new(),
                 attachment_attempts: vec![RemoteAttachmentAttempt {
                     scene: workspace.scene.id,
                     navigation_generation: 7,
@@ -7757,6 +7882,7 @@ fn refresh_after_remote_launch_transfers_inventory_reconciliation() {
                     target: target.clone(),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -7827,6 +7953,7 @@ fn navigation_cancels_only_prelaunch_remote_construction() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 1,
             },
@@ -7948,6 +8075,7 @@ fn concurrent_remote_inventory_publication_settles_pending_reconciliation() {
                     target.clone(),
                 )),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -8071,6 +8199,7 @@ fn stale_remote_inventory_cannot_overwrite_the_published_generation() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -8177,6 +8306,7 @@ pub(super) fn remote_kill_refresh_fixture() -> (Workspace, RemoteTmuxAttachReque
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -8366,6 +8496,7 @@ fn display_only_ssh_host_edits_preserve_runtime_and_selection() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -8456,6 +8587,7 @@ fn connection_changing_ssh_host_edits_disconnect_and_move_selection() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -8859,6 +8991,7 @@ fn stale_generation_remote_publication_cannot_touch_another_scenes_presentation(
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 8,
             },
@@ -10396,6 +10529,7 @@ fn queued_remote_construction_recaptures_newer_same_connection_inventory() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -10561,6 +10695,7 @@ fn queued_remote_tmux_creation_stops_when_scene_closes() {
             cancellation: None,
             constructive_cancellation: None,
             attachment_attempts: Vec::new(),
+            renames: Vec::new(),
             session_recoveries: Vec::new(),
             generation: 7,
         },
@@ -10669,6 +10804,7 @@ fn queued_zellij_construction_consults_recaptured_inventory_before_launching() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -10838,6 +10974,7 @@ fn queued_herdr_restart_revalidates_the_stopped_record_before_launching() {
                     target: remote_herdr_target("agents"),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -11006,6 +11143,7 @@ fn queued_construction_acquires_the_lane_before_recapturing() {
                     target: remote_zellij_target("review"),
                 }),
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },
@@ -12615,6 +12753,7 @@ fn connect_never_holds_navigation_while_waiting_on_publication() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 8,
             },
@@ -12749,6 +12888,7 @@ fn cancellations_are_rejected_from_a_closed_scene() {
                 cancellation: Some(token.clone()),
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 3,
             },
@@ -14671,6 +14811,7 @@ fn closing_a_scene_releases_worker_presentations_attempts_and_lease() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 8,
             },
@@ -15680,6 +15821,7 @@ fn queued_remote_workspace_open_is_cancelled_by_close_and_detach() {
                 cancellation: None,
                 constructive_cancellation: None,
                 attachment_attempts: Vec::new(),
+                renames: Vec::new(),
                 session_recoveries: Vec::new(),
                 generation: 7,
             },

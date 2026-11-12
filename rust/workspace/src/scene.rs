@@ -3564,14 +3564,6 @@ pub(crate) fn reserve_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> Option
     if scene.runtime.kwt_mutation_in_flight.load(Ordering::Acquire) {
         return None;
     }
-    if scene
-        .runtime
-        .local_config
-        .as_ref()
-        .is_none_or(|config| config.kwt_bundle().is_none())
-    {
-        return None;
-    }
     let (host, endpoint, runtime) = scene
         .runtime
         .host
@@ -3585,6 +3577,25 @@ pub(crate) fn reserve_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> Option
                 published.value.snapshot.runtime().clone(),
             )
         })?;
+    if scene
+        .runtime
+        .local_config
+        .as_ref()
+        .is_none_or(|config| config.kwt_bundle().is_none())
+    {
+        // A missing discovery tool cannot establish that KWT owns no sessions.
+        publish_kwt_error(
+            scene,
+            scene.runtime.kwt_refresh_generation.load(Ordering::Acquire),
+            &endpoint,
+            &runtime,
+            HostDiagnostic::new(
+                DiagnosticKind::ExecutableNotFound,
+                "This build has no KWT helper. Workspace ownership is unknown.",
+            ),
+        );
+        return None;
+    }
     if !supersede {
         let eligible = scene
             .runtime
@@ -4256,7 +4267,8 @@ fn cancel_dropped_event(scene: &Scene, event: WorkspaceEvent) {
         // enqueued as sheddable entries, so overflow cannot hand them to
         // this cancellation path. (`KwtWorktreeCreated` above is the one
         // exception: only NON-owning scenes' informational copies shed.)
-        WorkspaceEvent::KwtProjectMutationFinished { .. }
+        WorkspaceEvent::SessionRenamed { .. }
+        | WorkspaceEvent::KwtProjectMutationFinished { .. }
         | WorkspaceEvent::KwtProjectMutationFailed { .. }
         | WorkspaceEvent::KwtWorktreeRemovalReady { .. }
         | WorkspaceEvent::KwtWorktreeRemoved { .. }

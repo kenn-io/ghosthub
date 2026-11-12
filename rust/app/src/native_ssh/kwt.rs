@@ -1122,7 +1122,7 @@ fn cancel_provisioning_on_host_change(fixture: &Fixture, retarget: bool) {
     fixture.workspace.close();
 }
 
-fn wait_kwt_ready(fixture: &Fixture) {
+pub(super) fn wait_kwt_ready(fixture: &Fixture) {
     fixture.wait(|snapshot| {
         snapshot.hosts().iter().any(|host| {
             host.id() == fixture.host_id

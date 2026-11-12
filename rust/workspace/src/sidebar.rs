@@ -1,4 +1,6 @@
-use super::{Ordering, SidebarPreferences, Workspace, WorkspaceError, lock_live_navigation};
+use super::{
+    Ordering, SessionSelection, SidebarPreferences, Workspace, WorkspaceError, lock_live_navigation,
+};
 
 impl Workspace {
     #[must_use]
@@ -47,4 +49,25 @@ impl Workspace {
         self.scene.runtime.revision.fetch_add(1, Ordering::Release);
         Ok(())
     }
+}
+
+#[must_use]
+pub fn session_order_id(selection: &SessionSelection) -> String {
+    // Length prefixes keep names and socket paths unambiguous without changing session identity.
+    use std::fmt::Write as _;
+    let mut key = String::new();
+    for part in [
+        selection.host_id(),
+        selection.endpoint(),
+        match selection.kind() {
+            super::SessionKind::Tmux => "tmux",
+            super::SessionKind::Herdr => "herdr",
+            super::SessionKind::Zellij => "zellij",
+        },
+        selection.session(),
+        selection.tmux_socket_name().unwrap_or(""),
+    ] {
+        write!(&mut key, "{}:{part}", part.len()).expect("writing a string");
+    }
+    key
 }

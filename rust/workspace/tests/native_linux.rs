@@ -81,7 +81,11 @@ impl Fixture {
             .connect_host("local")
             .expect("connect native host");
         fixture.wait(|| {
-            fixture.workspace.snapshot().hosts()[0].connection() == HostConnectionState::Ready
+            let snapshot = fixture.workspace.snapshot();
+            let host = &snapshot.hosts()[0];
+            host.connection() == HostConnectionState::Ready
+                && host.kwt_initialized()
+                && !host.kwt_refreshing()
         });
         Some(fixture)
     }
@@ -150,10 +154,10 @@ impl Fixture {
         self.wait(|| matches!(self.workspace.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == name));
     }
 
-    fn shell_probe(&self) {
+    fn shell_probe(&self, marker: &str) {
         self.workspace
             .send_key(KeyInput::text(
-                "printf 'native-%s\\n' ready",
+                format!("printf 'native-%s\\n' {marker}"),
                 Modifiers::default(),
             ))
             .expect("type command");
@@ -170,7 +174,7 @@ impl Fixture {
                 .cells()
                 .map(surface::Cell::text)
                 .collect::<String>()
-                .contains("native-ready")
+                .contains(&format!("native-{marker}"))
         });
     }
 }
@@ -196,7 +200,7 @@ fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
         .attach(&selection)
         .expect("attach discovered native session");
     fixture.wait_terminal("work");
-    fixture.shell_probe();
+    fixture.shell_probe("ready");
     fixture
         .workspace
         .resize(91, 29)
@@ -222,7 +226,7 @@ fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
         .create_session("local", selection.endpoint(), "created here")
         .expect("create native session");
     fixture.wait_terminal("created here");
-    fixture.shell_probe();
+    fixture.shell_probe("ready");
     let created_identity = fixture.identity("created here");
     fixture.workspace.close();
     fixture.wait(|| {
@@ -291,5 +295,35 @@ fn native_kill_confirmation_preserves_cancelled_and_replaced_sessions() {
             .command(&["has-session", "-t", "=keep"])
             .status
             .success()
+    );
+}
+
+#[test]
+fn missing_kwt_helper_blocks_rename_without_blocking_session_attachment() {
+    let Some(fixture) =
+        Fixture::new("missing_kwt_helper_blocks_rename_without_blocking_session_attachment")
+    else {
+        return;
+    };
+    fixture.wait(|| {
+        fixture.workspace.snapshot().hosts()[0]
+            .kwt_diagnostic()
+            .is_some()
+    });
+    let selection = fixture.selection("work");
+    assert!(
+        fixture
+            .workspace
+            .session_rename_request(&selection)
+            .is_err()
+    );
+    fixture.workspace.attach(&selection).unwrap();
+    fixture.wait_terminal("work");
+    fixture.shell_probe("ownership-unknown");
+    assert!(
+        fixture
+            .workspace
+            .session_rename_request(&selection)
+            .is_err()
     );
 }

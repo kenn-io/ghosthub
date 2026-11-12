@@ -34,6 +34,7 @@ WEBSITE_ASSET_NAMES = (
     "guide-rust-remote-directory.png",
     "guide-rust-appearance.png",
     "guide-rust-sidebar.png",
+    "guide-rust-session-rename.png",
     "guide-rust-collapsed-host.png",
     "guide-rust-sidebar-settings.png",
     "guide-rust-session-actions.png",

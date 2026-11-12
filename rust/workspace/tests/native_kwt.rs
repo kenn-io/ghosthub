@@ -13,8 +13,8 @@ use host::{
     CancellationToken, KwtBundle, LocalConfig, LocalExecutable, LocalHost, StdCommandRunner,
 };
 use workspace::{
-    HostConnectionState, KeyInput, LocalHostSpec, Modifiers, NamedKey, ProjectItem, Workspace,
-    WorkspaceContent, WorkspaceEvent, WorktreeItem,
+    HostConnectionState, KeyInput, LocalHostSpec, Modifiers, NamedKey, ProjectItem,
+    SessionSelection, Workspace, WorkspaceContent, WorkspaceEvent, WorktreeItem,
 };
 
 struct Fixture {
@@ -199,12 +199,17 @@ impl Fixture {
 
     #[track_caller]
     fn probe(&self, worktree: &WorktreeItem) {
+        self.probe_session(worktree.session_name());
+    }
+
+    #[track_caller]
+    fn probe_session(&self, name: &str) {
         self.wait(|| {
             for event in self.workspace.drain_events().0 {
                 if let WorkspaceEvent::Error(message) = event { panic!("{message}"); }
             }
             let snapshot = self.workspace.snapshot();
-            matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == worktree.session_name()).then_some(())
+            matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == name).then_some(())
         });
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -798,4 +803,163 @@ fn pull_request_import_attaches_to_the_protected_native_socket() {
     fixture.open(&project, &worktree).unwrap();
     fixture.probe(&worktree);
     fixture.remove(&worktree);
+}
+
+#[test]
+#[ignore = "requires a staged pinned Linux KWT helper; run make rust-test-kwt-live"]
+fn rename_keeps_clients_attached_across_scenes_and_retained_navigation() {
+    let Some(fixture) = isolated_fixture(
+        "rename_keeps_clients_attached_across_scenes_and_retained_navigation",
+        false,
+    ) else {
+        return;
+    };
+    fixture.tmux(&["new-session", "-d", "-s", "work", "/bin/sh"]);
+    fixture.workspace.refresh().unwrap();
+    let selection = SessionSelection::new("local", fixture.endpoint(), "work");
+    fixture.wait(|| fixture.workspace.session_rename_request(&selection).ok());
+    fixture.workspace.attach(&selection).unwrap();
+    fixture.probe_session("work");
+    let other = fixture.workspace.open_scene();
+    other.select_host("local").unwrap();
+    other.switch_session(&selection).unwrap();
+    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "work").then_some(()));
+    other
+        .switch_session(&SessionSelection::new("local", fixture.endpoint(), "keep"))
+        .unwrap();
+    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "keep").then_some(()));
+    fixture.wait(|| {
+        (fixture
+            .tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                "=keep:",
+                "#{session_attached}",
+            ])
+            .stdout
+            == b"1\n")
+            .then_some(())
+    });
+    let clients = fixture
+        .tmux(&["list-clients", "-F", "#{client_pid}:#{session_id}"])
+        .stdout;
+    let identity = fixture
+        .tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            "=work:",
+            "#{pid}:#{session_id}:#{session_created}",
+        ])
+        .stdout;
+    let request = fixture
+        .workspace
+        .session_rename_request(&selection)
+        .unwrap();
+    fixture
+        .workspace
+        .rename_session(&request, "release 'one")
+        .unwrap();
+    fixture.event(|event| match event {
+        WorkspaceEvent::SessionRenamed { result, .. } => {
+            result.unwrap();
+            Some(())
+        }
+        _ => None,
+    });
+    fixture.probe_session("release 'one");
+    assert_eq!(
+        fixture
+            .tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                "=release 'one:",
+                "#{pid}:#{session_id}:#{session_created}"
+            ])
+            .stdout,
+        identity
+    );
+    assert_eq!(
+        fixture
+            .tmux(&["list-clients", "-F", "#{client_pid}:#{session_id}"])
+            .stdout,
+        clients
+    );
+    other
+        .switch_session(&SessionSelection::new(
+            "local",
+            fixture.endpoint(),
+            "release 'one",
+        ))
+        .unwrap();
+    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "release 'one").then_some(()));
+    assert_eq!(
+        fixture
+            .tmux(&["list-clients", "-F", "#{client_pid}:#{session_id}"])
+            .stdout,
+        clients
+    );
+    other.close();
+}
+
+#[test]
+#[ignore = "requires a staged pinned Linux KWT helper; run make rust-test-kwt-live"]
+fn rename_rejects_replacement_collision_and_kwt_owned_names() {
+    let Some(fixture) = isolated_fixture(
+        "rename_rejects_replacement_collision_and_kwt_owned_names",
+        false,
+    ) else {
+        return;
+    };
+    fixture.tmux(&["new-session", "-d", "-s", "work", "/bin/sh"]);
+    fixture.workspace.refresh().unwrap();
+    let selection = SessionSelection::new("local", fixture.endpoint(), "work");
+    let request = fixture.wait(|| fixture.workspace.session_rename_request(&selection).ok());
+    for name in [
+        "keep",
+        "kwt-wt-owned",
+        "kwt-workspace-owned",
+        "invalid.name",
+    ] {
+        assert!(
+            fixture.workspace.rename_session(&request, name).is_err(),
+            "accepted {name}"
+        );
+    }
+    fixture.tmux(&["rename-session", "-t", "=work:", "original"]);
+    fixture.tmux(&["new-session", "-d", "-s", "work", "/bin/sh"]);
+    let replacement = fixture
+        .tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            "=work:",
+            "#{pid}:#{session_id}:#{session_created}",
+        ])
+        .stdout;
+    fixture.workspace.rename_session(&request, "wrong").unwrap();
+    fixture.event(|event| match event {
+        WorkspaceEvent::SessionRenamed { result, .. } => Some(result.unwrap_err()),
+        _ => None,
+    });
+    assert_eq!(
+        fixture
+            .tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                "=work:",
+                "#{pid}:#{session_id}:#{session_created}"
+            ])
+            .stdout,
+        replacement
+    );
+    let output = Command::new("/usr/bin/tmux")
+        .args(["has-session", "-t", "=wrong:"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    fixture.tmux(&["has-session", "-t", "=original:"]);
 }

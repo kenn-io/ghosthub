@@ -61,9 +61,15 @@ impl SidebarSession {
         }
     }
 
-    fn actions(&self) -> Vec<SessionRowAction> {
+    fn actions(&self, host: &HostItem) -> Vec<SessionRowAction> {
         match self {
-            Self::Session(row) => tmux_row_actions(row.state.is_active(), row.state.can_kill()),
+            Self::Session(row) => {
+                let mut actions = tmux_row_actions(row.state.is_active(), row.state.can_kill());
+                if workspace::can_rename_session(host, &row.selection) {
+                    actions.insert(usize::from(row.state.is_active()), SessionRowAction::Rename);
+                }
+                actions
+            }
             Self::Herdr(row) => herdr_session_menu_actions(
                 row.active,
                 row.inventory.as_ref().map_or_else(Vec::new, |item| {
@@ -74,21 +80,7 @@ impl SidebarSession {
     }
 }
 
-fn order_id(selection: &SessionSelection) -> String {
-    // Length prefixes keep names and socket paths unambiguous without changing session identity.
-    use std::fmt::Write as _;
-    let mut key = String::new();
-    for part in [
-        selection.host_id(),
-        selection.endpoint(),
-        session_backend_id(selection.kind()),
-        selection.session(),
-        selection.tmux_socket_name().unwrap_or(""),
-    ] {
-        write!(&mut key, "{}:{part}", part.len()).expect("writing a string");
-    }
-    key
-}
+use workspace::session_order_id as order_id;
 
 fn backend_rank(kind: workspace::SessionKind) -> u8 {
     match kind {
@@ -343,12 +335,13 @@ impl RootView {
     #[allow(clippy::too_many_lines)] // One row keeps its click, drag and action targets together.
     pub(super) fn flat_session_row(
         row: &SidebarSession,
+        host: &HostItem,
         preferences: &SidebarPreferences,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let selection = row.selection().clone();
         let group = format!("session-{}", order_id(&selection));
-        let actions = row.actions();
+        let actions = row.actions(host);
         let interactive = row.can_navigate()
             || matches!(row, SidebarSession::Herdr(item) if row.stopped() && item.access.can_restart() && item.inventory.as_ref().and_then(herdr_operation_label).is_none());
         let stopped = row.stopped();

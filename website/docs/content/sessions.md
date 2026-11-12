@@ -545,7 +545,7 @@ these settings through the gear button, then **Sidebar**.
 
 ![Sidebar settings and the live preview in the Rust application on Linux](/docs/assets/guide-rust-sidebar-settings.png)
 
-Agent attention, Herdr desktop terminals, session renaming, hidden-worktree
+Agent attention, Herdr desktop terminals, hidden-worktree
 filtering, and worktree diff/PR/check indicators are still being added to the
 Rust port.
 
@@ -557,6 +557,7 @@ on the backend and whether the session is running:
 | Action | Result |
 | --- | --- |
 | **Detach** | Closes the active terminal presentation and leaves the session running. Closing the terminal has the same effect. |
+| **Rename Session…** (standalone tmux) | Changes the name and keeps its clients attached in every window. |
 | **Kill Session…** (tmux or Zellij) | Asks for confirmation, then ends the session and its programs. |
 | **Stop Session…** (running Herdr) | Asks for confirmation, then ends every process while keeping the saved workspace layout. |
 | **Restart** (stopped Herdr) | Reopens the saved layout with new processes. Clicking the stopped row also restarts it. |
@@ -564,8 +565,23 @@ on the backend and whether the session is running:
 
 ![The Rust session menu offers Restart and Delete for a stopped Herdr session](/docs/assets/guide-rust-session-actions.png)
 
-These controls apply to local Linux and connected SSH sessions. Success closes
-matching clients across windows; cancellation preserves the session. A
+To rename a standalone tmux session, choose **Rename Session…**, edit the
+selected name, then press **Enter** or choose **Rename**. **Cancel** or
+**Escape** leaves the name unchanged. The new name must be unique on that
+host, use 1–100 characters, and exclude `#`, periods, colons, and control
+characters. KWT-owned worktree and directory sessions keep their assigned
+names; names starting with `kwt-wt-` or `kwt-workspace-` are reserved.
+Rename is available after KWT discovery finishes successfully or confirms
+that KWT is not installed. If discovery fails, refresh the host first.
+Developer builds without the bundled KWT helper cannot check ownership and
+do not offer Rename; use a build with the helper included.
+Renaming supports local Linux/WSL sessions and connected POSIX SSH hosts.
+Manual sidebar order follows the renamed session.
+
+![Rename a standalone tmux session in the Rust application](/docs/assets/guide-rust-session-rename.png)
+
+Destructive controls apply to local Linux and connected SSH sessions. Success
+closes matching clients across windows; cancellation preserves the session. A
 same-name tmux replacement requires a new confirmation. A failed kill restores
 a still-active session only where navigation is unchanged.
 Zellij cannot distinguish an otherwise identical same-name replacement, and

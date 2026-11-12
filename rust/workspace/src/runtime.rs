@@ -1501,6 +1501,14 @@ pub(crate) fn cancel_scene_remote_attachments(runtime: &Runtime, scene: SceneId)
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values_mut()
     {
+        entry.renames.retain(|operation| {
+            if operation.scene == scene {
+                operation.cancellation.cancel();
+                false
+            } else {
+                true
+            }
+        });
         entry.attachment_attempts.retain(|attempt| {
             if attempt.scene == scene {
                 attempt.cancellation.cancel();

@@ -817,6 +817,39 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok(())
     }
 
+    /// Rename the reviewed default-server session while keeping clients attached.
+    ///
+    /// # Errors
+    /// Returns an error if the connection or session changed, or tmux refuses the name.
+    pub fn rename_live_session(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        session: &DiscoveredSession,
+        name: &SessionName,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        let marker = identity_mismatch_marker()?;
+        let arguments = crate::rename::arguments(session, name, &marker);
+        let args: Vec<_> = arguments.iter().map(String::as_str).collect();
+        let command = self.kwt_tmux_probe(snapshot, None, &args)?;
+        let output = self.run_framed_remote_shell(
+            snapshot.lease(),
+            &command,
+            "GHOSTHUB_TMUX_RENAME_",
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(command_failure(&output, "Remote session rename failed"));
+        }
+        if String::from_utf8_lossy(&output.stdout).contains(&marker) {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "The session changed. Refresh the host and try again.",
+            ));
+        }
+        Ok(())
+    }
+
     /// Build an ordinary PTY client plan over the existing KWT lease.
     ///
     /// The returned marker is unique to this attachment and is the only
@@ -1571,7 +1604,7 @@ fn posix_command(command: &[String]) -> String {
         .join(" ")
 }
 
-fn shell_quoted_argument(value: &str) -> String {
+pub(crate) fn shell_quoted_argument(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 

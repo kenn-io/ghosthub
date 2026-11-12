@@ -2956,6 +2956,38 @@ impl<R: CommandRunner> LocalHost<R> {
         Ok(())
     }
 
+    /// Rename the reviewed default-server session without detaching its clients.
+    ///
+    /// # Errors
+    /// Returns an error if the runtime or session changed, or the name is in use.
+    pub fn rename_live_session(
+        &self,
+        snapshot: &HostSnapshot,
+        session: &DiscoveredSession,
+        name: &SessionName,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HostError> {
+        self.require_runtime(snapshot.endpoint(), snapshot.runtime(), cancellation)?;
+        let arguments = crate::rename::arguments(session, name, KILL_IDENTITY_MISMATCH_MARKER);
+        let args: Vec<_> = arguments.iter().map(String::as_str).collect();
+        let output = self.run_tmux_command(snapshot.endpoint(), cancellation, None, &args)?;
+        if output.status != 0 {
+            return Err(classify_session_command_failure(
+                output.status,
+                &output.stderr,
+                session.name(),
+                "rename",
+            ));
+        }
+        if String::from_utf8_lossy(&output.stdout).contains(KILL_IDENTITY_MISMATCH_MARKER) {
+            return Err(HostError::new(
+                DiagnosticKind::Transport,
+                "The session changed. Refresh the host and try again.",
+            ));
+        }
+        Ok(())
+    }
+
     fn require_runtime(
         &self,
         endpoint: &LocalEndpoint,
@@ -5328,7 +5360,7 @@ fn tmux_identity_equals(field: &str, value: &str) -> String {
     condition
 }
 
-fn tmux_identity_condition(identity: &SessionIdentity) -> String {
+pub(crate) fn tmux_identity_condition(identity: &SessionIdentity) -> String {
     format!(
         "#{{&&:{},#{{&&:{},{}}}}}",
         tmux_identity_equals("pid", &identity.server_pid().to_string()),

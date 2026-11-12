@@ -11,6 +11,7 @@ use workspace::{
 mod herdr;
 mod kwt;
 mod recovery;
+mod rename;
 mod zellij;
 
 struct Fixture {

@@ -24,7 +24,7 @@ fn mixed_backend_rows_keep_their_own_lifecycle_actions() {
             (
                 row.selection().kind(),
                 row.selection().session(),
-                row.actions(),
+                row.actions(&host),
             )
         })
         .collect();
@@ -263,7 +263,7 @@ fn showing_worktree_sessions_preserves_the_exact_open_and_kill_target() {
         &SessionSelection::new("preview", "studio.example", "atlas/main")
     );
     assert!(row.can_navigate());
-    assert_eq!(row.actions(), [SessionRowAction::KillSession]);
+    assert_eq!(row.actions(&host), [SessionRowAction::KillSession]);
 }
 
 #[test]
@@ -290,7 +290,7 @@ fn unregistered_worktree_reopens_its_client_but_kills_the_discovered_session() {
         .unwrap();
     assert!(row.can_navigate());
     assert_eq!(row.selection(), &retained);
-    assert_eq!(row.actions(), [SessionRowAction::KillSession]);
+    assert_eq!(row.actions(&host), [SessionRowAction::KillSession]);
     assert_eq!(
         row.action_selection(),
         &SessionSelection::new("preview", "studio.example", "atlas/main")
@@ -326,7 +326,7 @@ fn retained_session_navigation_survives_missing_inventory() {
         adjacent_session(&rows, Some(&retained), false),
         Some(second)
     );
-    assert_eq!(rows[0].actions(), [] as [SessionRowAction; 0]);
+    assert_eq!(rows[0].actions(&host), [] as [SessionRowAction; 0]);
 }
 
 #[test]
@@ -355,7 +355,7 @@ fn visible_worktree_session_keeps_its_active_presentation_without_a_duplicate_ro
     assert_eq!(matching[0].action_selection(), &active);
     assert!(matching[0].active());
     assert_eq!(
-        matching[0].actions(),
+        matching[0].actions(&host),
         [SessionRowAction::Detach, SessionRowAction::KillSession]
     );
 }
@@ -388,5 +388,65 @@ fn name_sort_uses_numeric_order_and_a_stable_backend_tie_break() {
             ("Build2", workspace::SessionKind::Zellij),
             ("build10", workspace::SessionKind::Tmux)
         ]
+    );
+}
+
+#[test]
+fn rename_actions_exclude_kwt_owned_and_unavailable_sessions() {
+    let host = HostItem::wsl(
+        "Ubuntu",
+        None,
+        HostConnectionState::Ready,
+        ["review", "kwt-wt-owned", "custom"]
+            .map(|name| workspace::SessionItem::new(name, 0))
+            .into(),
+        None,
+    )
+    .with_kwt_inventory(
+        vec![workspace::ProjectItem::new(
+            "example.com/team/orbit",
+            "orbit",
+            "/projects/orbit",
+            "registration",
+            vec![workspace::WorktreeItem::new(
+                "/projects/orbit",
+                "main",
+                true,
+                None,
+                "custom",
+                (None, KwtTmuxAttachMode::Direct),
+                true,
+            )],
+        )],
+        Vec::new(),
+    );
+    let preferences = SidebarPreferences {
+        hide_worktree_sessions: false,
+        ..SidebarPreferences::default()
+    };
+    let rows = sessions(&host, None, &[], &preferences);
+    for name in ["review", "kwt-wt-owned", "custom"] {
+        let row = rows
+            .iter()
+            .find(|row| row.selection().session() == name)
+            .unwrap();
+        assert_eq!(
+            row.actions(&host).contains(&SessionRowAction::Rename),
+            name == "review"
+        );
+    }
+    let unavailable = HostItem::wsl(
+        "Ubuntu",
+        None,
+        HostConnectionState::Unavailable,
+        vec![workspace::SessionItem::new("review", 0)],
+        None,
+    )
+    .with_kwt_inventory(Vec::new(), Vec::new());
+    let rows = sessions(&unavailable, None, &[], &preferences);
+    assert!(
+        !rows[0]
+            .actions(&unavailable)
+            .contains(&SessionRowAction::Rename)
     );
 }
