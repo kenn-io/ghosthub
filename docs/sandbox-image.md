@@ -163,7 +163,9 @@ independent image version, official Ubuntu 26.04 arm64 base digest, and APT
 snapshot time. Review those three changes and any deliberate package or
 disposition changes.
 
-The pinned package snapshot includes Ubuntu's Brotli decoder fix
+The candidate base includes Ubuntu's APT fix (`apt` and `libapt-pkg7.0`
+`3.2.1ubuntu0.1`, [USN-8996-1](https://ubuntu.com/security/notices/USN-8996-1)).
+The pinned package snapshot also includes Ubuntu's Brotli decoder fix
 (`libbrotli1` `1.2.0-3ubuntu0.1`, [USN-8956-1](https://ubuntu.com/security/notices/USN-8956-1))
 and the `ca-certificates` fix for the compromised eMudhra intermediates
 (`20260816ubuntu0.26.04.1`, [USN-8944-1](https://ubuntu.com/security/notices/USN-8944-1)).
@@ -335,8 +337,7 @@ on a pull-request head.
 ## Status, Recovery, and Maintenance
 
 `make sandbox-image-status` is read-only. It reports the source version, app
-pin, report, aliases, and first-package setup state. `make
-sandbox-image-clean` removes only Apple vet fixtures whose persisted name and
+pin, report, aliases, and first-package setup state. `make sandbox-image-clean` removes only Apple vet fixtures whose persisted name and
 both provider labels agree; unknown or partially matching resources are
 reported and never deleted. Use those commands after an interrupted vet. Do
 not use `container delete --all` or handwritten cleanup commands.
