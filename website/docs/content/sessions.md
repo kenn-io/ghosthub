@@ -544,6 +544,8 @@ selected name, then press **Enter** or choose **Rename**. **Cancel** or
 host, use 1–100 characters, and exclude `#`, periods, colons, and control
 characters. KWT-owned worktree and directory sessions keep their assigned
 names; names starting with `kwt-wt-` or `kwt-workspace-` are reserved.
+Rename is available after KWT discovery finishes successfully or confirms
+that KWT is not installed. If discovery fails, refresh the host first.
 Renaming supports local Linux/WSL sessions and connected POSIX SSH hosts.
 Manual sidebar order follows the renamed session.
 

@@ -3564,14 +3564,6 @@ pub(crate) fn reserve_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> Option
     if scene.runtime.kwt_mutation_in_flight.load(Ordering::Acquire) {
         return None;
     }
-    if scene
-        .runtime
-        .local_config
-        .as_ref()
-        .is_none_or(|config| config.kwt_bundle().is_none())
-    {
-        return None;
-    }
     let (host, endpoint, runtime) = scene
         .runtime
         .host
@@ -3585,6 +3577,20 @@ pub(crate) fn reserve_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> Option
                 published.value.snapshot.runtime().clone(),
             )
         })?;
+    if scene
+        .runtime
+        .local_config
+        .as_ref()
+        .is_none_or(|config| config.kwt_bundle().is_none())
+    {
+        publish_kwt_unavailable(
+            scene,
+            scene.runtime.kwt_refresh_generation.load(Ordering::Acquire),
+            &endpoint,
+            &runtime,
+        );
+        return None;
+    }
     if !supersede {
         let eligible = scene
             .runtime

@@ -1,5 +1,5 @@
 use super::{
-    CancellationToken, HostItem, HostSnapshot, KwtTmuxAttachMode, ProjectItem,
+    CancellationToken, HostItem, HostSnapshot, KwtState, KwtTmuxAttachMode, ProjectItem,
     RemoteTmuxAttachRequest, Runtime, RuntimeHost, SceneId, SessionKind, SessionName,
     SessionSelection, Workspace, WorkspaceContent, WorkspaceError, WorkspaceEvent,
     capture_remote_tmux_attach_request, is_local_host_id, lock_live_navigation, next_operation_id,
@@ -68,6 +68,8 @@ pub fn can_rename_session(host: &HostItem, selection: &SessionSelection) -> bool
         && host.accepts_session_actions()
         && host.tmux_available()
         && host.tmux_diagnostic().is_none()
+        && matches!(host.kwt_state, KwtState::Ready | KwtState::Unavailable)
+        && host.kwt_diagnostic().is_none()
         && selection.kind() == SessionKind::Tmux
         && selection.tmux_socket_name().is_none()
         && selection.worktree_path().is_none()
@@ -406,13 +408,65 @@ fn finish(runtime: &Runtime, id: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::set_remote_host_snapshot;
+    use crate::{DiagnosticKind, HostDiagnostic, set_remote_host_snapshot};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn rename_requires_resolved_workspace_ownership_at_capture_and_submission() {
+        let (workspace, target) = crate::tests::remote_kill_refresh_fixture();
+        set_remote_host_snapshot(&workspace.scene.runtime, &target.host_id, &target.snapshot);
+        let set_ownership = |state, diagnostic| {
+            let mut hosts = workspace.scene.runtime.hosts.write().unwrap();
+            let host = hosts
+                .iter_mut()
+                .find(|host| host.id() == target.host_id)
+                .unwrap();
+            host.kwt_state = state;
+            host.kwt_diagnostic = diagnostic;
+        };
+        set_ownership(KwtState::Ready, None);
+        let request = workspace.session_rename_request(&target.selection).unwrap();
+        for (state, failed) in [
+            (KwtState::Uninitialized, false),
+            (KwtState::Refreshing { available: false }, false),
+            (KwtState::Refreshing { available: true }, false),
+            (KwtState::Mutating, false),
+            (KwtState::Unavailable, true),
+            (KwtState::Ready, true),
+        ] {
+            set_ownership(
+                state,
+                failed.then(|| {
+                    HostDiagnostic::new(DiagnosticKind::Transport, "KWT inventory failed")
+                }),
+            );
+            assert!(
+                workspace.session_rename_request(&target.selection).is_err(),
+                "captured unresolved ownership: {state:?}"
+            );
+            assert!(
+                workspace
+                    .rename_session(&request, "custom-workspace")
+                    .is_err(),
+                "submitted unresolved ownership: {state:?}"
+            );
+        }
+        // A host without KWT still supports ordinary tmux session renaming.
+        set_ownership(KwtState::Unavailable, None);
+        let absent = workspace.session_rename_request(&target.selection).unwrap();
+        assert!(
+            workspace
+                .session_rename_validation(&absent, "release")
+                .is_ok()
+        );
+        workspace.close();
+    }
 
     #[test]
     fn queued_rename_defers_automatic_reconnect_and_close_cancels_it() {
         let (workspace, target) = crate::tests::remote_kill_refresh_fixture();
         set_remote_host_snapshot(&workspace.scene.runtime, &target.host_id, &target.snapshot);
+        workspace.scene.runtime.hosts.write().unwrap()[0].kwt_state = KwtState::Ready;
         let request = workspace.session_rename_request(&target.selection).unwrap();
         let operation = workspace.scene.runtime.session_operations.lock().unwrap();
         let now = Instant::now();

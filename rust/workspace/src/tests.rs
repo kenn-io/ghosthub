@@ -1220,6 +1220,31 @@ fn worktree_startup_rejects_an_early_guard_failure_before_inventory() {
 }
 
 #[test]
+fn worktree_startup_preserves_unstructured_client_errors() {
+    let error = wait_for_worktree_client_startup(
+        AttachTerm::Xterm256Color,
+        &CancellationToken::new(),
+        &[Duration::ZERO],
+        || {
+            Ok(TerminalStartup::Exited {
+                code: 1,
+                output_tail: "open terminal failed: not a terminal\r\n".to_owned(),
+            })
+        },
+        || panic!("an exited client cannot authorize an attachment"),
+    )
+    .unwrap_err();
+    let WorktreeClientStartupError::Failed(error) = error else {
+        panic!("an ordinary client error is not a terminfo fallback");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("open terminal failed: not a terminal")
+    );
+}
+
+#[test]
 fn worktree_startup_never_accepts_inventory_without_client_confirmation() {
     let cancellation = CancellationToken::new();
     let mut observations = 0;

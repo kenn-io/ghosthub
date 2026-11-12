@@ -29,6 +29,7 @@ fn rename_preserves_active_and_retained_ssh_clients() {
     };
     fixture.tmux(&["new-session", "-d", "-s", "other", "/bin/sh"]);
     fixture.connect();
+    super::kwt::wait_kwt_ready(&fixture);
     fixture.attach("review", "before-rename");
     let other = fixture.workspace.open_scene();
     other.select_host(&fixture.host_id).unwrap();
@@ -125,6 +126,7 @@ fn rename_refuses_an_ssh_session_that_reuses_the_reviewed_name() {
         return;
     };
     fixture.connect();
+    super::kwt::wait_kwt_ready(&fixture);
     let request = fixture
         .workspace
         .session_rename_request(&SessionSelection::new(
@@ -160,6 +162,7 @@ fn rename_requires_a_new_dialog_after_ssh_reconnect() {
         return;
     };
     fixture.connect();
+    super::kwt::wait_kwt_ready(&fixture);
     let request = fixture
         .workspace
         .session_rename_request(&SessionSelection::new(

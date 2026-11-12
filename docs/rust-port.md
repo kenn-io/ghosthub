@@ -1782,6 +1782,9 @@ changed SSH connections, occupied names, and KWT-owned names. Renaming keeps
 active and retained clients attached across scenes and preserves manual order.
 The same workspace API is available to non-UI consumers. Local Linux/WSL and
 POSIX SSH hosts share these rules; KWT owns worktree and directory names.
+Rename requires completed KWT discovery without an inventory error, or
+confirmation that KWT is absent. Pending discovery cannot establish that a
+custom session name is unmanaged. Submission checks ownership again.
 
 The Rust sidebar does not yet have agent-attention data or Needs Attention
 sorting, Herdr desktop terminals, worktree diff/PR/check

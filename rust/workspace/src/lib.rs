@@ -879,7 +879,7 @@ impl HostItem {
             zellij_diagnostic: None,
             projects: Vec::new(),
             directory_workspaces: Vec::new(),
-            kwt_state: KwtState::Unavailable,
+            kwt_state: KwtState::Uninitialized,
             kwt_diagnostic: None,
             kwt_tmux_diagnostic: None,
             kwt_sessions: Vec::new(),
@@ -10217,8 +10217,14 @@ fn classify_kwt_startup_exit<T>(
 }
 
 fn classify_kwt_client_exit(code: u32, output_tail: &str) -> String {
-    host::kwt_command_failure_message(output_tail.as_bytes())
-        .unwrap_or_else(|| format!("KWT client exited with status {code}"))
+    host::kwt_command_failure_message(output_tail.as_bytes()).unwrap_or_else(|| {
+        let output = output_tail.trim();
+        if output.is_empty() {
+            format!("KWT client exited with status {code}")
+        } else {
+            format!("KWT client exited with status {code}: {output}")
+        }
+    })
 }
 
 fn fresh_herdr_session(

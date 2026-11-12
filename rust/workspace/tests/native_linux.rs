@@ -81,7 +81,11 @@ impl Fixture {
             .connect_host("local")
             .expect("connect native host");
         fixture.wait(|| {
-            fixture.workspace.snapshot().hosts()[0].connection() == HostConnectionState::Ready
+            let snapshot = fixture.workspace.snapshot();
+            let host = &snapshot.hosts()[0];
+            host.connection() == HostConnectionState::Ready
+                && host.kwt_initialized()
+                && !host.kwt_refreshing()
         });
         Some(fixture)
     }
