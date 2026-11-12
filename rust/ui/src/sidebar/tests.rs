@@ -441,7 +441,8 @@ fn rename_actions_exclude_kwt_owned_and_unavailable_sessions() {
         HostConnectionState::Unavailable,
         vec![workspace::SessionItem::new("review", 0)],
         None,
-    );
+    )
+    .with_kwt_inventory(Vec::new(), Vec::new());
     let rows = sessions(&unavailable, None, &[], &preferences);
     assert!(
         !rows[0]

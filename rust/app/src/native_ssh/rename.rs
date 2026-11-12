@@ -172,7 +172,19 @@ fn rename_requires_a_new_dialog_after_ssh_reconnect() {
         ))
         .unwrap();
     fixture.connect();
-    assert!(fixture.workspace.rename_session(&request, "wrong").is_err());
+    super::kwt::wait_kwt_ready(&fixture);
+    fixture
+        .workspace
+        .session_rename_validation(&request, "wrong")
+        .expect("current inventory and workspace ownership allow this name");
+    let error = fixture
+        .workspace
+        .rename_session(&request, "wrong")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("SSH connection changed"),
+        "{error}"
+    );
     assert!(
         fixture
             .tmux(&["list-sessions", "-F", "#{session_name}"])
