@@ -6666,6 +6666,24 @@ impl Workspace {
             .unwrap_or(worktree_key);
         if self
             .scene
+            .remote_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
+            let navigation_generation = self.begin_navigation();
+            self.scene
+                .attachment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .invalidate();
+            if self.activate_retained_over_remote(&key)? {
+                return Ok(());
+            }
+            return self.start_attachment_over_remote(request, navigation_generation);
+        }
+        if self
+            .scene
             .attachment
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

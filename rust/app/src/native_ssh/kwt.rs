@@ -7,6 +7,114 @@ mod removal;
 
 #[test]
 #[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+#[allow(clippy::too_many_lines)] // One live round trip covers new and retained local clients.
+fn local_worktree_open_replaces_and_retains_the_remote_presentation() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::kwt::local_worktree_open_replaces_and_retains_the_remote_presentation",
+    ) else {
+        return;
+    };
+    let local = fixture.local_session("anchor");
+    fixture.wait(|snapshot| {
+        snapshot.hosts().iter().any(|host| {
+            host.id() == local.host_id() && host.kwt_available() && !host.kwt_refreshing()
+        })
+    });
+    let path = fixture.root.join("local-project");
+    create_project(&path);
+    fixture.kwt(
+        &fixture.account_home,
+        &[
+            "config",
+            "set",
+            "worktree.basedir",
+            fixture.root.to_str().unwrap(),
+        ],
+    );
+    fixture
+        .workspace
+        .add_kwt_project(local.host_id(), local.endpoint(), path.to_str().unwrap())
+        .unwrap();
+    wait_mutation(&fixture).unwrap();
+    fixture.wait(|snapshot| {
+        snapshot.hosts().iter().any(|host| {
+            host.id() == local.host_id() && !host.kwt_mutating() && !host.projects().is_empty()
+        })
+    });
+    let snapshot = fixture.workspace.snapshot();
+    let host = snapshot
+        .hosts()
+        .iter()
+        .find(|host| host.id() == local.host_id())
+        .unwrap();
+    let project = &host.projects()[0];
+    let operation = fixture
+        .workspace
+        .create_kwt_worktree(
+            local.host_id(),
+            local.endpoint(),
+            project.repository(),
+            project.path(),
+            project.registration_fingerprint(),
+            "feature",
+            None,
+            true,
+        )
+        .unwrap();
+    let WorkspaceEvent::KwtWorktreeCreated { target, .. } =
+        wait_worktree_event(&fixture, operation)
+    else {
+        panic!("worktree creation failed")
+    };
+    fixture.connect();
+    fixture.attach("review", "before-local-worktree");
+    // The first open launches a client; the second must reuse that client.
+    let mut local_presentation = None;
+    for attempt in 0..2 {
+        fixture.workspace.select_host(local.host_id()).unwrap();
+        fixture
+            .workspace
+            .open_kwt_worktree(
+                local.host_id(),
+                local.endpoint(),
+                project.repository(),
+                project.path(),
+                project.registration_fingerprint(),
+                target.worktree_path(),
+                target.generation(),
+                target.session_name(),
+                target.tmux_socket_name(),
+                target.tmux_attach_mode(),
+            )
+            .unwrap();
+        fixture.tmux_shell(target.session_name(), &format!("local-open-{attempt}"));
+        let current = fixture.workspace.snapshot();
+        let WorkspaceContent::Terminal {
+            presentation_id, ..
+        } = current.content()
+        else {
+            panic!("local terminal did not open")
+        };
+        if let Some(first) = local_presentation {
+            assert_eq!(*presentation_id, first, "local client was not retained");
+        }
+        local_presentation = Some(*presentation_id);
+        let selected = current.active_selection().unwrap();
+        assert_eq!(selected.host_id(), local.host_id());
+        assert_eq!(selected.session(), target.session_name());
+        fixture.workspace.select_host(&fixture.host_id).unwrap();
+        fixture.attach("review", &format!("returned-from-local-{attempt}"));
+        assert!(
+            fixture
+                .terminal_text()
+                .contains("remote-review:before-local-worktree")
+        );
+    }
+    fixture.workspace.close();
+}
+
+#[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
 #[allow(clippy::too_many_lines)] // One registration through new, existing, and selected-source creation.
 fn creates_remote_worktrees_from_new_and_existing_branches() {
     let Some(fixture) = Fixture::isolated(

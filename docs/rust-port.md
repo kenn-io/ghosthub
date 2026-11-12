@@ -1763,7 +1763,9 @@ new sessions follow the saved rows in backend/name order. Name sorting compares
 numbers naturally, and stopped Herdr sessions remain last in every mode.
 Ctrl-Tab and Ctrl-Shift-Tab move between openable sessions in the displayed
 order on the active host, skipping stopped Herdr sessions. Without an eligible
-neighbor, the terminal keeps the key. Host disclosure remains window-local.
+neighbor, the terminal keeps the key. Clicking a host header collapses or
+expands its inventory without changing the active terminal. Host disclosure
+remains window-local; creation and connection controls act independently.
 When the active worktree is hidden from the session list, navigation starts
 at the first or last available session on its host. Session action buttons
 have a separate trailing column, keep backend labels visible, and remain

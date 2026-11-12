@@ -58,7 +58,7 @@ exec '{root}/bin/herdr-real' "$@"
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    fn local_session(&self, name: &str) -> SessionSelection {
+    pub(super) fn local_session(&self, name: &str) -> SessionSelection {
         let output = Command::new("/usr/bin/tmux")
             .env("TMUX_TMPDIR", self.root.join("local-tmux"))
             .args([

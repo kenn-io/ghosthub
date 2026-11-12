@@ -488,8 +488,11 @@ The Rust development build for Linux and Windows shows tmux, Zellij, and
 Herdr TUI sessions in one list per host. The host’s **+** stays visible: use it
 to create a session or **Add Project…**. Right-click a session or select its
 **⋯** button for session actions. That button sits after the backend label,
-appears on hover, and stays visible on the active row. The arrow beside **+**
-collapses the host without closing its terminals.
+appears on hover, and stays visible on the active row. Click the host name
+or its arrow to collapse or expand its sessions and projects. The open
+terminal stays attached, and **+** remains available while collapsed.
+
+![A collapsed local host with its terminal still open in the Rust application](/docs/assets/guide-rust-collapsed-host.png)
 
 Right-click a host and choose **Refresh** to reread its inventory. **Connect**,
 **Cancel**, and **Retry** stay visible in the header when needed.
