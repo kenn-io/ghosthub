@@ -150,10 +150,10 @@ impl Fixture {
         self.wait(|| matches!(self.workspace.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == name));
     }
 
-    fn shell_probe(&self) {
+    fn shell_probe(&self, marker: &str) {
         self.workspace
             .send_key(KeyInput::text(
-                "printf 'native-%s\\n' ready",
+                format!("printf 'native-%s\\n' {marker}"),
                 Modifiers::default(),
             ))
             .expect("type command");
@@ -170,7 +170,7 @@ impl Fixture {
                 .cells()
                 .map(surface::Cell::text)
                 .collect::<String>()
-                .contains("native-ready")
+                .contains(&format!("native-{marker}"))
         });
     }
 }
@@ -196,7 +196,7 @@ fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
         .attach(&selection)
         .expect("attach discovered native session");
     fixture.wait_terminal("work");
-    fixture.shell_probe();
+    fixture.shell_probe("ready");
     fixture
         .workspace
         .resize(91, 29)
@@ -222,7 +222,7 @@ fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
         .create_session("local", selection.endpoint(), "created here")
         .expect("create native session");
     fixture.wait_terminal("created here");
-    fixture.shell_probe();
+    fixture.shell_probe("ready");
     let created_identity = fixture.identity("created here");
     fixture.workspace.close();
     fixture.wait(|| {
@@ -289,6 +289,108 @@ fn native_kill_confirmation_preserves_cancelled_and_replaced_sessions() {
     assert!(
         fixture
             .command(&["has-session", "-t", "=keep"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn rename_keeps_clients_attached_across_scenes_and_retained_navigation() {
+    let Some(fixture) =
+        Fixture::new("rename_keeps_clients_attached_across_scenes_and_retained_navigation")
+    else {
+        return;
+    };
+    let selection = fixture.selection("work");
+    fixture.workspace.attach(&selection).unwrap();
+    fixture.wait_terminal("work");
+    fixture.shell_probe("before-rename");
+    let other = fixture.workspace.open_scene();
+    other.select_host(selection.host_id()).unwrap();
+    other.switch_session(&selection).unwrap();
+    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "work"));
+    other.switch_session(&fixture.selection("keep")).unwrap();
+    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "keep"));
+    fixture.wait(|| {
+        fixture.text(&[
+            "display-message",
+            "-p",
+            "-t",
+            "=keep:",
+            "#{session_attached}",
+        ]) == "1"
+    });
+    let clients = fixture.text(&["list-clients", "-F", "#{client_pid}:#{session_id}"]);
+    let identity = fixture.identity("work");
+    let request = fixture
+        .workspace
+        .session_rename_request(&selection)
+        .unwrap();
+    fixture
+        .workspace
+        .rename_session(&request, "release 'one")
+        .unwrap();
+    fixture.wait_terminal("release 'one");
+    assert_eq!(fixture.identity("release 'one"), identity);
+    assert_eq!(
+        fixture.text(&["list-clients", "-F", "#{client_pid}:#{session_id}"]),
+        clients
+    );
+    fixture.shell_probe("after-rename");
+    other
+        .switch_session(&fixture.selection("release 'one"))
+        .unwrap();
+    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "release 'one"));
+    assert_eq!(
+        fixture.text(&["list-clients", "-F", "#{client_pid}:#{session_id}"]),
+        clients
+    );
+    other.close();
+}
+
+#[test]
+fn rename_rejects_replacement_collision_and_kwt_owned_names() {
+    let Some(fixture) = Fixture::new("rename_rejects_replacement_collision_and_kwt_owned_names")
+    else {
+        return;
+    };
+    let request = fixture
+        .workspace
+        .session_rename_request(&fixture.selection("work"))
+        .unwrap();
+    for name in [
+        "keep",
+        "kwt-wt-owned",
+        "kwt-workspace-owned",
+        "invalid.name",
+    ] {
+        assert!(
+            fixture.workspace.rename_session(&request, name).is_err(),
+            "accepted {name}"
+        );
+    }
+    fixture.run(&["rename-session", "-t", "=work:", "original"]);
+    fixture.run(&["new-session", "-d", "-s", "work", "/bin/sh"]);
+    let replacement = fixture.identity("work");
+    fixture.workspace.rename_session(&request, "wrong").unwrap();
+    fixture.wait(|| {
+        fixture
+            .workspace
+            .drain_events()
+            .0
+            .into_iter()
+            .any(|event| matches!(event, WorkspaceEvent::SessionRenamed { result: Err(_), .. }))
+    });
+    assert_eq!(fixture.identity("work"), replacement);
+    assert!(
+        !fixture
+            .command(&["has-session", "-t", "=wrong:"])
+            .status
+            .success()
+    );
+    assert!(
+        fixture
+            .command(&["has-session", "-t", "=original:"])
             .status
             .success()
     );

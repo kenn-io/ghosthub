@@ -40,7 +40,11 @@ mod remote_workspace;
 mod remote_zellij;
 mod runtime;
 mod scene;
+mod session_rename;
 mod sidebar;
+
+pub use session_rename::{SessionRenameRequest, can_rename_session};
+pub use sidebar::session_order_id;
 
 pub use config::{BackendLabel, SidebarPreferences, SidebarRowHeight, SidebarSort};
 
@@ -1384,6 +1388,12 @@ impl Drop for KwtWorktreeOpening {
 }
 
 pub enum WorkspaceEvent {
+    SessionRenamed {
+        operation_id: u64,
+        selection: SessionSelection,
+        name: String,
+        result: Result<(), String>,
+    },
     ClipboardWrite {
         text: String,
         primary: bool,
@@ -1945,6 +1955,7 @@ struct RemoteEntry {
     /// Supersede and cancel fences act per scene; only connection-authority
     /// changes cancel every scene's attempt at once.
     attachment_attempts: Vec<RemoteAttachmentAttempt>,
+    renames: Vec<session_rename::Reservation>,
     /// Rejected lifecycle recoveries awaiting this host's in-flight reconnect.
     session_recoveries: Vec<remote_recovery::Recovery>,
     generation: u64,
@@ -4263,6 +4274,7 @@ impl Workspace {
                             cancellation: None,
                             constructive_cancellation: None,
                             attachment_attempts: Vec::new(),
+                            renames: Vec::new(),
                             session_recoveries: Vec::new(),
                             generation: 0,
                         },
@@ -4893,6 +4905,10 @@ impl Workspace {
                             entry.constructive_cancellation,
                             Some(RemoteConstructiveState::Active { .. })
                         )
+                        || entry
+                            .renames
+                            .iter()
+                            .any(|operation| !operation.cancellation.is_cancelled())
                         || entry.kwt.blocks_reconnect()
                         || !entry.reconnect.start(now)
                     {
@@ -5199,6 +5215,7 @@ impl Workspace {
                         cancellation: None,
                         constructive_cancellation: None,
                         attachment_attempts: Vec::new(),
+                        renames: Vec::new(),
                         session_recoveries: Vec::new(),
                         generation: 0,
                     },
@@ -9666,6 +9683,9 @@ fn cancel_remote_constructive(entry: &mut RemoteEntry) {
 /// connection failure) may use this; scene-initiated cancellation goes
 /// through `cancel_scene_remote_attachments`.
 fn cancel_remote_attachment(entry: &mut RemoteEntry) {
+    for operation in entry.renames.drain(..) {
+        operation.cancellation.cancel();
+    }
     for attempt in entry.attachment_attempts.drain(..) {
         attempt.cancellation.cancel();
     }

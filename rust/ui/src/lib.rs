@@ -4,6 +4,7 @@
 #[allow(unsafe_code)]
 mod windows_key;
 
+mod session_rename;
 mod sidebar;
 use sidebar::menus::SidebarMenu;
 
@@ -383,6 +384,7 @@ pub struct RootView {
     sidebar_menu_focus: FocusHandle,
     sidebar_preview_revision: u64,
     new_session: Option<NewSessionDraft>,
+    renaming_session: Option<session_rename::Draft>,
     project_dialog: Option<ProjectDialog>,
     settings_dialog: Option<SettingsDialog>,
     ssh_prompts: VecDeque<SshPromptDialog>,
@@ -1864,6 +1866,7 @@ impl RootView {
             sidebar_menu_focus: cx.focus_handle(),
             sidebar_preview_revision: 0,
             new_session: None,
+            renaming_session: None,
             project_dialog: None,
             settings_dialog: None,
             ssh_prompts: VecDeque::new(),
@@ -3717,6 +3720,11 @@ impl RootView {
                 }
                 // Recovery status follows the snapshot and disappears when its target clears.
                 WorkspaceEvent::RemoteSessionInterrupted(_) => {}
+                WorkspaceEvent::SessionRenamed {
+                    operation_id,
+                    result,
+                    ..
+                } => self.finish_session_rename(operation_id, result),
                 WorkspaceEvent::Error(error) => self.diagnostic = Some(error),
             }
         }
@@ -7042,6 +7050,7 @@ impl RootView {
     ) -> gpui::AnyElement {
         let (id, label, color) = match &action {
             SessionRowAction::Detach => ("session-action-detach", "Detach", 0x87_b9e8),
+            SessionRowAction::Rename => ("session-action-rename", "Rename Session…", 0x87_b9e8),
             SessionRowAction::KillSession => ("session-action-kill", "Kill Session…", 0xd6_747a),
             SessionRowAction::RemoveWorktree(_) => {
                 ("worktree-action-remove", "Remove Worktree", 0xd6_747a)
@@ -7074,6 +7083,7 @@ impl RootView {
                 window.focus(&this.focus);
                 match &action {
                     SessionRowAction::Detach => this.detach_session(window, cx),
+                    SessionRowAction::Rename => this.open_session_rename(&selection, window, cx),
                     SessionRowAction::KillSession => this.request_session_kill(&selection, cx),
                     SessionRowAction::RemoveWorktree(target) => {
                         this.open_remove_worktree(target.as_ref().clone(), window, cx);
@@ -7280,7 +7290,7 @@ impl RootView {
         let preferences = self.workspace.configured_sidebar();
         let rows = sidebar::sessions(host, active, retained, &preferences);
         for row in &rows {
-            tree = tree.child(Self::flat_session_row(row, &preferences, cx));
+            tree = tree.child(Self::flat_session_row(row, host, &preferences, cx));
         }
         if rows.is_empty() && host.connection() == HostConnectionState::Ready {
             tree = tree.child(
@@ -8128,6 +8138,7 @@ enum HerdrRowAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SessionRowAction {
     Detach,
+    Rename,
     KillSession,
     RemoveWorktree(Box<WorktreeRemoveTarget>),
     Herdr(HerdrRowAction),
@@ -8204,14 +8215,6 @@ fn herdr_session_menu_actions(
     }
     actions.extend(lifecycle.into_iter().map(SessionRowAction::Herdr));
     actions
-}
-
-const fn session_backend_id(kind: workspace::SessionKind) -> &'static str {
-    match kind {
-        workspace::SessionKind::Tmux => "tmux",
-        workspace::SessionKind::Herdr => "herdr",
-        workspace::SessionKind::Zellij => "zellij",
-    }
 }
 
 fn herdr_operation_label(session: &workspace::HerdrSessionItem) -> Option<&'static str> {
@@ -8650,6 +8653,7 @@ impl Render for RootView {
         self.synchronize_render_state(&snapshot);
         let content = self.content_element(&snapshot, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
+        let rename_overlay = self.session_rename_overlay(window, cx);
         let project_overlay = self.project_overlay(window, cx);
         let settings_overlay = self.settings_overlay(window, cx);
         let ssh_prompt_overlay = self.ssh_prompt_overlay(window, cx);
@@ -8686,6 +8690,7 @@ impl Render for RootView {
             .child(self.title_bar(title, cx))
             .child(div().flex_1().min_h_0().w_full().child(content))
             .children(creation_overlay)
+            .children(rename_overlay)
             .children(project_overlay)
             .children(settings_overlay)
             .children(session_action_menu)

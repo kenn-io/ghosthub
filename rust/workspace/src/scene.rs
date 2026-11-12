@@ -4256,7 +4256,8 @@ fn cancel_dropped_event(scene: &Scene, event: WorkspaceEvent) {
         // enqueued as sheddable entries, so overflow cannot hand them to
         // this cancellation path. (`KwtWorktreeCreated` above is the one
         // exception: only NON-owning scenes' informational copies shed.)
-        WorkspaceEvent::KwtProjectMutationFinished { .. }
+        WorkspaceEvent::SessionRenamed { .. }
+        | WorkspaceEvent::KwtProjectMutationFinished { .. }
         | WorkspaceEvent::KwtProjectMutationFailed { .. }
         | WorkspaceEvent::KwtWorktreeRemovalReady { .. }
         | WorkspaceEvent::KwtWorktreeRemoved { .. }

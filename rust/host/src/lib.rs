@@ -16,6 +16,7 @@ mod herdr;
 mod kwt;
 mod local;
 mod remote;
+mod rename;
 mod ssh;
 #[cfg(windows)]
 mod windows_system;
