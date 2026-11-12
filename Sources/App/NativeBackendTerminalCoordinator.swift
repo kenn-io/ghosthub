@@ -228,7 +228,7 @@ final class NativeBackendTerminalCoordinator {
         ))
     }
 
-    static let routeChangedReason =
+    nonisolated static let routeChangedReason =
         "The SSH connection changed since Ghosthub found this terminal. "
             + "Reopen it from the sidebar to use the current connection."
 

@@ -264,16 +264,18 @@ every host's backends have reported.
 Opening a terminal lists its backend again over a frozen SSH connection. The
 current view stays until the terminal is confirmed, so a failed open leaves it
 in place and shows the error. While that check runs, the current terminal
-takes no keystrokes. The attach then requires that connection's route,
+takes no keystrokes and its reconnect waits. Closing the current terminal
+cancels a shortcut that is still checking the next one. The attach then requires that connection's route,
 so a changed SSH alias cannot reach a same-addressed terminal on another
-machine. Reconnect repeats that check on the route the terminal was opened
-over: a terminal that is still listed reattaches with a new client, one that is
-gone closes its presentation, and a changed route stops with a prompt to
-reopen. A dropped SSH connection (status 255), an SSH transport failure, or a
+machine. Reconnect checks the route before it reads the listing. A changed route
+stops with a prompt to reopen, whatever the other machine lists. On the
+original route, a terminal that is still listed reattaches with a new client,
+and one that is gone closes its presentation. A dropped SSH connection (status 255), an SSH transport failure, or a
 surface that could not be created yet reconnects automatically with backoff; a
 clean detach, a failed launch, or an ended program waits for **Retry**. A
 reconnect that needs authentication or host-key approval stops and offers
-**Review Connection**, then resumes after approval.
+**Review Connection**, then resumes after approval. Closing the terminal
+withdraws that request.
 
 Restoration stays pending until the terminal is confirmed. A transient failure
 lists the host again and retries; a terminal that ended is not restored.

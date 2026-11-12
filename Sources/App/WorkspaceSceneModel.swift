@@ -236,6 +236,10 @@ final class WorkspaceSceneModel: ObservableObject {
     private var activeBackendTerminalRouteIdentity: String?
     private var backendTerminalRestorationTask: Task<Void, Never>?
     private var backendTerminalPresentationValidationID: UUID?
+    /// The terminal whose reconnect waits while another terminal is checked.
+    private var pausedBackendTerminalReconnect: WorkspaceBackendTerminalSelection?
+    /// The approval request a backend terminal reconnect is waiting on.
+    private var backendTerminalRecoveryRequest: SessionConnectionRecoveryRequest?
     private let backendTerminalDiscovery: BackendTerminalDiscovery
     private let backendTerminalValidationDiscovery: BackendTerminalValidationDiscovery
     private var createdSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
@@ -15337,9 +15341,12 @@ enum BackendTerminalPresentationError: LocalizedError, Equatable {
     case ended(String)
     case hostUnavailable(String)
     case hostChanged
+    case routeChanged
 
     var errorDescription: String? {
         switch self {
+        case .routeChanged:
+            NativeBackendTerminalCoordinator.routeChangedReason
         case let .ended(name):
             "“\(name)” is no longer running."
         case let .hostUnavailable(host):
@@ -15503,6 +15510,7 @@ extension WorkspaceSceneModel {
                 false, handle: handle
             )
             nativeBackendTerminalCoordinator.requestKeyboardFocus(handle: handle)
+            resumePausedBackendTerminalReconnect()
             return
         }
         cancelPendingTmuxPreviewActivations()
@@ -15517,6 +15525,13 @@ extension WorkspaceSceneModel {
             )
         }
         workspaceWindow?.makeFirstResponder(nil)
+        // A reconnect would replace the suspended view with one that takes
+        // input, so it waits until this check ends.
+        if backendTerminalReconnectSupervisor.isRunning,
+           let active = activeBackendTerminalSelection {
+            backendTerminalReconnectSupervisor.cancel()
+            pausedBackendTerminalReconnect = active
+        }
         defer {
             if backendTerminalPresentationValidationID == validationID {
                 backendTerminalPresentationValidationID = nil
@@ -15525,6 +15540,7 @@ extension WorkspaceSceneModel {
                         false, handle: previousHandle
                     )
                 }
+                resumePausedBackendTerminalReconnect()
             }
         }
         let validated = try await validatedBackendTerminal(
@@ -15536,7 +15552,19 @@ extension WorkspaceSceneModel {
         }
         cancelPendingRestoration()
         backendTerminalReconnectSupervisor.cancel()
+        pausedBackendTerminalReconnect = nil
         presentBackendTerminal(selection, host: host, validated: validated)
+    }
+
+    private func resumePausedBackendTerminalReconnect() {
+        guard let paused = pausedBackendTerminalReconnect else { return }
+        pausedBackendTerminalReconnect = nil
+        guard activeBackendTerminalSelection == paused,
+              !backendTerminalReconnectSupervisor.isRunning,
+              let host = snapshot.host(id: paused.hostID)
+              .flatMap(CommandHostResolver.resolve)
+        else { return }
+        startBackendTerminalReconnect(paused, host: host, afterDelay: false)
     }
 
     /// Lists `selection`'s backend over a frozen SSH connection and returns
@@ -15544,9 +15572,15 @@ extension WorkspaceSceneModel {
     private func validatedBackendTerminal(
         _ selection: WorkspaceBackendTerminalSelection,
         title: String,
-        on host: CommandHost
+        on host: CommandHost,
+        requiredRoute: String? = nil
     ) async throws -> SSHConnectionArgumentsSnapshot {
         let connection = await herdrConnectionSnapshot(on: host)
+        // Another machine's listing says nothing about this terminal.
+        if let requiredRoute, let route = connection.routeIdentity,
+           route != requiredRoute {
+            throw BackendTerminalPresentationError.routeChanged
+        }
         let result = await backendTerminalValidationDiscovery(
             host, selection.kind, connection.arguments
         )
@@ -15672,21 +15706,40 @@ extension WorkspaceSceneModel {
         activeBackendTerminalSelection = selection
         activeBackendTerminalHandle = handle
         activeBackendTerminalRouteIdentity = validated.routeIdentity
-        activeBackendTerminalRecoveryState = nil
+        clearBackendTerminalRecovery()
         backendTerminalConnectionStates[handle.id] = .connecting
     }
 
     func closeBackendTerminal(_ selection: WorkspaceBackendTerminalSelection) {
         guard activeBackendTerminalSelection == selection else { return }
         backendTerminalReconnectSupervisor.cancel()
+        pausedBackendTerminalReconnect = nil
         if let handle = activeBackendTerminalHandle {
             backendTerminalConnectionStates.removeValue(forKey: handle.id)
         }
         activeBackendTerminalSelection = nil
         activeBackendTerminalHandle = nil
         activeBackendTerminalRouteIdentity = nil
-        activeBackendTerminalRecoveryState = nil
+        clearBackendTerminalRecovery()
         nativeBackendTerminalCoordinator.detach(selection)
+    }
+
+    /// Cmd-W also cancels a shortcut that is still checking the next
+    /// terminal, so that terminal cannot open after the close.
+    func closeBackendTerminalFromUser(_ selection: WorkspaceBackendTerminalSelection) {
+        cancelPendingBackendTerminalShortcutNavigation()
+        closeBackendTerminal(selection)
+    }
+
+    /// Withdraws this terminal's approval request so it cannot block a
+    /// request from another session.
+    private func clearBackendTerminalRecovery() {
+        activeBackendTerminalRecoveryState = nil
+        if let request = backendTerminalRecoveryRequest,
+           sessionConnectionRecoveryRequest == request {
+            sessionConnectionRecoveryRequest = nil
+        }
+        backendTerminalRecoveryRequest = nil
     }
 
     private func closeActiveBackendTerminal() {
@@ -15721,6 +15774,10 @@ extension WorkspaceSceneModel {
         host: CommandHost,
         afterDelay: Bool
     ) {
+        if backendTerminalPresentationValidationID != nil {
+            pausedBackendTerminalReconnect = selection
+            return
+        }
         if host.isRemote {
             activeBackendTerminalRecoveryState = .reconnecting(
                 message: "Waiting for \(hostName(for: selection.hostID)). "
@@ -15750,13 +15807,15 @@ extension WorkspaceSceneModel {
         let validated: SSHConnectionArgumentsSnapshot
         do {
             validated = try await validatedBackendTerminal(
-                selection, title: selection.address, on: host
+                selection, title: selection.address, on: host,
+                requiredRoute: openedRoute
             )
         } catch BackendTerminalPresentationError.ended,
             BackendTerminalCommandError.unavailable {
             closeBackendTerminal(selection)
             return .stop
-        } catch BackendTerminalPresentationError.hostChanged {
+        } catch BackendTerminalPresentationError.hostChanged,
+            BackendTerminalPresentationError.routeChanged {
             failActiveBackendTerminal(NativeBackendTerminalCoordinator.routeChangedReason)
             return .stop
         } catch is CancellationError {
@@ -15801,18 +15860,21 @@ extension WorkspaceSceneModel {
             activeBackendTerminalRecoveryState = .needsAttention(
                 message: message, canReviewConnection: true
             )
-            if sessionConnectionRecoveryRequest == nil {
-                sessionConnectionRecoveryRequest = SessionConnectionRecoveryRequest(
+            if sessionConnectionRecoveryRequest == nil
+                || sessionConnectionRecoveryRequest == backendTerminalRecoveryRequest {
+                let request = SessionConnectionRecoveryRequest(
                     hostID: hostID, message: message
                 )
+                backendTerminalRecoveryRequest = request
+                sessionConnectionRecoveryRequest = request
             }
             return .stop
         case .hostKeyChanged, .configurationChanged:
+            clearBackendTerminalRecovery()
             activeBackendTerminalRecoveryState = .needsAttention(
                 message: diagnostic.summary + " " + diagnostic.recoverySuggestion,
                 canReviewConnection: false
             )
-            sessionConnectionRecoveryRequest = nil
             return .stop
         }
     }
@@ -15829,13 +15891,13 @@ extension WorkspaceSceneModel {
               let host = snapshot.host(id: selection.hostID)
               .flatMap(CommandHostResolver.resolve)
         else { return false }
-        sessionConnectionRecoveryRequest = nil
+        clearBackendTerminalRecovery()
         startBackendTerminalReconnect(selection, host: host, afterDelay: false)
         return true
     }
 
     private func failActiveBackendTerminal(_ reason: String) {
-        activeBackendTerminalRecoveryState = nil
+        clearBackendTerminalRecovery()
         guard let handle = activeBackendTerminalHandle else { return }
         backendTerminalConnectionStates[handle.id] = .disconnected(reason: reason)
     }
@@ -15849,9 +15911,8 @@ extension WorkspaceSceneModel {
     ) {
         guard activeBackendTerminalHandle == handle else { return }
         backendTerminalConnectionStates[handle.id] = state
-        if state == .connected, activeBackendTerminalRecoveryState != nil {
-            activeBackendTerminalRecoveryState = nil
-            sessionConnectionRecoveryRequest = nil
+        if state == .connected {
+            clearBackendTerminalRecovery()
         }
         guard case .disconnected = state,
               let selection = activeBackendTerminalSelection,

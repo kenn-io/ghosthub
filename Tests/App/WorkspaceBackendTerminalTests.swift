@@ -83,6 +83,8 @@ struct WorkspaceBackendTerminalTests {
         let executableFailures = Mutex<[BackendTerminalCommandError]>([])
         /// Holds each validation until opened, when set.
         let validationGate = Mutex<AsyncGate?>(nil)
+        /// Holds only the next validation until opened.
+        let nextValidationGate = Mutex<AsyncGate?>(nil)
 
         init(_ terminals: [BackendTerminalSummary]) {
             self.terminals = Mutex(terminals)
@@ -90,6 +92,12 @@ struct WorkspaceBackendTerminalTests {
 
         func validate(_ kind: BackendTerminalKind) async -> BackendTerminalDiscoveryResult {
             if let gate = validationGate.withLock({ $0 }) {
+                await gate.wait()
+            }
+            if let gate = nextValidationGate.withLock({ gate in
+                defer { gate = nil }
+                return gate
+            }) {
                 await gate.wait()
             }
             if let error = validationFailures.withLock({ $0.isEmpty ? nil : $0.removeFirst() }) {
@@ -712,6 +720,119 @@ struct WorkspaceBackendTerminalTests {
 
         #expect(model.pendingBackendTerminalShortcutSelection == nil)
         #expect(model.activeBackendTerminalSelection == first)
+        await model.shutdown()
+    }
+    @Test("closing a terminal that waits for SSH approval withdraws its request")
+    func closeWithdrawsApprovalRequest() async throws {
+        let environment = try environment(remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        await launchSurface(model, store: store)
+
+        fake.validationFailures.withLock {
+            $0 = [.commandFailed(
+                .rex, status: 255, stderr: "ghosthub-kwt-ssh-error:ssh_interaction_required"
+            )]
+        }
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 255)
+        await waitUntilMainActor { model.sessionConnectionRecoveryRequest != nil }
+
+        model.closeBackendTerminalFromUser(rex)
+
+        #expect(model.sessionConnectionRecoveryRequest == nil)
+        await model.shutdown()
+    }
+
+    @Test("closing a terminal cancels a shortcut still checking the next one")
+    func closeCancelsShortcut() async throws {
+        let terminals = ["01", "02"].map {
+            BackendTerminalSummary(kind: .rex, address: "block:\($0)", title: "shell \($0)")
+        }
+        let environment = try environment(terminals: terminals)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost(terminals)
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let first = environment.selection(terminals[0])
+        try await model.openBackendTerminal(first)
+        model.selection.select(
+            .backendTerminal(hostID: first.hostID, kind: first.kind, address: first.address),
+            in: environment.snapshot
+        )
+        model.isFocusedWindow = true
+        let gate = AsyncGate()
+        fake.validationGate.withLock { $0 = gate }
+
+        #expect(model.performApplicationShortcut(.nextSibling))
+        model.closeBackendTerminalFromUser(first)
+        gate.open()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(model.activeBackendTerminalSelection == nil)
+        await model.shutdown()
+    }
+
+    @Test("a reconnect to a machine without the terminal keeps it for the user to reopen")
+    func changedRouteWithoutTerminal() async throws {
+        let environment = try environment(remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.coreTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let core = environment.selection(Self.coreTerminal)
+        try await model.openBackendTerminal(core)
+        await launchSurface(model, store: store)
+
+        // The SSH alias now names another machine, which has no "t7".
+        fake.validationRoute.withLock { $0 = "sha256:route-b" }
+        fake.terminals.withLock { $0 = [] }
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 255)
+        await waitUntilMainActor { !model.backendTerminalReconnectSupervisorIsRunning }
+
+        #expect(model.activeBackendTerminalSelection == core)
+        #expect(model.activeBorrowedBackendTerminalConnectionState == .disconnected(
+            reason: NativeBackendTerminalCoordinator.routeChangedReason
+        ))
+        await model.shutdown()
+    }
+
+    @Test("a reconnect waits while another terminal is checked and resumes if it fails")
+    func reconnectWaitsForOtherCheck() async throws {
+        let environment = try environment(
+            terminals: [Self.rexTerminal, Self.coreTerminal], remote: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal, Self.coreTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        await launchSurface(model, store: store)
+
+        let gate = AsyncGate()
+        fake.nextValidationGate.withLock { $0 = gate }
+        let opening = Task { @MainActor in
+            try await model.openBackendTerminal(environment.selection(Self.coreTerminal))
+        }
+        await waitUntilMainActor { fake.nextValidationGate.withLock { $0 == nil } }
+
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 255)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(fake.attaches.withLock { $0 } == 1)
+
+        // The terminal being checked ended, so the open fails.
+        fake.terminals.withLock { $0 = [Self.rexTerminal] }
+        gate.open()
+        await #expect(throws: BackendTerminalPresentationError.self) {
+            try await opening.value
+        }
+        await launchSurface(model, store: store, after: 1)
+
+        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(fake.attaches.withLock { $0 } == 2)
         await model.shutdown()
     }
 }
