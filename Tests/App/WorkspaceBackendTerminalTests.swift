@@ -568,7 +568,13 @@ struct WorkspaceBackendTerminalTests {
         fake.validationFailures.withLock {
             $0 = [.commandFailed(.rex, status: 1, stderr: "server busy")]
         }
-        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        // No scheduled refresh lists the host again, so the retry must.
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            fake: fake,
+            workspaceInventoryStore: makeCadenceInventoryStore(cadence: AsyncGate())
+        )
         let rex = environment.selection(Self.rexTerminal)
         let windowID = UUID()
         model.beginRestoration(WorkspaceWindowState(
@@ -604,6 +610,47 @@ struct WorkspaceBackendTerminalTests {
             discovery: { host in
                 host == .local ? slowLocal.discover() : [.rex: fake.listing(.rex)]
             }
+        )
+        let rex = environment.selection(Self.rexTerminal)
+        model.beginRestoration(WorkspaceWindowState(
+            windowID: UUID(),
+            navigation: .init(hostKey: "builder", projectKey: nil, worktreeGeneration: nil),
+            tmux: nil,
+            backendTerminal: .init(hostKey: "builder", kind: .rex, address: rex.address)
+        ))
+
+        model.startHerdrSessionDiscovery()
+        await waitUntilMainActor {
+            slowLocal.starts == 1 && fake.validationFailures.withLock { $0.isEmpty }
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        slowLocal.release()
+        await launchSurface(model, store: store)
+
+        #expect(model.activeBackendTerminalSelection == rex)
+        await model.shutdown()
+    }
+
+    @Test("a restoration retry lists its host again after a sweep that already listed it")
+    func restorationRetryAfterListedHost() async throws {
+        // Only fresh inventory can confirm the saved terminal on the remote.
+        let environment = try environment(terminals: [], remote: true)
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        fake.validationFailures.withLock {
+            $0 = [.commandFailed(.rex, status: 1, stderr: "server busy")]
+        }
+        // This Mac's listing keeps the sweep running after the remote one,
+        // and no scheduled refresh lists the remote again.
+        let slowLocal = BlockingBackendDiscovery(listing: [:])
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            fake: fake,
+            discovery: { host in
+                host == .local ? slowLocal.discover() : [.rex: fake.listing(.rex)]
+            },
+            workspaceInventoryStore: makeCadenceInventoryStore(cadence: AsyncGate())
         )
         let rex = environment.selection(Self.rexTerminal)
         model.beginRestoration(WorkspaceWindowState(

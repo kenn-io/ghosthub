@@ -229,6 +229,9 @@ final class WorkspaceSceneModel: ObservableObject {
     private var backendTerminalFreshHostIDs: Set<UUID> = []
     private var backendTerminalDiscoveryGeneration = 0
     private var backendTerminalDiscoveryTask: Task<Void, Never>?
+    /// A host needs listing again after the running sweep, which may have
+    /// listed it already.
+    private var backendTerminalDiscoveryRerunPending = false
     private var backendTerminalDiscoveryTargets: [UUID: CommandHost] = [:]
     private let backendTerminalReconnectSupervisor: SessionReconnectSupervisor
     /// The SSH route the active backend terminal was opened over. A
@@ -15378,16 +15381,25 @@ extension WorkspaceSceneModel {
     }
 
     /// A scheduled sweep lets a slow one finish. Only an explicit refresh or
-    /// a change of hosts replaces a sweep that is still running.
-    private func scheduleBackendTerminalDiscovery(restarting: Bool = false) {
+    /// a change of hosts replaces a sweep that is still running. With
+    /// `rerunAfterCurrent`, a sweep that is still running is followed by
+    /// another one instead of being treated as up to date.
+    private func scheduleBackendTerminalDiscovery(
+        restarting: Bool = false,
+        rerunAfterCurrent: Bool = false
+    ) {
         guard !isShutDown, herdrDiscoveryEnabled else { return }
         let targets = inventoryHosts.filter {
             BackendTerminalInventoryClient.supports($0.value)
         }
         if !restarting, backendTerminalDiscoveryTask != nil,
            targets == backendTerminalDiscoveryTargets {
+            if rerunAfterCurrent {
+                backendTerminalDiscoveryRerunPending = true
+            }
             return
         }
+        backendTerminalDiscoveryRerunPending = false
         backendTerminalDiscoveryGeneration += 1
         let generation = backendTerminalDiscoveryGeneration
         backendTerminalDiscoveryTask?.cancel()
@@ -15423,6 +15435,9 @@ extension WorkspaceSceneModel {
             guard let self, generation == backendTerminalDiscoveryGeneration
             else { return }
             backendTerminalDiscoveryTask = nil
+            if backendTerminalDiscoveryRerunPending {
+                scheduleBackendTerminalDiscovery()
+            }
             updateWorkspaceInventoryState()
         }
     }
@@ -15635,7 +15650,7 @@ extension WorkspaceSceneModel {
             } catch {
                 finishBackendTerminalRestoration(expectedState) {
                     backendTerminalFreshHostIDs.remove(terminal.hostID)
-                    scheduleBackendTerminalDiscovery()
+                    scheduleBackendTerminalDiscovery(rerunAfterCurrent: true)
                 }
                 return
             }
