@@ -39,7 +39,7 @@ final class WorkspaceHerdrFocusTests: XCTestCase {
         let database = try WorkspaceDatabase.inMemory()
         let hostID = UUID()
         let sessions = ["alpha", "beta"].map {
-            HerdrSessionSummary(name: $0, isDefault: false, state: .running, backend: .core)
+            HerdrSessionSummary(name: $0, isDefault: false, state: .running)
         }
         let snapshot = WorkspaceSnapshot.fixture(hosts: [.fixture(
             id: hostID,
@@ -60,8 +60,9 @@ final class WorkspaceHerdrFocusTests: XCTestCase {
         let model = try makeModel(
             database: database, localHostID: hostID,
             snapshot: snapshot, nativeHerdrSurfaceStore: store,
-            nativeHerdrCorePathProvider: { _ in .success(script.path) },
-            herdrSessionValidationDiscovery: { _, _, _ in
+            nativeHerdrPathProvider: { _ in .success(script.path) },
+            herdrPaneSplitCapabilityProvider: { _, _, _, _ in .success(nil) },
+            herdrSessionValidationDiscovery: { _, _ in
                 let shouldBlock = blocked.withLock { value in
                     let result = value
                     value = false
@@ -74,11 +75,11 @@ final class WorkspaceHerdrFocusTests: XCTestCase {
                         return .unavailable
                     }
                 }
-                return .available(sessions, tuiAvailable: false)
+                return .available(sessions)
             }
         )
-        let first = WorkspaceHerdrSessionSelection(hostID: hostID, name: "alpha", backend: .core)
-        let second = WorkspaceHerdrSessionSelection(hostID: hostID, name: "beta", backend: .core)
+        let first = WorkspaceHerdrSessionSelection(hostID: hostID, name: "alpha")
+        let second = WorkspaceHerdrSessionSelection(hostID: hostID, name: "beta")
         try await model.openBorrowedHerdrSession(first)
         await waitUntilMainActor {
             model.prepareActiveBorrowedHerdrSurface()
@@ -197,11 +198,12 @@ final class WorkspaceHerdrFocusTests: XCTestCase {
         let database = try WorkspaceDatabase.inMemory()
         let hostID = UUID()
         let herdrSessions = [
-            HerdrSessionSummary(name: "agent", isDefault: false, state: .running, backend: .core),
+            HerdrSessionSummary(name: "agent", isDefault: false, state: .running),
         ]
         let snapshot = WorkspaceSnapshot.fixture(hosts: [.fixture(
             id: hostID,
             herdrSessions: herdrSessions,
+            herdrAvailable: true,
             zellijSessions: [ZellijSessionSummary(name: "editor")],
             zellijAvailable: true
         )])
@@ -221,13 +223,13 @@ final class WorkspaceHerdrFocusTests: XCTestCase {
             snapshot: snapshot,
             nativeHerdrSurfaceStore: RecordingNativeSessionSurfaceStore(),
             nativeZellijSurfaceStore: zellijStore,
-            nativeHerdrCorePathProvider: { _ in .success(script.path) },
+            nativeHerdrPathProvider: { _ in .success(script.path) },
             nativeZellijPathProvider: { _ in .success(script.path) },
             zellijSessionValidationDiscovery: { _, _ in .available(["editor"]) },
-            herdrSessionValidationDiscovery: { _, _, _ in
+            herdrSessionValidationDiscovery: { _, _ in
                 probeStarted.withLock { $0 = true }
                 await releaseProbe.wait()
-                return .available(herdrSessions, tuiAvailable: false)
+                return .available(herdrSessions)
             }
         )
         let zellij = WorkspaceZellijSessionSelection(hostID: hostID, name: "editor")
@@ -259,9 +261,7 @@ final class WorkspaceHerdrFocusTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(input))
 
         let opening = Task {
-            try await model.openBorrowedHerdrSession(.init(
-                hostID: hostID, name: "agent", backend: .core
-            ))
+            try await model.openBorrowedHerdrSession(.init(hostID: hostID, name: "agent"))
         }
         await waitUntilMainActor { probeStarted.withLock { $0 } }
         XCTAssertTrue(probeStarted.withLock { $0 })

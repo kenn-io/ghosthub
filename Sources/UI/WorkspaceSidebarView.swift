@@ -60,7 +60,8 @@ private enum WorkspaceSidebarDragItem: Equatable {
     case host(String)
     case worktree(UUID)
     case tmuxSession(hostID: UUID, name: String, socketName: String?)
-    case herdrSession(hostID: UUID, name: String, backend: HerdrBackend = .tui)
+    case herdrSession(hostID: UUID, name: String)
+    case backendTerminal(hostID: UUID, kind: BackendTerminalKind, address: String)
     case zellijSession(hostID: UUID, name: String)
 
     init?(rawValue: String) {
@@ -97,14 +98,19 @@ private enum WorkspaceSidebarDragItem: Equatable {
                 name: String(endpoint[1]),
                 socketName: endpoint[0].isEmpty ? nil : String(endpoint[0])
             )
-        case "herdr", "herdr-core":
+        case "herdr":
             guard parts.count == 3,
                   let hostID = UUID(uuidString: String(parts[1]))
             else { return nil }
-            self = .herdrSession(
+            self = .herdrSession(hostID: hostID, name: String(parts[2]))
+        case "herdr-core", "rex":
+            guard parts.count == 3,
+                  let hostID = UUID(uuidString: String(parts[1]))
+            else { return nil }
+            self = .backendTerminal(
                 hostID: hostID,
-                name: String(parts[2]),
-                backend: kind == "herdr-core" ? .core : .tui
+                kind: kind == "rex" ? .rex : .herdrCore,
+                address: String(parts[2])
             )
         case "zellij":
             guard parts.count == 3,
@@ -127,11 +133,11 @@ private enum WorkspaceSidebarDragItem: Equatable {
             return "worktree:\(id.uuidString)"
         case let .tmuxSession(hostID, name, socketName):
             return "tmux:\(hostID.uuidString):\(socketName ?? ""):\(name)"
-        case let .herdrSession(hostID, name, backend):
-            return WorkspaceSidebarModel.herdrSessionOrderID(
-                hostID: hostID,
-                name: name,
-                backend: backend
+        case let .herdrSession(hostID, name):
+            return WorkspaceSidebarModel.herdrSessionOrderID(hostID: hostID, name: name)
+        case let .backendTerminal(hostID, kind, address):
+            return WorkspaceSidebarModel.backendTerminalOrderID(
+                hostID: hostID, kind: kind, address: address
             )
         case let .zellijSession(hostID, name):
             return "zellij:\(hostID.uuidString):\(name)"
@@ -150,10 +156,11 @@ private enum WorkspaceSidebarDragItem: Equatable {
                 name: name,
                 socketName: socketName
             )
-        case let .herdrSession(hostID, name, backend):
-            return WorkspaceSidebarModel.herdrSessionOrderID(
-                hostID: hostID,
-                name: name, backend: backend
+        case let .herdrSession(hostID, name):
+            return WorkspaceSidebarModel.herdrSessionOrderID(hostID: hostID, name: name)
+        case let .backendTerminal(hostID, kind, address):
+            return WorkspaceSidebarModel.backendTerminalOrderID(
+                hostID: hostID, kind: kind, address: address
             )
         case let .zellijSession(hostID, name):
             return WorkspaceSidebarModel.zellijSessionOrderID(
@@ -197,6 +204,7 @@ struct WorkspaceSidebarView: View {
     let onOpen: (WorktreeSummary) -> Void
     let activeTmuxSession: WorkspaceTmuxSessionSelection?
     let activeHerdrSession: WorkspaceHerdrSessionSelection?
+    let activeBackendTerminal: WorkspaceBackendTerminalSelection?
     let activeZellijSession: WorkspaceZellijSessionSelection?
     let activeTmuxSessionIsConnected: Bool
     let connectedTmuxSessionIDs: Set<String>
@@ -212,6 +220,7 @@ struct WorkspaceSidebarView: View {
     let onOpenTmuxSession:
         (WorkspaceTmuxSessionSelection, WorkspaceSelection) -> Void
     let onOpenHerdrSession: (WorkspaceHerdrSessionSelection) -> Void
+    let onOpenBackendTerminal: (WorkspaceBackendTerminalSelection) -> Void
     let onOpenZellijSession: (WorkspaceZellijSessionSelection) -> Void
     let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
     let onRestartHerdrSession: (WorkspaceHerdrSessionSelection) -> Void
@@ -280,6 +289,7 @@ struct WorkspaceSidebarView: View {
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         activeTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
+        activeBackendTerminal: WorkspaceBackendTerminalSelection? = nil,
         activeZellijSession: WorkspaceZellijSessionSelection? = nil,
         activeTmuxSessionIsConnected: Bool = false,
         connectedTmuxSessionIDs: Set<String> = [],
@@ -300,6 +310,9 @@ struct WorkspaceSidebarView: View {
         ) -> Void = { _, _ in },
         onOpenHerdrSession: @escaping (
             WorkspaceHerdrSessionSelection
+        ) -> Void = { _ in },
+        onOpenBackendTerminal: @escaping (
+            WorkspaceBackendTerminalSelection
         ) -> Void = { _ in },
         onOpenZellijSession: @escaping (
             WorkspaceZellijSessionSelection
@@ -374,6 +387,7 @@ struct WorkspaceSidebarView: View {
         self.tmuxSessionVisibility = tmuxSessionVisibility
         self.activeTmuxSession = activeTmuxSession
         self.activeHerdrSession = activeHerdrSession
+        self.activeBackendTerminal = activeBackendTerminal
         self.activeZellijSession = activeZellijSession
         self.activeTmuxSessionIsConnected = activeTmuxSessionIsConnected
         self.connectedTmuxSessionIDs = connectedTmuxSessionIDs
@@ -386,6 +400,7 @@ struct WorkspaceSidebarView: View {
         self.onTmuxSessionPreviewExpanded = onTmuxSessionPreviewExpanded
         self.onOpenTmuxSession = onOpenTmuxSession
         self.onOpenHerdrSession = onOpenHerdrSession
+        self.onOpenBackendTerminal = onOpenBackendTerminal
         self.onOpenZellijSession = onOpenZellijSession
         self.pendingHerdrSessions = pendingHerdrSessions
         self.onRestartHerdrSession = onRestartHerdrSession
@@ -890,10 +905,9 @@ struct WorkspaceSidebarView: View {
                     name: name,
                     socketName: socketName
                 )
-            case let .herdrSession(hostID, name, backend): .herdrSession(
-                    hostID: hostID,
-                    name: name,
-                    backend: backend
+            case let .herdrSession(hostID, name): .herdrSession(hostID: hostID, name: name)
+            case let .backendTerminal(hostID, kind, address): .backendTerminal(
+                    hostID: hostID, kind: kind, address: address
                 )
             case let .zellijSession(hostID, name): .zellijSession(hostID: hostID, name: name)
             default: nil
@@ -912,8 +926,10 @@ struct WorkspaceSidebarView: View {
         let item: WorkspaceSidebarDragItem? = switch row.target {
         case let .tmuxSession(hostID, name, socketName):
             .tmuxSession(hostID: hostID, name: name, socketName: socketName)
-        case let .herdrSession(hostID, name, backend):
-            .herdrSession(hostID: hostID, name: name, backend: backend)
+        case let .herdrSession(hostID, name):
+            .herdrSession(hostID: hostID, name: name)
+        case let .backendTerminal(hostID, kind, address):
+            .backendTerminal(hostID: hostID, kind: kind, address: address)
         case let .zellijSession(hostID, name):
             .zellijSession(hostID: hostID, name: name)
         default:
@@ -984,10 +1000,10 @@ struct WorkspaceSidebarView: View {
             herdrActions = []
         }
         let herdrSelection: WorkspaceHerdrSessionSelection? = {
-            guard case let .herdrSession(hostID, name, backend) = row.target else {
+            guard case let .herdrSession(hostID, name) = row.target else {
                 return nil
             }
-            return WorkspaceHerdrSessionSelection(hostID: hostID, name: name, backend: backend)
+            return WorkspaceHerdrSessionSelection(hostID: hostID, name: name)
         }()
         let zellijSelection: WorkspaceZellijSessionSelection? = {
             guard case let .zellijSession(hostID, name) = row.target else {
@@ -1004,6 +1020,7 @@ struct WorkspaceSidebarView: View {
             rowTmuxSession: tmuxSession,
             activeTmuxSession: activeTmuxSession,
             activeHerdrSession: activeHerdrSession,
+            activeBackendTerminal: activeBackendTerminal,
             activeZellijSession: activeZellijSession
         )
         let isTmuxSessionWorking = tmuxSession.map {
@@ -1034,10 +1051,17 @@ struct WorkspaceSidebarView: View {
         )
         return HStack(spacing: 0) {
             Button {
-                if case let .herdrSession(hostID, name, backend) = row.target {
+                if case let .backendTerminal(hostID, kind, address) = row.target {
+                    selection.select(row.target, in: snapshot, visibility: visibility)
+                    onOpenBackendTerminal(WorkspaceBackendTerminalSelection(
+                        hostID: hostID, kind: kind, address: address
+                    ))
+                    return
+                }
+                if case let .herdrSession(hostID, name) = row.target {
                     let herdrSelection = WorkspaceHerdrSessionSelection(
                         hostID: hostID,
-                        name: name, backend: backend
+                        name: name
                     )
                     selection.select(
                         row.target,
@@ -1361,12 +1385,18 @@ struct WorkspaceSidebarView: View {
         rowTmuxSession: WorkspaceTmuxSessionSelection? = nil,
         activeTmuxSession: WorkspaceTmuxSessionSelection?,
         activeHerdrSession: WorkspaceHerdrSessionSelection?,
+        activeBackendTerminal: WorkspaceBackendTerminalSelection? = nil,
         activeZellijSession: WorkspaceZellijSessionSelection? = nil
     ) -> Bool {
-        if case let .herdrSession(hostID, name, backend) = row.target {
+        if case let .herdrSession(hostID, name) = row.target {
             return activeHerdrSession == WorkspaceHerdrSessionSelection(
                 hostID: hostID,
-                name: name, backend: backend
+                name: name
+            )
+        }
+        if case let .backendTerminal(hostID, kind, address) = row.target {
+            return activeBackendTerminal == WorkspaceBackendTerminalSelection(
+                hostID: hostID, kind: kind, address: address
             )
         }
         if case let .tmuxSession(hostID, name, socketName) = row.target {
@@ -1396,6 +1426,7 @@ struct WorkspaceSidebarView: View {
         }
         return activeTmuxSession == nil
             && activeHerdrSession == nil
+            && activeBackendTerminal == nil
             && activeZellijSession == nil
             && selection.navigationTarget == row.target
     }
@@ -1507,7 +1538,7 @@ struct WorkspaceSidebarView: View {
                 id: directoryWorkspaceID
             ) else { return nil }
             return WorkspaceSidebarModel.tmuxSessionSelection(for: workspace)
-        case .host, .project, .herdrSession, .zellijSession:
+        case .host, .project, .herdrSession, .backendTerminal, .zellijSession:
             return nil
         }
     }
@@ -1564,6 +1595,7 @@ struct WorkspaceSidebarView: View {
                     rowTmuxSession: tmuxSessionSelection(for: row),
                     activeTmuxSession: activeTmuxSession,
                     activeHerdrSession: activeHerdrSession,
+                    activeBackendTerminal: activeBackendTerminal,
                     activeZellijSession: activeZellijSession
                 ),
                 isFocused: focusedWorktreeActionID == worktreeID
@@ -2273,25 +2305,28 @@ struct WorkspaceSidebarView: View {
         var sessionOrder = WorkspaceSidebarOrder(
             rawValue: sessionOrderRawValue
         )
-        let sessionIDs = Set(snapshot.hosts.flatMap { host in
-            host.tmuxSessions.map {
+        let sessionIDs = Set(snapshot.hosts.flatMap { host -> [String] in
+            var ids: [String] = host.tmuxSessions.map {
                 WorkspaceSidebarModel.tmuxSessionOrderID(
                     hostID: host.id,
                     name: $0.name,
                     socketName: $0.socketName
                 )
-            } + host.herdrSessions.map {
-                WorkspaceSidebarModel.herdrSessionOrderID(
+            }
+            ids += host.herdrSessions.map {
+                WorkspaceSidebarModel.herdrSessionOrderID(hostID: host.id, name: $0.name)
+            }
+            ids += host.backendTerminals.map {
+                WorkspaceSidebarModel.backendTerminalOrderID(
                     hostID: host.id,
-                    name: $0.name,
-                    backend: $0.backend
-                )
-            } + host.zellijSessions.map {
-                WorkspaceSidebarModel.zellijSessionOrderID(
-                    hostID: host.id,
-                    name: $0.name
+                    kind: $0.kind,
+                    address: $0.address
                 )
             }
+            ids += host.zellijSessions.map {
+                WorkspaceSidebarModel.zellijSessionOrderID(hostID: host.id, name: $0.name)
+            }
+            return ids
         })
         if sessionOrder.prune(keeping: sessionIDs) {
             sessionOrderRawValue = sessionOrder.rawValue

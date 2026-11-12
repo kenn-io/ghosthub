@@ -26,6 +26,7 @@ public struct WorkspaceDisplayState {
         Set<ApplicationShortcutAction>
     public let activeHerdrSession: WorkspaceHerdrSessionSelection?
     public let activeZellijSession: WorkspaceZellijSessionSelection?
+    public let activeBackendTerminal: WorkspaceBackendTerminalSelection?
     public let pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection>
     public let sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest?
@@ -55,6 +56,7 @@ public struct WorkspaceDisplayState {
         Set<ApplicationShortcutAction> = [],
         activeHerdrSession: WorkspaceHerdrSessionSelection? = nil,
         activeZellijSession: WorkspaceZellijSessionSelection? = nil,
+        activeBackendTerminal: WorkspaceBackendTerminalSelection? = nil,
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = [],
         sessionConnectionRecoveryRequest:
         SessionConnectionRecoveryRequest? = nil,
@@ -88,6 +90,7 @@ public struct WorkspaceDisplayState {
             availableApplicationShortcuts
         self.activeHerdrSession = activeHerdrSession
         self.activeZellijSession = activeZellijSession
+        self.activeBackendTerminal = activeBackendTerminal
         self.pendingHerdrSessions = pendingHerdrSessions
         self.sessionConnectionRecoveryRequest =
             sessionConnectionRecoveryRequest
@@ -120,6 +123,9 @@ public struct ContentBuilders {
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)?
     public let zellijSessionContentBuilder:
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)?
+    public let backendTerminalContentBuilder:
+        ((HostSummary, WorkspaceBackendTerminalSelection, Bool, NativeSessionContentActions)
+            -> AnyView?)?
     public let settingsSheetBuilder: ((SettingsStore) -> AnyView)?
     public let logViewerBuilder: (() -> AnyView?)?
     public let sshAuthenticationBuilder: ((UUID) -> AnyView?)?
@@ -134,6 +140,9 @@ public struct ContentBuilders {
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)? = nil,
         zellijSessionContentBuilder:
         ((HostSummary, String, Bool, NativeSessionContentActions) -> AnyView?)? = nil,
+        backendTerminalContentBuilder:
+        ((HostSummary, WorkspaceBackendTerminalSelection, Bool, NativeSessionContentActions)
+            -> AnyView?)? = nil,
         settingsSheetBuilder: ((SettingsStore) -> AnyView)? = nil,
         logViewerBuilder: (() -> AnyView?)? = nil,
         sshAuthenticationBuilder: ((UUID) -> AnyView?)? = nil,
@@ -144,6 +153,7 @@ public struct ContentBuilders {
         self.tmuxSessionContentBuilder = tmuxSessionContentBuilder
         self.herdrSessionContentBuilder = herdrSessionContentBuilder
         self.zellijSessionContentBuilder = zellijSessionContentBuilder
+        self.backendTerminalContentBuilder = backendTerminalContentBuilder
         self.settingsSheetBuilder = settingsSheetBuilder
         self.logViewerBuilder = logViewerBuilder
         self.sshAuthenticationBuilder = sshAuthenticationBuilder
@@ -451,6 +461,10 @@ public struct InteractionHandlers {
         ((WorkspaceZellijSessionSelection) async throws -> Void)?
     public let closeZellijSession: ((WorkspaceZellijSessionSelection) -> Void)?
     public let cancelPendingZellijPresentation: (() -> Void)?
+    public let openBackendTerminal: ((WorkspaceBackendTerminalSelection) async throws -> Void)?
+    public let closeBackendTerminal: ((WorkspaceBackendTerminalSelection) -> Void)?
+    /// Cancels every session open that is still checking its target.
+    public let cancelPendingSessionOpens: (() -> Void)?
     public let prepareZellijSessionKill:
         ((WorkspaceZellijSessionSelection) async throws
             -> ZellijSessionKillRequest)?
@@ -482,6 +496,7 @@ public struct InteractionHandlers {
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
     public let reconnectActiveHerdrSessionNow: (() -> Void)?
     public let reconnectActiveZellijSessionNow: (() -> Void)?
+    public let reconnectActiveBackendTerminalNow: (() -> Void)?
     public let resumeSessionReconnectAfterSSHRecovery:
         ((SessionConnectionRecoveryRequest) -> Void)?
     public let reviewSSHHostKey:
@@ -548,6 +563,9 @@ public struct InteractionHandlers {
         closeZellijSession:
         ((WorkspaceZellijSessionSelection) -> Void)? = nil,
         cancelPendingZellijPresentation: (() -> Void)? = nil,
+        openBackendTerminal: ((WorkspaceBackendTerminalSelection) async throws -> Void)? = nil,
+        closeBackendTerminal: ((WorkspaceBackendTerminalSelection) -> Void)? = nil,
+        cancelPendingSessionOpens: (() -> Void)? = nil,
         prepareZellijSessionKill:
         ((WorkspaceZellijSessionSelection) async throws
             -> ZellijSessionKillRequest)? = nil,
@@ -579,6 +597,7 @@ public struct InteractionHandlers {
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
         reconnectActiveHerdrSessionNow: (() -> Void)? = nil,
         reconnectActiveZellijSessionNow: (() -> Void)? = nil,
+        reconnectActiveBackendTerminalNow: (() -> Void)? = nil,
         resumeSessionReconnectAfterSSHRecovery:
         ((SessionConnectionRecoveryRequest) -> Void)? = nil,
         reviewSSHHostKey:
@@ -637,6 +656,9 @@ public struct InteractionHandlers {
         self.createZellijSession = createZellijSession
         self.closeZellijSession = closeZellijSession
         self.cancelPendingZellijPresentation = cancelPendingZellijPresentation
+        self.openBackendTerminal = openBackendTerminal
+        self.closeBackendTerminal = closeBackendTerminal
+        self.cancelPendingSessionOpens = cancelPendingSessionOpens
         self.prepareZellijSessionKill = prepareZellijSessionKill
         self.killZellijSession = killZellijSession
         self.cancelZellijSessionKill = cancelZellijSessionKill
@@ -654,6 +676,7 @@ public struct InteractionHandlers {
         self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
         self.reconnectActiveHerdrSessionNow = reconnectActiveHerdrSessionNow
         self.reconnectActiveZellijSessionNow = reconnectActiveZellijSessionNow
+        self.reconnectActiveBackendTerminalNow = reconnectActiveBackendTerminalNow
         self.resumeSessionReconnectAfterSSHRecovery =
             resumeSessionReconnectAfterSSHRecovery
         self.reviewSSHHostKey = reviewSSHHostKey

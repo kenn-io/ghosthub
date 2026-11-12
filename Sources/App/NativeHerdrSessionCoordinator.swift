@@ -10,7 +10,6 @@ struct BorrowedHerdrSessionHandle: Equatable, Sendable {
     var hostID: UUID
     var name: String
     var surfaceID: UUID
-    var backend: HerdrBackend = .tui
 }
 
 enum BorrowedHerdrAttachmentClosure: Equatable {
@@ -27,7 +26,6 @@ enum BorrowedHerdrAttachmentClosure: Equatable {
 private struct NativeHerdrSessionKey: Hashable {
     var hostID: UUID
     var name: String
-    var backend: HerdrBackend = .tui
 }
 
 private struct NativeHerdrAttachment {
@@ -79,8 +77,6 @@ final class NativeHerdrSessionCoordinator {
     private let terminalCoordinator: any NativeSessionSurfaceStoring
     private let herdrPathProvider:
         @Sendable (CommandHost, [String]) -> Result<String, HerdrCommandError>
-    private let corePathProvider:
-        @Sendable (CommandHost, [String]) -> Result<String, HerdrCommandError>
     private let remoteConnectionProvider:
         @Sendable (UUID, SSHHostInfo) async throws
         -> KwtSSHConnection
@@ -120,14 +116,6 @@ final class NativeHerdrSessionCoordinator {
                     sshConnectionArguments: $1
                 )
             },
-        corePathProvider: @escaping @Sendable (CommandHost, [String])
-            -> Result<String, HerdrCommandError> = {
-                HerdrInventoryClient().resolveExecutable(
-                    on: $0,
-                    sshConnectionArguments: $1,
-                    backend: .core
-                )
-            },
         remoteConnectionProvider:
         @escaping @Sendable (UUID, SSHHostInfo) async throws
             -> KwtSSHConnection = { _, _ in
@@ -152,7 +140,6 @@ final class NativeHerdrSessionCoordinator {
     ) {
         self.terminalCoordinator = terminalCoordinator
         self.herdrPathProvider = herdrPathProvider
-        self.corePathProvider = corePathProvider
         self.remoteConnectionProvider = remoteConnectionProvider
         self.paneSplitCapabilityProvider = paneSplitCapabilityProvider
         self.paneSplitter = paneSplitter
@@ -165,12 +152,11 @@ final class NativeHerdrSessionCoordinator {
         hostID: UUID,
         name: String,
         host: CommandHost,
-        backend: HerdrBackend = .tui,
         isDefault: Bool = false,
         launchMode: HerdrAttachmentLaunchMode = .attachExisting,
         sshConnectionSnapshot: SSHConnectionArgumentsSnapshot? = nil
     ) -> BorrowedHerdrSessionHandle {
-        let key = NativeHerdrSessionKey(hostID: hostID, name: name, backend: backend)
+        let key = NativeHerdrSessionKey(hostID: hostID, name: name)
         if let existing = handlesByKey[key],
            targetHostsByHandle[existing.id] != host {
             removeHandle(existing, for: key)
@@ -180,8 +166,7 @@ final class NativeHerdrSessionCoordinator {
                 id: UUID(),
                 hostID: hostID,
                 name: name,
-                surfaceID: UUID(),
-                backend: backend
+                surfaceID: UUID()
             )
         handlesByKey[key] = handle
         targetHostsByHandle[handle.id] = host
@@ -206,7 +191,7 @@ final class NativeHerdrSessionCoordinator {
 
         provisioningHandles.insert(handle.id)
         launchModesByHandle[handle.id] = launchMode
-        let herdrPathProvider = backend == .core ? corePathProvider : herdrPathProvider
+        let herdrPathProvider = herdrPathProvider
         let remoteConnectionProvider = remoteConnectionProvider
         let suppliedConnectionSnapshot = sshConnectionSnapshot
         provisioningTasks[handle.id] = Task { [weak self] in
@@ -291,9 +276,7 @@ final class NativeHerdrSessionCoordinator {
                     ? remoteExitStatusStore.prepare()
                     : nil
             )
-            if handle.backend == .tui {
-                startPaneSplitCapabilityBinding(handle)
-            }
+            startPaneSplitCapabilityBinding(handle)
             onSurfaceReady?(handle)
         case let .failure(error):
             Task {
@@ -341,8 +324,8 @@ final class NativeHerdrSessionCoordinator {
         )
     }
 
-    func detach(hostID: UUID, name: String, backend: HerdrBackend = .tui) {
-        let key = NativeHerdrSessionKey(hostID: hostID, name: name, backend: backend)
+    func detach(hostID: UUID, name: String) {
+        let key = NativeHerdrSessionKey(hostID: hostID, name: name)
         guard let handle = handlesByKey.removeValue(forKey: key) else {
             return
         }
@@ -432,8 +415,7 @@ final class NativeHerdrSessionCoordinator {
             command = try HerdrAttachmentInfo(
                 sessionName: handle.name,
                 isDefault: attachment.isDefault,
-                host: attachment.host,
-                backend: handle.backend
+                host: attachment.host
             ).attachCommand(
                 herdrPath: attachment.herdrPath,
                 launchMode: attachment.launchMode,
@@ -557,7 +539,7 @@ final class NativeHerdrSessionCoordinator {
     private func startPaneSplitCapabilityBinding(
         _ handle: BorrowedHerdrSessionHandle
     ) {
-        guard handle.backend == .tui, let attachment = attachments[handle.id] else { return }
+        guard let attachment = attachments[handle.id] else { return }
         paneSplitCapabilityTasks.removeValue(forKey: handle.id)?.task.cancel()
         let bindingID = UUID()
         let provider = paneSplitCapabilityProvider
@@ -854,6 +836,6 @@ final class NativeHerdrSessionCoordinator {
     private func sessionKey(
         _ handle: BorrowedHerdrSessionHandle
     ) -> NativeHerdrSessionKey {
-        NativeHerdrSessionKey(hostID: handle.hostID, name: handle.name, backend: handle.backend)
+        NativeHerdrSessionKey(hostID: handle.hostID, name: handle.name)
     }
 }

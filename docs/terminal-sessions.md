@@ -18,8 +18,11 @@ sources:
   Discovery preserves the socket, so equal names on those servers remain
   separate targets.
 - **Herdr sessions:** running and stopped sessions returned by `herdr session list --json`
-  on the local Mac and remote POSIX hosts. The macOS app also lists live local
-  terminals returned by `herdr-core ls --json` on each of those hosts.
+  on the local Mac and remote POSIX hosts.
+- **Backend terminals (macOS app):** live terminals returned by
+  `herdr-core ls --json` and Rex blocks returned by Ghosthub's pinned
+  `kwt rex ls --json` on each of those hosts. See
+  [Backend terminals](#backend-terminals).
 - **Zellij sessions:** active sessions returned by `zellij list-sessions
   --no-formatting` on the local Mac and remote POSIX hosts. Exited,
   resurrectable sessions are filtered out.
@@ -239,9 +242,56 @@ and may apply `reverse` across the client rather than only its status line. The
 persistent override and one-shot action are therefore unavailable for native
 Windows sessions.
 
-## Native Herdr Attachment
+## Backend Terminals
 
-### Desktop core terminals
+Herdr Core and Rex leave pane layout to their own client apps and offer one
+terminal at a time to attach to. Ghosthub lists those terminals per host and
+attaches each one in its own libghostty surface. The backend owns creation,
+program lifetime, and layout; closing the surface only detaches.
+
+A backend terminal's identity is its host, kind (`core` or `rex`), and address:
+a Herdr Core address such as `t7` or a Rex block ID. Titles and details are
+display text. A Herdr TUI session with the same name is a separate target.
+Selection, reconnect, sibling navigation, and restoration use that identity.
+
+Discovery runs every backend on a host through one SSH lease, independently of
+Herdr TUI discovery. A missing program is silent. A failed backend keeps its
+last listing and supplies a host warning; the other backends still update.
+A scheduled sweep lets a slow discovery finish; an explicit refresh or a
+change of hosts replaces it. Saved sidebar positions are pruned only after
+every host's backends have reported.
+
+Opening a terminal lists its backend again over a frozen SSH connection. The
+current view stays until the terminal is confirmed, so a failed open leaves it
+in place and shows the error. While that check runs, the current terminal
+takes no keystrokes and its reconnect waits. The same holds when a Herdr
+session and a backend terminal replace each other. Cmd-W cancels every
+shortcut still checking its target, so nothing opens after the close. The attach then requires that connection's route,
+so a changed SSH alias cannot reach a same-addressed terminal on another
+machine. Reconnect checks the route before it reads the listing. A changed route
+stops with a prompt to reopen, whatever the other machine lists. On the
+original route, a terminal that is still listed reattaches with a new client,
+and one that is gone closes its presentation. A dropped SSH connection (status 255), an SSH transport failure, or a
+surface that could not be created yet reconnects automatically with backoff; a
+clean detach, a failed launch, or an ended program waits for **Retry**. A
+reconnect that needs authentication or host-key approval stops and offers
+**Review Connection**, then resumes after approval. Closing the terminal
+withdraws that request.
+
+Restoration stays pending until the terminal is confirmed. A transient failure
+lists the host again and retries; a terminal that ended is not restored.
+
+Ghosthub 0.13 saved a Herdr desktop terminal as a Herdr session. Restoration
+drops such an entry rather than attach a TUI session with the same name.
+Backend terminals have no Ghosthub create, stop, or split controls.
+
+Backend terminals join the host's one session list. Herdr desktop terminals
+carry a **herdr** label, Rex terminals a **rex** label, and Herdr TUI sessions
+a **herdr tui** label. Each backend terminal row shows its address or Rex
+detail as quiet text after the title. Sibling navigation walks the host's
+whole session list in sidebar order and skips stopped Herdr sessions.
+
+### Herdr Core terminals
 
 The macOS app resolves `herdr-core` separately from the older `herdr` TUI in
 each host account's login environment. It uses `herdr-core ls --json` for
@@ -253,28 +303,13 @@ Only `state: live` terminals with host-local `t…` addresses are listed.
 Finished terminals and `machine/t…` addresses are excluded; Ghosthub's own
 host routes determine where discovery and attachment run. The terminal's
 optional name, desktop location (`where`, the space and tab), or agent label is
-display text, in that order. Selection, reconnect, and
-restoration use the host, backend, and address, so a TUI session with the same
-name is a separate target.
+display text, in that order; the address appears beneath it.
 
 Each desktop terminal pane has its own core address and sidebar row. Split
 panes in the same desktop tab share the same `where` value, so their displayed
 titles can match; the address beneath each title distinguishes them. Attaching
 opens only the selected terminal, with no split geometry or desktop tab
 grouping. See the [user guide's split limitation](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
-
-Host inventory lists TUI and core sessions through one SSH lease. A failed
-backend preserves the other backend's rows and supplies a host warning. Missing
-executables are silent. Successful TUI discovery enables session creation even
-when core discovery fails. Attachment and reconnect probes query only the
-selected backend, so they do not wait for the other backend to respond.
-Core attachments reuse the ordinary local/SSH client, detach, and reconnect
-paths. They never request TUI lifecycle operations or pane splits. Herdr desktop
-owns spaces and tabs; Ghosthub presents individual terminals without importing
-its layout. In the sidebar's session list, desktop terminals carry a
-**herdr** label and TUI sessions a **herdr tui** label. Only TUI rows offer
-creation and lifecycle actions. Sibling navigation walks the host's whole
-session list in sidebar order and skips stopped Herdr sessions.
 
 Before discovery and attachment, Ghosthub clears inherited TUI routing variables
 and `HC_SESSION`, `HC_SOCKET`, `HC_TERMINAL_ID`, and `HC_TERMINAL_SOCKET`.
@@ -286,6 +321,34 @@ Run `make test-herdr-core HERDR_CORE_BINARY=/absolute/path/to/herdr-core` to
 verify discovery, keyboard input, detach, and reattachment through libghostty.
 The test confines core state, configuration, and sockets to a temporary fixture
 and stops that fixture's core during teardown.
+
+### Rex terminals
+
+[Rex](https://www.superlogical.com/rex/docs) has no terminal client of its own,
+so Ghosthub attaches through kwt. The local Mac uses the kwt bundled with
+Ghosthub; SSH hosts use the managed kwt for the bundled revision
+(`$HOME/.ghosthub/helpers/kwt/<revision>/kwt`). Neither falls back to a `kwt`
+on `PATH`. `kwt rex ls --json` lists the account's running Rex server's blocks;
+`kwt rex attach <block-id>` presents one block. kwt finds the server through
+`REX_SERVER` or `rex whoami --autostart=false`, so discovery never starts a Rex
+server. A host with Rex stopped or absent lists no Rex terminals.
+
+The row title is the name Rex shows: the program's title, or else its
+foreground program and directory, such as `zsh ~`. The detail places the block:
+its session, its window when the session has several, and its pane number when
+the window has several. Rex's automatic `Window <id>` labels read as
+`window <position>`. Only block IDs of the form
+`block:<id>` reach kwt. Rex keeps the block's size in step with the Ghosthub
+surface while it is attached, and a fresh attachment repaints the current
+screen. When the block's program exits, kwt exits with its status.
+
+Run `make test-rex REX_BINARY=/absolute/path/to/rex` to verify discovery,
+keyboard input, detach, and reattachment through libghostty. The test starts a
+private Rex server with its own socket and state directory, and stops it during
+teardown. `REX_BINARY` is the `rex` command inside Rex Server (on macOS,
+`~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).
+
+## Native Herdr Attachment
 
 ### TUI sessions
 

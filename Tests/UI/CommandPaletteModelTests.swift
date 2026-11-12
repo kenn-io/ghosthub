@@ -6,26 +6,44 @@ import GhosthubWorkspace
 import Testing
 
 struct CommandPaletteModelTests {
-    @Test("core-only hosts expose terminal attachment without TUI lifecycle commands")
-    func coreTerminalCommands() throws {
-        let host = HostSummary.fixture(herdrSessions: [
-            .init(name: "t7", isDefault: false, state: .running, backend: .core, title: "review"),
-        ], herdrAvailable: false)
-        let selection = WorkspaceHerdrSessionSelection(hostID: host.id, name: "t7", backend: .core)
+    @Test(
+        "backend-terminal hosts expose attachment without Herdr TUI lifecycle commands",
+        arguments: [BackendTerminalKind.herdrCore, .rex]
+    )
+    func backendTerminalCommands(_ kind: BackendTerminalKind) throws {
+        let address = kind == .rex ? "block:aa" : "t7"
+        let host = HostSummary.fixture(
+            herdrAvailable: false,
+            backendTerminals: [.init(kind: kind, address: address, title: "review")]
+        )
+        let terminal = WorkspaceBackendTerminalSelection(
+            hostID: host.id, kind: kind, address: address
+        )
         let commands = makeCommandPaletteCommands(
             snapshot: .fixture(hosts: [host]), selection: .init(selectedHostID: host.id)
         )
-        #expect(commands.contains { $0.action == .openHerdrSession(selection) })
+        let open = try #require(commands.first { $0.action == .openBackendTerminal(terminal) })
+        #expect(open.title == (kind == .rex
+                ? "Open Rex terminal: review" : "Open Herdr terminal: review"))
         #expect(!commands.contains { $0.action == .newHerdrSession(host.id) })
-        #expect(!commands.contains { $0.action == .stopHerdrSession(selection) })
-        #expect(!commands.contains { $0.action == .restartHerdrSession(selection) })
-        #expect(!commands.contains { $0.action == .deleteHerdrSession(selection) })
+        #expect(!commands.contains {
+            if case .stopHerdrSession = $0.action {
+                return true
+            }
+            if case .restartHerdrSession = $0.action {
+                return true
+            }
+            if case .deleteHerdrSession = $0.action {
+                return true
+            }
+            return false
+        })
         let snapshot = WorkspaceSnapshot.fixture(hosts: [host])
         let row = try #require(WorkspaceSidebarModel.sections(in: snapshot).first?
-            .sessionRows(for: .herdrTerminal).first)
+            .sessionRows(for: kind == .rex ? .rex : .herdrTerminal).first)
         #expect(row.title == "review")
         #expect(WorkspaceSidebarRowActionModel.actions(for: row, in: snapshot).isEmpty)
-        // Desktop terminals alone do not make Herdr TUI creation available.
+        // Backend terminals alone do not make Herdr TUI creation available.
         let newHerdr = WorkspaceSidebarHostMenuModel.entries(for: host)
             .flatMap { $0 }
             .first { $0.item == .newHerdrSession }

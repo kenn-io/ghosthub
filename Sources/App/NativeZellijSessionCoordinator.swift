@@ -12,17 +12,6 @@ struct BorrowedZellijSessionHandle: Equatable, Sendable {
     var surfaceID: UUID
 }
 
-enum BorrowedZellijAttachmentClosure: Equatable {
-    case detached
-    case processExited(code: UInt32?)
-    case launchFailed
-    /// SSH transport failed before the terminal client could start.
-    case retryableTransportFailure
-    /// The terminal surface could not be created. Transient — no display was
-    /// available to render it — so recovery keeps trying instead of latching.
-    case surfaceUnavailable
-}
-
 private struct NativeZellijSessionKey: Hashable {
     var hostID: UUID
     var name: String
@@ -55,7 +44,7 @@ final class NativeZellijSessionCoordinator {
     private var targetHostsByHandle: [UUID: CommandHost] = [:]
     private var attachments: [UUID: NativeZellijAttachment] = [:]
     private var attachmentClosures: [
-        UUID: BorrowedZellijAttachmentClosure
+        UUID: BorrowedSessionAttachmentClosure
     ] = [:]
     private var launchedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
@@ -302,7 +291,7 @@ final class NativeZellijSessionCoordinator {
 
     func attachmentClosure(
         _ handle: BorrowedZellijSessionHandle
-    ) -> BorrowedZellijAttachmentClosure? {
+    ) -> BorrowedSessionAttachmentClosure? {
         attachmentClosures[handle.id]
     }
 
@@ -390,7 +379,7 @@ final class NativeZellijSessionCoordinator {
     private func failSurfaceLaunch(
         _ handle: BorrowedZellijSessionHandle,
         reason: String,
-        closure: BorrowedZellijAttachmentClosure = .launchFailed
+        closure: BorrowedSessionAttachmentClosure = .launchFailed
     ) {
         AppLogger.shared.error(
             "zellij surface launch failed: \(reason) "

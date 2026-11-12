@@ -85,6 +85,15 @@ var targets: [Target] = [
         path: "Sources/Herdr"
     ),
     .target(
+        name: "GhosthubBackendTerminal",
+        dependencies: [
+            "GhosthubHerdr",
+            "GhosthubTransport",
+            "GhosthubWorkspace",
+        ],
+        path: "Sources/BackendTerminal"
+    ),
+    .target(
         name: "GhosthubZellij",
         dependencies: [
             "GhosthubTransport",
@@ -175,6 +184,7 @@ targets.append(
     .executableTarget(
         name: "GhosthubApp",
         dependencies: [
+            "GhosthubBackendTerminal",
             "GhosthubHerdr",
             "GhosthubUI",
             "GhosthubSettings",
@@ -259,6 +269,7 @@ targets.append(
         name: "GhosthubAppTests",
         dependencies: [
             "GhosthubApp",
+            "GhosthubBackendTerminal",
             "GhosthubHerdr",
             "GhosthubTransport",
             "GhosthubUI",
@@ -308,6 +319,17 @@ targets.append(
 )
 targets.append(
     .testTarget(
+        name: "GhosthubBackendTerminalTests",
+        dependencies: [
+            "GhosthubBackendTerminal",
+            "GhosthubTransport",
+            "GhosthubWorkspace",
+        ],
+        path: "Tests/BackendTerminal"
+    )
+)
+targets.append(
+    .testTarget(
         name: "GhosthubTransportTests",
         dependencies: [
             "GhosthubTransport",
@@ -342,6 +364,7 @@ if hasBootstrappedLibghostty {
             name: "GhosthubTerminalSmokeTests",
             dependencies: [
                 "GhosthubApp",
+                "GhosthubBackendTerminal",
                 "GhosthubHerdr",
                 "GhosthubTerminal",
                 "GhosthubTerminalSupport",

@@ -24,15 +24,20 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
         activeTmuxSession: WorkspaceTmuxSessionSelection?,
         activeHerdrSession: WorkspaceHerdrSessionSelection?,
         activeZellijSession: WorkspaceZellijSessionSelection? = nil,
+        activeBackendTerminal: WorkspaceBackendTerminalSelection? = nil,
         in snapshot: WorkspaceSnapshot
     ) -> SessionTitlebarPresentation? {
         let activeCount = [
             activeTmuxSession != nil,
             activeHerdrSession != nil,
             activeZellijSession != nil,
+            activeBackendTerminal != nil,
         ].filter { $0 }.count
         guard activeCount <= 1 else {
             return nil
+        }
+        if let activeBackendTerminal {
+            return resolve(activeBackendTerminal: activeBackendTerminal, in: snapshot)
         }
         if let activeZellijSession,
            let host = snapshot.host(id: activeZellijSession.hostID) {
@@ -91,7 +96,22 @@ public struct SessionTitlebarPresentation: Equatable, Sendable {
             displayName: host.herdrSessions.first { $0.matches(activeHerdrSession) }?
                 .title ?? activeHerdrSession.name,
             hostname: hostname(for: host),
-            icon: activeHerdrSession.backend == .core ? .herdrTerminal : .herdrSession
+            icon: .herdrSession
+        )
+    }
+
+    public static func resolve(
+        activeBackendTerminal: WorkspaceBackendTerminalSelection?,
+        in snapshot: WorkspaceSnapshot
+    ) -> SessionTitlebarPresentation? {
+        guard let activeBackendTerminal,
+              let host = snapshot.host(id: activeBackendTerminal.hostID)
+        else { return nil }
+        return SessionTitlebarPresentation(
+            displayName: host.backendTerminals.first { $0.matches(activeBackendTerminal) }?
+                .title ?? activeBackendTerminal.address,
+            hostname: hostname(for: host),
+            icon: activeBackendTerminal.kind == .rex ? .rexTerminal : .herdrTerminal
         )
     }
 

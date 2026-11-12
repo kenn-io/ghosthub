@@ -162,14 +162,24 @@ extension WorkspaceSceneModel {
         if let pending = pendingHerdrShortcutSelection {
             return .herdrSession(
                 hostID: pending.hostID,
-                name: pending.name, backend: pending.backend
+                name: pending.name
+            )
+        }
+        if let pending = pendingBackendTerminalShortcutSelection {
+            return .backendTerminal(
+                hostID: pending.hostID, kind: pending.kind, address: pending.address
             )
         }
         if let active = activeBorrowedHerdrSelection {
-            return .herdrSession(hostID: active.hostID, name: active.name, backend: active.backend)
+            return .herdrSession(hostID: active.hostID, name: active.name)
         }
         if let active = activeBorrowedZellijSelection {
             return .zellijSession(hostID: active.hostID, name: active.name)
+        }
+        if let active = activeBackendTerminalSelection {
+            return .backendTerminal(
+                hostID: active.hostID, kind: active.kind, address: active.address
+            )
         }
         if let active = activeBorrowedTmuxSelection {
             if let worktreeID = active.worktreeID {
@@ -300,16 +310,16 @@ extension WorkspaceSceneModel {
             selectFromUser(updated)
             openBorrowedTmuxSession(.init(hostID: hostID, name: name, socketName: socketName))
             return true
-        case let .herdrSession(hostID, name, backend):
+        case let .herdrSession(hostID, name):
             guard snapshot.host(id: hostID)?.herdrSessions.contains(
-                where: { $0.name == name && $0.backend == backend && $0.state == .running }
+                where: { $0.name == name && $0.state == .running }
             ) == true else { return false }
             var updated = selection
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
             startHerdrShortcutNavigation(.init(
                 hostID: hostID,
-                name: name, backend: backend
+                name: name
             ))
             return true
         case let .zellijSession(hostID, name):
@@ -317,6 +327,18 @@ extension WorkspaceSceneModel {
             updated.select(target, in: snapshot, visibility: worktreeVisibility)
             selectFromUser(updated)
             openBorrowedZellijSession(.init(hostID: hostID, name: name))
+            return true
+        case let .backendTerminal(hostID, kind, address):
+            let terminal = WorkspaceBackendTerminalSelection(
+                hostID: hostID, kind: kind, address: address
+            )
+            guard snapshot.host(id: hostID)?.backendTerminals.contains(
+                where: { $0.matches(terminal) }
+            ) == true else { return false }
+            var updated = selection
+            updated.select(target, in: snapshot, visibility: worktreeVisibility)
+            selectFromUser(updated)
+            startBackendTerminalShortcutNavigation(terminal)
             return true
         case .host, .project:
             return false
@@ -339,6 +361,34 @@ extension WorkspaceSceneModel {
             self?.herdrShortcutNavigationTask = nil
             self?.herdrShortcutNavigationID = nil
         }
+    }
+
+    /// The pending terminal stays the navigation cursor until its open
+    /// finishes, so repeated shortcuts walk past it. Any later navigation
+    /// cancels it before it can open.
+    private func startBackendTerminalShortcutNavigation(
+        _ terminal: WorkspaceBackendTerminalSelection
+    ) {
+        cancelPendingBackendTerminalShortcutNavigation()
+        let navigationID = UUID()
+        backendTerminalShortcutNavigationID = navigationID
+        pendingBackendTerminalShortcutSelection = terminal
+        backendTerminalShortcutNavigationTask = Task { @MainActor [weak self] in
+            try? await self?.openBackendTerminal(terminal)
+            guard self?.backendTerminalShortcutNavigationID == navigationID else {
+                return
+            }
+            self?.pendingBackendTerminalShortcutSelection = nil
+            self?.backendTerminalShortcutNavigationTask = nil
+            self?.backendTerminalShortcutNavigationID = nil
+        }
+    }
+
+    func cancelPendingBackendTerminalShortcutNavigation() {
+        backendTerminalShortcutNavigationTask?.cancel()
+        backendTerminalShortcutNavigationTask = nil
+        backendTerminalShortcutNavigationID = nil
+        pendingBackendTerminalShortcutSelection = nil
     }
 
     func cancelPendingHerdrShortcutNavigation() {

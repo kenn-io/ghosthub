@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import GhosthubBackendTerminal
 import GhosthubHerdr
 import GhosttyKit
 @testable import GhosthubApp
@@ -73,23 +74,22 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let listed = AccountCommandRunner.runProcess(
             executable: "/bin/sh", arguments: ["-c", inventoryCommand], timeout: 10
         )
-        guard case let .available(terminals, _, _) = HerdrCoreInventory.parse(
+        guard case let .available(terminals) = HerdrCoreInventory.parse(
             status: listed.status, stdout: listed.stdout, stderr: listed.stderr
         ), let terminal = terminals.first else {
             XCTFail("Core terminal was not discovered: \(listed.stderr) \(listed.stdout)")
             return
         }
         XCTAssertEqual(terminal.title, "review")
-        let command = try HerdrAttachmentInfo(
-            sessionName: terminal.name, isDefault: false, host: .local, backend: .core
-        ).attachCommand(herdrPath: wrapper.path)
+        let command = try BackendTerminalAttachmentInfo(terminal: terminal, host: .local)
+            .attachCommand(executablePath: wrapper.path)
         let view = makeSurface(app: try requireAppHandle(), configuration: .init(command: command))
         let window = hostInWindow(view)
         waitForViewportText("CORE_READY", in: view)
         XCTAssertTrue(readViewportText(from: view).contains("CORE_READY"))
         typeText("core-input\r", into: view, window: window)
         waitForViewportText("core-input", in: view)
-        let afterInput = run(["read", terminal.name])
+        let afterInput = run(["read", terminal.address])
         XCTAssertEqual(afterInput.status, 0, afterInput.stderr)
         XCTAssertTrue(
             afterInput.stdout.contains("core-input"),
@@ -100,7 +100,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let stillRunning = run(["ls", "--json"])
         XCTAssertEqual(stillRunning.status, 0)
         XCTAssertTrue(
-            stillRunning.stdout.contains(terminal.name),
+            stillRunning.stdout.contains(terminal.address),
             "Closing the view must leave the program running"
         )
         let reopened = makeSurface(
@@ -111,6 +111,125 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         waitForViewportText("core-input", in: reopened)
         XCTAssertTrue(
             readViewportText(from: reopened).contains("core-input"),
+            readViewportText(from: reopened)
+        )
+        await reopened.shutdown()
+        reopenedWindow.orderOut(nil)
+    }
+
+    /// Attaches to a block on a private Rex server through `kwt rex attach`,
+    /// types into it, detaches, and reattaches to the same running program.
+    func testRexTerminalAttachment() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let rex = environment["GHOSTHUB_TEST_REX_BINARY"],
+              let kwt = environment["GHOSTHUB_TEST_KWT_BINARY"]
+        else {
+            throw XCTSkip("Run make test-rex with REX_BINARY and a kwt that has rex support")
+        }
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: rex))
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: kwt))
+        // Keep the Unix socket path short and all server state in this fixture.
+        let root = URL(fileURLWithPath: "/tmp/gh-rex-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        for directory in ["state", "data", "config"] {
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent(directory),
+                withIntermediateDirectories: false
+            )
+        }
+        let endpoint = "unix://\(root.path)/rex.sock"
+        let server = Process()
+        server.executableURL = URL(fileURLWithPath: rex)
+        server.arguments = [
+            "server", "run", "--listen", endpoint,
+            "--state-dir", root.path + "/state", "--restore=false",
+        ]
+        server.environment = environment.merging([
+            "XDG_DATA_DIRS": root.path + "/data",
+            "XDG_DATA_HOME": root.path + "/data",
+            "XDG_CONFIG_HOME": root.path + "/config",
+        ]) { $1 }
+        server.standardOutput = FileHandle.nullDevice
+        server.standardError = FileHandle.nullDevice
+        try server.run()
+        let wrapper = makeExecutableScript("""
+        #!/bin/sh
+        export REX_SERVER=\(shellQuotedCommandArgument(endpoint))
+        exec \(shellQuotedCommandArgument(kwt)) "$@"
+        """)
+        func rexCommand(_ arguments: [String]) -> AccountCommandOutput {
+            AccountCommandRunner.runProcess(
+                executable: rex,
+                arguments: ["-S", endpoint, "--autostart=false"] + arguments,
+                timeout: 10
+            )
+        }
+        func listedTerminals() -> [BackendTerminalSummary] {
+            let listed = AccountCommandRunner.runProcess(
+                executable: "/bin/sh",
+                arguments: ["-c", RexInventory.command(
+                    kwtPrelude: "ghosthub_kwt_path=\(shellQuotedCommandArgument(wrapper.path)); "
+                )],
+                timeout: 10
+            )
+            guard case let .available(terminals) = RexInventory.parse(
+                status: listed.status, stdout: listed.stdout, stderr: listed.stderr
+            ) else { return [] }
+            return terminals
+        }
+        addTeardownBlock { @MainActor [self] in
+            for surface in surfaces {
+                await surface.shutdown()
+            }
+            server.terminate()
+            server.waitUntilExit()
+            try? FileManager.default.removeItem(at: wrapper)
+            try? FileManager.default.removeItem(at: root)
+        }
+        waitUntil(timeout: 10) {
+            FileManager.default.fileExists(atPath: root.path + "/rex.sock")
+        }
+        let created = rexCommand([
+            "new", "live", "--shell=none", "--",
+            "/bin/sh", "-c", "printf 'REX_READY\\n'; exec /bin/cat",
+        ])
+        XCTAssertEqual(created.status, 0, created.stderr)
+        let terminal = try XCTUnwrap(listedTerminals().first, "Rex block was not listed")
+        XCTAssertEqual(terminal.detail, "live")
+
+        let command = try BackendTerminalAttachmentInfo(terminal: terminal, host: .local)
+            .attachCommand(executablePath: wrapper.path)
+        let view = makeSurface(app: try requireAppHandle(), configuration: .init(command: command))
+        let window = hostInWindow(view)
+        await waitForViewportTextYielding("REX_READY", in: view)
+        XCTAssertTrue(readViewportText(from: view).contains("REX_READY"))
+        typeText("rex-input\r", into: view, window: window)
+        await waitForViewportTextYielding("rex-input", in: view)
+        let captured = rexCommand(["capture", "-b", terminal.address])
+        XCTAssertEqual(captured.status, 0, captured.stderr)
+        XCTAssertTrue(
+            captured.stdout.contains("rex-input"),
+            "Rex capture: \(captured.stdout); rendered: \(readViewportText(from: view))"
+        )
+
+        await view.shutdown()
+        window.orderOut(nil)
+        XCTAssertEqual(
+            listedTerminals().map(\.address), [terminal.address],
+            "Closing the view must leave the block running"
+        )
+        let reopened = makeSurface(
+            app: try requireAppHandle(),
+            configuration: .init(command: command)
+        )
+        let reopenedWindow = hostInWindow(reopened)
+        await waitForViewportTextYielding("rex-input", in: reopened)
+        XCTAssertTrue(
+            readViewportText(from: reopened).contains("rex-input"),
             readViewportText(from: reopened)
         )
         await reopened.shutdown()
@@ -827,6 +946,22 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     ) {
         waitUntil(timeout: timeout) {
             self.readViewportText(from: view).contains(expected)
+        }
+    }
+
+    /// Waits by suspending the main actor instead of spinning the run loop.
+    /// libghostty's IO thread stops when its 64-message app mailbox is full,
+    /// and only `ghostty_app_tick` on the main queue drains it. A spinning
+    /// `RunLoop` inside a main-actor job never runs those ticks, so output
+    /// with many app messages, such as Rex's 256-color palette, would stall.
+    private func waitForViewportTextYielding(
+        _ expected: String,
+        in view: TerminalSurfaceView,
+        timeout: Duration = .seconds(20)
+    ) async {
+        let deadline = ContinuousClock.now + timeout
+        while !readViewportText(from: view).contains(expected), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 

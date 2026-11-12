@@ -1094,6 +1094,7 @@ enum HostInventoryOverlay {
         kwtAvailabilityByHost: [UUID: Bool] = [:],
         tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
         herdrSessionsByHost: [UUID: [HerdrSessionSummary]] = [:],
+        backendTerminalsByHost: [UUID: [BackendTerminalSummary]] = [:],
         zellijSessionsByHost: [UUID: [ZellijSessionSummary]] = [:],
         herdrAvailabilityByHost: [UUID: Bool] = [:],
         zellijAvailabilityByHost: [UUID: Bool] = [:],
@@ -1113,6 +1114,7 @@ enum HostInventoryOverlay {
             kwtAvailabilityByHost: kwtAvailabilityByHost,
             tmuxSessionsByHost: tmuxSessionsByHost,
             herdrSessionsByHost: herdrSessionsByHost,
+            backendTerminalsByHost: backendTerminalsByHost,
             zellijSessionsByHost: zellijSessionsByHost,
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
@@ -1126,6 +1128,7 @@ enum HostInventoryOverlay {
     static func applyRuntimeSessions(
         tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
         herdrSessionsByHost: [UUID: [HerdrSessionSummary]] = [:],
+        backendTerminalsByHost: [UUID: [BackendTerminalSummary]] = [:],
         zellijSessionsByHost: [UUID: [ZellijSessionSummary]] = [:],
         herdrAvailabilityByHost: [UUID: Bool] = [:],
         zellijAvailabilityByHost: [UUID: Bool] = [:],
@@ -1138,6 +1141,7 @@ enum HostInventoryOverlay {
             kwtAvailabilityByHost: [:],
             tmuxSessionsByHost: tmuxSessionsByHost,
             herdrSessionsByHost: herdrSessionsByHost,
+            backendTerminalsByHost: backendTerminalsByHost,
             zellijSessionsByHost: zellijSessionsByHost,
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
@@ -1152,6 +1156,7 @@ enum HostInventoryOverlay {
         kwtAvailabilityByHost: [UUID: Bool],
         tmuxSessionsByHost: [UUID: [TmuxSessionSummary]],
         herdrSessionsByHost: [UUID: [HerdrSessionSummary]],
+        backendTerminalsByHost: [UUID: [BackendTerminalSummary]],
         zellijSessionsByHost: [UUID: [ZellijSessionSummary]],
         herdrAvailabilityByHost: [UUID: Bool],
         zellijAvailabilityByHost: [UUID: Bool],
@@ -1172,6 +1177,12 @@ enum HostInventoryOverlay {
                 $0.id == hostID
             }) else { continue }
             updated.hosts[index].herdrSessions = sessions
+        }
+        for (hostID, terminals) in backendTerminalsByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            updated.hosts[index].backendTerminals = terminals
         }
         for (hostID, sessions) in zellijSessionsByHost {
             guard let index = updated.hosts.firstIndex(where: {

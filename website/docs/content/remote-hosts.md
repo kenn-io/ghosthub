@@ -37,6 +37,9 @@ its running and stopped sessions to the host's session list. It still uses Ghost
 trust, authentication, pooling, and reconnect path rather than Herdr's remote
 transport.
 
+If a Rex server is running for that account, the macOS app adds its terminals
+to the host's session list through Ghosthub's managed kwt helper.
+
 If Zellij is installed, Ghosthub adds its active sessions under **Zellij
 Sessions** and filters out exited/resurrectable entries. Attachments still use
 Ghosthub's ordinary OpenSSH transport rather than a backend-specific remote

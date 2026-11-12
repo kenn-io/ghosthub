@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Borrowed Zellij presentation")
 @MainActor
-struct BorrowedZellijSessionViewTests {
+struct BorrowedSessionViewTests {
     @Test("automatic transport recovery offers immediate reconnect")
     func reconnectingPresentation() {
         let view = makeView(
@@ -36,14 +36,10 @@ struct BorrowedZellijSessionViewTests {
 
     private func makeView(
         recoveryState: NativeSessionRecoveryState
-    ) -> BorrowedZellijSessionView {
-        BorrowedZellijSessionView(
-            handle: BorrowedZellijSessionHandle(
-                id: UUID(),
-                hostID: UUID(),
-                name: "api",
-                surfaceID: UUID()
-            ),
+    ) -> BorrowedSessionView {
+        BorrowedSessionView(
+            sessionName: "api",
+            disconnectedMessage: "The Zellij session disconnected.",
             hostName: "build-box",
             isRemoteHost: true,
             connectionState: .reconnecting(reason: "Recovering."),

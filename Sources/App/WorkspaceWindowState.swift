@@ -118,12 +118,17 @@ struct WorkspaceTmuxDescriptor: Codable, Hashable, Sendable {
 struct WorkspaceHerdrDescriptor: Codable, Hashable, Sendable {
     var hostKey: String
     var sessionName: String
-    var backend: HerdrBackend? = nil
 }
 
 struct WorkspaceZellijDescriptor: Codable, Hashable, Sendable {
     var hostKey: String
     var sessionName: String
+}
+
+struct WorkspaceBackendTerminalDescriptor: Codable, Hashable, Sendable {
+    var hostKey: String
+    var kind: BackendTerminalKind
+    var address: String
 }
 
 enum WorkspaceWindowLaunchIntent: Hashable, Sendable {
@@ -154,9 +159,15 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
     var tmux: WorkspaceTmuxDescriptor?
     var herdr: WorkspaceHerdrDescriptor? = nil
     var zellij: WorkspaceZellijDescriptor? = nil
+    var backendTerminal: WorkspaceBackendTerminalDescriptor? = nil
     var customTitle: String? = nil
     /// Captured immediately before an update, independently of native Resume.
     var frame: WorkspaceWindowFrame? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case windowID, navigation, tmux, herdr, zellij, backendTerminal
+        case customTitle, frame
+    }
 
     static func fresh(windowID: UUID = UUID()) -> Self {
         Self(windowID: windowID, navigation: nil, tmux: nil)
@@ -168,6 +179,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         activeTmux: WorkspaceTmuxSessionSelection?,
         activeHerdr: WorkspaceHerdrSessionSelection? = nil,
         activeZellij: WorkspaceZellijSessionSelection? = nil,
+        activeBackendTerminal: WorkspaceBackendTerminalSelection? = nil,
         snapshot: WorkspaceSnapshot
     ) -> Self {
         let host = snapshot.host(id: selection.selectedHostID)
@@ -207,10 +219,12 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
         // only when its host and worktree ownership match the captured
         // navigation; otherwise keep the navigation alone rather than
         // emitting a combination the resolver rejects outright.
-        let hasContradictoryPresentations = activeTmux != nil
-            && activeHerdr != nil
-            || activeTmux != nil && activeZellij != nil
-            || activeHerdr != nil && activeZellij != nil
+        let hasContradictoryPresentations = [
+            activeTmux != nil,
+            activeHerdr != nil,
+            activeZellij != nil,
+            activeBackendTerminal != nil,
+        ].filter { $0 }.count > 1
         let tmux = activeTmux.flatMap { active -> WorkspaceTmuxDescriptor? in
             guard !hasContradictoryPresentations else { return nil }
             guard let activeHost = snapshot.host(id: active.hostID),
@@ -276,7 +290,7 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
             else { return nil }
             return WorkspaceHerdrDescriptor(
                 hostKey: activeHost.configKey,
-                sessionName: active.name, backend: active.backend == .core ? .core : nil
+                sessionName: active.name
             )
         }
         let zellij = activeZellij.flatMap {
@@ -297,12 +311,32 @@ struct WorkspaceWindowState: Codable, Hashable, Sendable {
                 sessionName: active.name
             )
         }
+        let backendTerminal = activeBackendTerminal.flatMap {
+            active -> WorkspaceBackendTerminalDescriptor? in
+            guard !hasContradictoryPresentations,
+                  let activeHost = snapshot.host(id: active.hostID),
+                  let navigation,
+                  activeHost.configKey == navigation.hostKey,
+                  selection.selectedProjectID == nil,
+                  selection.selectedWorktreeID == nil,
+                  selection.selectedDirectoryWorkspaceID == nil,
+                  !active.address.trimmingCharacters(
+                      in: .whitespacesAndNewlines
+                  ).isEmpty
+            else { return nil }
+            return WorkspaceBackendTerminalDescriptor(
+                hostKey: activeHost.configKey,
+                kind: active.kind,
+                address: active.address
+            )
+        }
         return Self(
             windowID: windowID,
             navigation: navigation,
             tmux: tmux,
             herdr: herdr,
-            zellij: zellij
+            zellij: zellij,
+            backendTerminal: backendTerminal
         )
     }
 
@@ -442,6 +476,7 @@ enum WorkspaceRestoredPresentation: Equatable, Sendable {
     case tmux(WorkspaceTmuxSessionSelection)
     case herdr(WorkspaceHerdrSessionSelection)
     case zellij(WorkspaceZellijSessionSelection)
+    case backendTerminal(WorkspaceBackendTerminalSelection)
 }
 
 enum WorkspaceRestorationResolution: Equatable, Sendable {
@@ -464,6 +499,7 @@ enum WorkspaceWindowRestorationResolver {
         launchIntent: WorkspaceWindowLaunchIntent? = nil,
         herdrFreshHostIDs: Set<UUID> = [],
         zellijFreshHostIDs: Set<UUID> = [],
+        backendTerminalFreshHostIDs: Set<UUID> = [],
         pendingHerdrSessions: Set<WorkspaceHerdrSessionSelection> = []
     ) -> WorkspaceRestorationResolution {
         guard let navigation = state.navigation,
@@ -484,6 +520,7 @@ enum WorkspaceWindowRestorationResolver {
             state.tmux != nil,
             state.herdr != nil,
             state.zellij != nil,
+            state.backendTerminal != nil,
         ].filter { $0 }.count
         guard presentationCount <= 1 else {
             return .invalid
@@ -539,6 +576,16 @@ enum WorkspaceWindowRestorationResolver {
             else { return .invalid }
         }
 
+        if let terminal = state.backendTerminal {
+            guard isNonblank(terminal.hostKey),
+                  isNonblank(terminal.address),
+                  terminal.hostKey == navigation.hostKey,
+                  navigation.projectKey == nil,
+                  navigation.worktreeGeneration == nil,
+                  navigation.directoryWorkspacePath == nil
+            else { return .invalid }
+        }
+
         guard let host = snapshot.hosts.first(where: {
             $0.configKey == navigation.hostKey
         }) else {
@@ -581,12 +628,12 @@ enum WorkspaceWindowRestorationResolver {
         if let herdr = state.herdr {
             let herdrSelection = WorkspaceHerdrSessionSelection(
                 hostID: host.id,
-                name: herdr.sessionName, backend: herdr.backend ?? .tui
+                name: herdr.sessionName
             )
             guard herdrFreshHostIDs.contains(host.id),
                   !pendingHerdrSessions.contains(herdrSelection),
                   host.herdrSessions.contains(where: {
-                      $0.matches(herdrSelection)
+                      $0.name == herdr.sessionName
                           && $0.state == .running
                   })
             else { return .pending(selection: selection) }
@@ -609,6 +656,23 @@ enum WorkspaceWindowRestorationResolver {
             return .ready(
                 selection: selection,
                 presentation: .zellij(zellijSelection)
+            )
+        }
+
+        if let terminal = state.backendTerminal {
+            let terminalSelection = WorkspaceBackendTerminalSelection(
+                hostID: host.id,
+                kind: terminal.kind,
+                address: terminal.address
+            )
+            guard backendTerminalFreshHostIDs.contains(host.id),
+                  host.backendTerminals.contains(where: {
+                      $0.matches(terminalSelection)
+                  })
+            else { return .pending(selection: selection) }
+            return .ready(
+                selection: selection,
+                presentation: .backendTerminal(terminalSelection)
             )
         }
 
@@ -712,5 +776,37 @@ enum WorkspaceWindowRestorationResolver {
 
     private static func isValidOptional(_ value: String?) -> Bool {
         value.map(isNonblank) ?? true
+    }
+}
+
+extension WorkspaceWindowState {
+    /// Ghosthub 0.13 saved a Herdr desktop terminal as a Herdr session with
+    /// `backend: "core"`. Its name is a terminal address, not a session name,
+    /// so restoring it as a session could attach an unrelated Herdr session
+    /// with the same name. Such an entry is dropped; the window reopens
+    /// without it.
+    private struct SavedHerdrBackend: Decodable {
+        var backend: String?
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        windowID = try container.decode(UUID.self, forKey: .windowID)
+        navigation = try container.decodeIfPresent(
+            WorkspaceNavigationDescriptor.self, forKey: .navigation
+        )
+        tmux = try container.decodeIfPresent(WorkspaceTmuxDescriptor.self, forKey: .tmux)
+        let savedBackend = try container.decodeIfPresent(
+            SavedHerdrBackend.self, forKey: .herdr
+        )?.backend
+        herdr = savedBackend == nil
+            ? try container.decodeIfPresent(WorkspaceHerdrDescriptor.self, forKey: .herdr)
+            : nil
+        zellij = try container.decodeIfPresent(WorkspaceZellijDescriptor.self, forKey: .zellij)
+        backendTerminal = try container.decodeIfPresent(
+            WorkspaceBackendTerminalDescriptor.self, forKey: .backendTerminal
+        )
+        customTitle = try container.decodeIfPresent(String.self, forKey: .customTitle)
+        frame = try container.decodeIfPresent(WorkspaceWindowFrame.self, forKey: .frame)
     }
 }

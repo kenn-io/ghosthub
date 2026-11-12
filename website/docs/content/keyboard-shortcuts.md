@@ -25,8 +25,8 @@ Sibling navigation is local to what you are currently using:
 
 - A worktree cycles through visible worktrees in the same project.
 - A directory workspace cycles through directory workspaces on the same host.
-- A standalone tmux, Zellij, or Herdr session cycles through the host's whole
-  session list, across backends. Stopped Herdr sessions are skipped.
+- A standalone tmux, Zellij, Herdr, or Rex session cycles through the host's
+  whole session list, across backends. Stopped Herdr sessions are skipped.
 
 The order matches the sidebar, including the chosen sort, custom ordering, and
 visibility settings. At least two eligible siblings must exist. If navigation is not

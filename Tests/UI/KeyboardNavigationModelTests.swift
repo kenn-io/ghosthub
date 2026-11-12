@@ -61,8 +61,12 @@ struct KeyboardNavigationModelTests {
                     .init(name: "running-a", isDefault: false, state: .running),
                     .init(name: "stopped", isDefault: false, state: .stopped),
                     .init(name: "running-z", isDefault: false, state: .running),
-                    .init(name: "t1", isDefault: false, state: .running, backend: .core),
-                    .init(name: "t2", isDefault: false, state: .running, backend: .core),
+                ],
+                backendTerminals: [
+                    .init(kind: .herdrCore, address: "t1"),
+                    .init(kind: .herdrCore, address: "t2"),
+                    .init(kind: .rex, address: "block:aa"),
+                    .init(kind: .rex, address: "block:bb"),
                 ],
                 zellijSessions: [
                     .init(name: "zellij-a"),
@@ -89,10 +93,12 @@ struct KeyboardNavigationModelTests {
             .tmuxSession(hostID: hostID, name: "omega"),
             .zellijSession(hostID: hostID, name: "zellij-a"),
             .zellijSession(hostID: hostID, name: "zellij-z"),
-            .herdrSession(hostID: hostID, name: "t1", backend: .core),
-            .herdrSession(hostID: hostID, name: "t2", backend: .core),
+            .backendTerminal(hostID: hostID, kind: .herdrCore, address: "t1"),
+            .backendTerminal(hostID: hostID, kind: .herdrCore, address: "t2"),
             .herdrSession(hostID: hostID, name: "running-a"),
             .herdrSession(hostID: hostID, name: "running-z"),
+            .backendTerminal(hostID: hostID, kind: .rex, address: "block:aa"),
+            .backendTerminal(hostID: hostID, kind: .rex, address: "block:bb"),
         ]
         for current in sessions {
             #expect(KeyboardNavigationModel.siblingTargets(

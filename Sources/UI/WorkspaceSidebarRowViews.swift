@@ -39,6 +39,13 @@ extension WorkspaceSidebarSessionBackend {
                 .init(srgbRed: 0.22, green: 0.37, blue: 0.78, alpha: 1),
                 .init(srgbRed: 0.52, green: 0.64, blue: 0.95, alpha: 1)
             )
+        case .rex:
+            // Magenta leans toward pink so it stays apart from the purple
+            // input badge.
+            (
+                .init(srgbRed: 0.75, green: 0.18, blue: 0.55, alpha: 1),
+                .init(srgbRed: 0.95, green: 0.48, blue: 0.78, alpha: 1)
+            )
         }
         return NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

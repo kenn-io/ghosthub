@@ -1,6 +1,7 @@
 import GhosthubTransport
 @preconcurrency import Combine
 import Foundation
+import GhosthubBackendTerminal
 import GhosthubHerdr
 import OSLog
 import SwiftUI
@@ -104,6 +105,14 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias ZellijSessionDiscovery = @Sendable (
         CommandHost
     ) async -> ZellijDiscoveryResult
+    typealias BackendTerminalDiscovery = @Sendable (
+        CommandHost
+    ) async -> [BackendTerminalKind: BackendTerminalDiscoveryResult]
+    /// Lists one backend's terminals over a frozen SSH connection, so the
+    /// attach that follows can require the same route.
+    typealias BackendTerminalValidationDiscovery = @Sendable (
+        CommandHost, BackendTerminalKind, [String]
+    ) async -> BackendTerminalDiscoveryResult
     typealias ZellijSessionValidationDiscovery = @Sendable (
         CommandHost, [String]
     ) async -> ZellijDiscoveryResult
@@ -111,7 +120,7 @@ final class WorkspaceSceneModel: ObservableObject {
         String, CommandHost, [String]
     ) async -> Result<Void, ZellijCommandError>
     typealias HerdrSessionValidationDiscovery = @Sendable (
-        CommandHost, [String], HerdrBackend
+        CommandHost, [String]
     ) async -> HerdrDiscoveryResult
     typealias HerdrSessionExactProbe = @Sendable (
         String, CommandHost, [String]
@@ -213,6 +222,29 @@ final class WorkspaceSceneModel: ObservableObject {
     private var zellijCreationDiscoveryRetryID: UUID?
     private var zellijCreationDiscoveryRetryAttempt = 0
     private var zellijFreshHostIDs: Set<UUID> = []
+    // Backend terminals (Herdr Core and Rex); see the extension at the end
+    // of this file.
+    private var backendTerminalsByHost: [UUID: [BackendTerminalSummary]] = [:]
+    private var backendTerminalDiscoveryFailuresByHost: [UUID: String] = [:]
+    private var backendTerminalFreshHostIDs: Set<UUID> = []
+    private var backendTerminalDiscoveryGeneration = 0
+    private var backendTerminalDiscoveryTask: Task<Void, Never>?
+    /// A host needs listing again after the running sweep, which may have
+    /// listed it already.
+    private var backendTerminalDiscoveryRerunPending = false
+    private var backendTerminalDiscoveryTargets: [UUID: CommandHost] = [:]
+    private let backendTerminalReconnectSupervisor: SessionReconnectSupervisor
+    /// The SSH route the active backend terminal was opened over. A
+    /// reconnect never moves it to a different route.
+    private var activeBackendTerminalRouteIdentity: String?
+    private var backendTerminalRestorationTask: Task<Void, Never>?
+    private var backendTerminalPresentationValidationID: UUID?
+    /// The terminal whose reconnect waits while another terminal is checked.
+    private var pausedBackendTerminalReconnect: WorkspaceBackendTerminalSelection?
+    /// The approval request a backend terminal reconnect is waiting on.
+    private var backendTerminalRecoveryRequest: SessionConnectionRecoveryRequest?
+    private let backendTerminalDiscovery: BackendTerminalDiscovery
+    private let backendTerminalValidationDiscovery: BackendTerminalValidationDiscovery
     private var createdSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
     private var exhaustedCreatedTmuxSessionHandles: Set<UUID> = []
     private var endedCreatedTmuxSessionHandles: Set<UUID> = []
@@ -286,7 +318,8 @@ final class WorkspaceSceneModel: ObservableObject {
         inventoryRefreshProgress.kwtCompleted
             && inventoryRefreshProgress.tmuxCompleted
             && (!herdrDiscoveryEnabled
-                || inventoryRefreshProgress.herdrCompleted)
+                || inventoryRefreshProgress.herdrCompleted
+                && isBackendTerminalDiscoveryComplete)
             && (!zellijDiscoveryEnabled
                 || inventoryRefreshProgress.zellijCompleted)
             && !isKwtInventoryLoading
@@ -361,6 +394,9 @@ final class WorkspaceSceneModel: ObservableObject {
     var pendingHerdrShortcutSelection: WorkspaceHerdrSessionSelection?
     var herdrShortcutNavigationTask: Task<Void, Never>?
     var herdrShortcutNavigationID: UUID?
+    var backendTerminalShortcutNavigationTask: Task<Void, Never>?
+    var backendTerminalShortcutNavigationID: UUID?
+    var pendingBackendTerminalShortcutSelection: WorkspaceBackendTerminalSelection?
     var activeBorrowedHerdrConnectionState: ConnectionState? {
         guard let activeBorrowedHerdrHandle else { return nil }
         return borrowedHerdrConnectionStates[activeBorrowedHerdrHandle.id]
@@ -384,6 +420,11 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBorrowedZellijSelection:
         WorkspaceZellijSessionSelection?
     private var activeBorrowedZellijHandle: BorrowedZellijSessionHandle?
+    @Published private var backendTerminalConnectionStates: [UUID: ConnectionState] = [:]
+    @Published private(set) var activeBackendTerminalSelection: WorkspaceBackendTerminalSelection?
+    @Published private(set) var activeBackendTerminalRecoveryState:
+        NativeSessionRecoveryState?
+    private var activeBackendTerminalHandle: BorrowedBackendTerminalHandle?
     var activeTerminalFindSurface:
         (any NativeSessionPaneSurfacing)? {
         let entries = terminalCoordinator.surfaceEntries()
@@ -409,6 +450,12 @@ final class WorkspaceSceneModel: ObservableObject {
             guard let activeBorrowedZellijHandle else { return nil }
             return nativeZellijSessionCoordinator.surface(
                 handle: activeBorrowedZellijHandle
+            )
+        }
+        if activeBackendTerminalSelection != nil {
+            guard let activeBackendTerminalHandle else { return nil }
+            return nativeBackendTerminalCoordinator.surface(
+                handle: activeBackendTerminalHandle
             )
         }
         if let openController = entries.first(where: {
@@ -482,6 +529,9 @@ final class WorkspaceSceneModel: ObservableObject {
         WorkspaceZellijSessionSelection?
     var zellijReconnectSupervisorIsRunning: Bool {
         zellijReconnectSupervisor.isRunning
+    }
+    var backendTerminalReconnectSupervisorIsRunning: Bool {
+        backendTerminalReconnectSupervisor.isRunning
     }
     private struct SuppressedHerdrStop {
         var selection: WorkspaceHerdrSessionSelection
@@ -998,6 +1048,16 @@ final class WorkspaceSceneModel: ObservableObject {
     }
     private var nativeZellijSessionCoordinatorBacking:
         NativeZellijSessionCoordinator?
+    private var nativeBackendTerminalCoordinatorBacking:
+        NativeBackendTerminalCoordinator?
+    private var nativeBackendTerminalCoordinator: NativeBackendTerminalCoordinator {
+        guard let nativeBackendTerminalCoordinatorBacking else {
+            preconditionFailure(
+                "native backend terminal coordinator was not initialized"
+            )
+        }
+        return nativeBackendTerminalCoordinatorBacking
+    }
     private var nativeZellijSessionCoordinator: NativeZellijSessionCoordinator {
         guard let nativeZellijSessionCoordinatorBacking else {
             preconditionFailure(
@@ -1154,11 +1214,12 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeTmuxSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
         nativeHerdrSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
         nativeZellijSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
+        nativeBackendTerminalSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
+        nativeBackendTerminalExecutableProvider:
+        NativeBackendTerminalCoordinator.ExecutableProvider? = nil,
         nativeTmuxPathProvider:
         (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
         nativeHerdrPathProvider: (@Sendable (CommandHost)
-            -> Result<String, HerdrCommandError>)? = nil,
-        nativeHerdrCorePathProvider: (@Sendable (CommandHost)
             -> Result<String, HerdrCommandError>)? = nil,
         nativeZellijPathProvider: (@Sendable (CommandHost)
             -> Result<String, ZellijCommandError>)? = nil,
@@ -1368,6 +1429,22 @@ final class WorkspaceSceneModel: ObservableObject {
         herdrSessionDiscovery: @escaping HerdrSessionDiscovery = { host in
             await HerdrInventoryClient().discover(on: host)
         },
+        backendTerminalDiscovery: @escaping BackendTerminalDiscovery = { host in
+            await BackendTerminalInventoryClient().discover(on: host)
+        },
+        backendTerminalValidationDiscovery:
+        @escaping BackendTerminalValidationDiscovery = { host, kind, arguments in
+            let probe = Task.detached(priority: .userInitiated) {
+                BackendTerminalInventoryClient().discover(
+                    kind, on: host, sshConnectionArguments: arguments
+                )
+            }
+            return await withTaskCancellationHandler {
+                await probe.value
+            } onCancel: {
+                probe.cancel()
+            }
+        },
         zellijSessionDiscovery: @escaping ZellijSessionDiscovery = { host in
             await ZellijInventoryClient().discover(on: host)
         },
@@ -1406,12 +1483,11 @@ final class WorkspaceSceneModel: ObservableObject {
         presentationSSHEnvironment: [String: String] =
             ProcessInfo.processInfo.environment,
         herdrSessionValidationDiscovery:
-        @escaping HerdrSessionValidationDiscovery = { host, arguments, backend in
+        @escaping HerdrSessionValidationDiscovery = { host, arguments in
             await WorkspaceSceneModel.runReconnectValidationProbe {
                 HerdrInventoryClient().discover(
                     on: host,
-                    sshConnectionArguments: arguments,
-                    backend: backend
+                    sshConnectionArguments: arguments
                 )
             }
         },
@@ -1422,8 +1498,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     name: name,
                     discovery: HerdrInventoryClient().discover(
                         on: host,
-                        sshConnectionArguments: arguments,
-                        backend: .tui
+                        sshConnectionArguments: arguments
                     )
                 )
             }
@@ -1598,6 +1673,8 @@ final class WorkspaceSceneModel: ObservableObject {
         self.tmuxSessionValidationExactProbe =
             tmuxSessionValidationExactProbe
         self.zellijSessionDiscovery = zellijSessionDiscovery
+        self.backendTerminalDiscovery = backendTerminalDiscovery
+        self.backendTerminalValidationDiscovery = backendTerminalValidationDiscovery
         self.zellijSessionValidationDiscovery =
             zellijSessionValidationDiscovery
         let zellijExecutableResolver:
@@ -1664,6 +1741,10 @@ final class WorkspaceSceneModel: ObservableObject {
             probeDeadline: tmuxReconnectProbeDeadline
         )
         zellijReconnectSupervisor = SessionReconnectSupervisor(
+            intervals: tmuxReconnectIntervals,
+            probeDeadline: tmuxReconnectProbeDeadline
+        )
+        backendTerminalReconnectSupervisor = SessionReconnectSupervisor(
             intervals: tmuxReconnectIntervals,
             probeDeadline: tmuxReconnectProbeDeadline
         )
@@ -1803,14 +1884,6 @@ final class WorkspaceSceneModel: ObservableObject {
                     sshConnectionArguments: arguments
                 )
             },
-            corePathProvider: { host, arguments in
-                if let nativeHerdrCorePathProvider {
-                    return nativeHerdrCorePathProvider(host)
-                }
-                return HerdrInventoryClient().resolveExecutable(
-                    on: host, sshConnectionArguments: arguments, backend: .core
-                )
-            },
             remoteConnectionProvider: { [weak self] hostID, info in
                 guard let self else { throw CancellationError() }
                 return try await acquirePresentationSSHConnection(
@@ -1853,6 +1926,33 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             }
         )
+        nativeBackendTerminalCoordinatorBacking = NativeBackendTerminalCoordinator(
+            terminalCoordinator: nativeBackendTerminalSurfaceStore
+                ?? terminalCoordinator,
+            executableProvider: nativeBackendTerminalExecutableProvider
+                ?? { kind, host, arguments in
+                    BackendTerminalInventoryClient().resolveExecutable(
+                        kind, on: host, sshConnectionArguments: arguments
+                    )
+                },
+            remoteConnectionProvider: { [weak self] hostID, info in
+                guard let self else { throw CancellationError() }
+                return try await acquirePresentationSSHConnection(
+                    hostID: hostID,
+                    info: info
+                )
+            }
+        )
+        nativeBackendTerminalCoordinatorBacking?.onStateChanged = {
+            [weak self] handle, state in
+            self?.nativeBackendTerminalStateChanged(handle: handle, state: state)
+        }
+        nativeBackendTerminalCoordinatorBacking?.onSurfaceReady = {
+            [weak self] handle in
+            guard let self, activeBackendTerminalHandle == handle else { return }
+            objectWillChange.send()
+            prepareActiveBackendTerminalSurface()
+        }
         nativeZellijSessionCoordinatorBacking?.onStateChanged = {
             [weak self] handle, state in
             self?.nativeZellijStateChanged(handle: handle, state: state)
@@ -2071,6 +2171,7 @@ final class WorkspaceSceneModel: ObservableObject {
         tmuxSessionRenameCancellable?.cancel()
         herdrDiscoveryTask?.cancel()
         herdrShortcutNavigationTask?.cancel()
+        backendTerminalShortcutNavigationTask?.cancel()
         zellijDiscoveryTask?.cancel()
         zellijCreationDiscoveryRetryTask?.cancel()
         zellijCreationDiscoveryRetryTask = nil
@@ -2097,7 +2198,8 @@ final class WorkspaceSceneModel: ObservableObject {
         launchIntent: WorkspaceWindowLaunchIntent? = nil
     ) {
         guard state.navigation != nil || state.tmux != nil
-            || state.herdr != nil || state.zellij != nil else { return }
+            || state.herdr != nil || state.zellij != nil
+            || state.backendTerminal != nil else { return }
         if let launchIntent {
             pendingRestorationLaunchIntent = launchIntent
         } else if pendingRestoration?.windowID != state.windowID {
@@ -2143,6 +2245,8 @@ final class WorkspaceSceneModel: ObservableObject {
         zellijRestorationValidationTask = nil
         zellijRestorationValidationID = nil
         zellijRestorationRoute = nil
+        backendTerminalRestorationTask?.cancel()
+        backendTerminalRestorationTask = nil
     }
 
     func restorationState(windowID: UUID) -> WorkspaceWindowState {
@@ -2156,6 +2260,7 @@ final class WorkspaceSceneModel: ObservableObject {
             activeTmux: activeBorrowedTmuxSelection,
             activeHerdr: activeBorrowedHerdrSelection,
             activeZellij: activeBorrowedZellijSelection,
+            activeBackendTerminal: activeBackendTerminalSelection,
             snapshot: snapshot
         )
     }
@@ -2163,6 +2268,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func selectFromUser(_ newSelection: WorkspaceSelection) {
         cancelPendingRestoration()
         cancelPendingHerdrShortcutNavigation()
+        cancelPendingBackendTerminalShortcutNavigation()
         invalidateZellijPresentationIntent()
         userNavigationRevision &+= 1
         cancelPendingTmuxPreviewActivations()
@@ -2225,13 +2331,15 @@ final class WorkspaceSceneModel: ObservableObject {
             return
         }
         guard herdrRestorationValidationTask == nil,
-              zellijRestorationValidationTask == nil else { return }
+              zellijRestorationValidationTask == nil,
+              backendTerminalRestorationTask == nil else { return }
         switch WorkspaceWindowRestorationResolver.resolve(
             pendingRestoration,
             in: snapshot,
             launchIntent: pendingRestorationLaunchIntent,
             herdrFreshHostIDs: herdrFreshHostIDs,
             zellijFreshHostIDs: zellijFreshHostIDs,
+            backendTerminalFreshHostIDs: backendTerminalFreshHostIDs,
             pendingHerdrSessions: pendingHerdrSessionSelections
         ) {
         case .invalid:
@@ -2263,6 +2371,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 beginZellijRestorationValidation(
                     selection: resolvedSelection,
                     zellijSelection: zellijSelection,
+                    expectedState: pendingRestoration
+                )
+                return
+            case let .backendTerminal(terminal):
+                beginBackendTerminalRestoration(
+                    selection: resolvedSelection,
+                    terminal: terminal,
                     expectedState: pendingRestoration
                 )
                 return
@@ -2721,6 +2836,11 @@ final class WorkspaceSceneModel: ObservableObject {
         suppressedZellijKillPresentations.removeAll()
         activeBorrowedZellijSelection = nil
         activeBorrowedZellijHandle = nil
+        backendTerminalDiscoveryTask?.cancel()
+        backendTerminalRestorationTask?.cancel()
+        backendTerminalReconnectSupervisor.cancel()
+        activeBackendTerminalSelection = nil
+        activeBackendTerminalHandle = nil
         await withTaskGroup(of: Void.self) { group in
             if let coordinator = nativeTmuxSessionCoordinatorBacking {
                 group.addTask { await coordinator.shutdown() }
@@ -2729,6 +2849,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 group.addTask { await coordinator.shutdown() }
             }
             if let coordinator = nativeZellijSessionCoordinatorBacking {
+                group.addTask { await coordinator.shutdown() }
+            }
+            if let coordinator = nativeBackendTerminalCoordinatorBacking {
                 group.addTask { await coordinator.shutdown() }
             }
         }
@@ -4232,6 +4355,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 resolved[$0.key.hostID] == $0.key.commandHost
             }
         updateSharedInventorySubscription()
+        backendTerminalsByHost = backendTerminalsByHost.filter {
+            retainedHerdrHostIDs.contains($0.key)
+        }
+        backendTerminalDiscoveryFailuresByHost =
+            backendTerminalDiscoveryFailuresByHost.filter {
+                retainedHerdrHostIDs.contains($0.key)
+            }
+        backendTerminalFreshHostIDs.formIntersection(retainedHerdrHostIDs)
         applyInventoryOverlayIfNeeded()
         scheduleHerdrSessionDiscovery()
         scheduleZellijSessionDiscovery()
@@ -4258,6 +4389,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let overlaid = HostInventoryOverlay.applyRuntimeSessions(
             tmuxSessionsByHost: tmuxSessionsByHost,
             herdrSessionsByHost: herdrSessionsByHost,
+            backendTerminalsByHost: backendTerminalsByHost,
             zellijSessionsByHost: zellijSessionsByHost,
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
@@ -4292,6 +4424,10 @@ final class WorkspaceSceneModel: ObservableObject {
             ),
             herdrSessionsByHost: hostScopedValue(
                 herdrSessionsByHost,
+                hostID: hostID
+            ),
+            backendTerminalsByHost: hostScopedValue(
+                backendTerminalsByHost,
                 hostID: hostID
             ),
             zellijSessionsByHost: hostScopedValue(
@@ -5079,12 +5215,12 @@ final class WorkspaceSceneModel: ObservableObject {
         switch operation.kind {
         case .stop:
             if let index = sessions.firstIndex(where: {
-                $0.matches(target)
+                $0.name == target.name
             }) {
                 sessions[index].state = .stopped
             }
         case .delete:
-            sessions.removeAll { $0.matches(target) }
+            sessions.removeAll { $0.name == target.name }
         case .create, .restart:
             return
         }
@@ -5691,6 +5827,7 @@ final class WorkspaceSceneModel: ObservableObject {
             kwtAvailabilityByHost: kwtAvailabilityByHost,
             tmuxSessionsByHost: tmuxSessionsByHost,
             herdrSessionsByHost: herdrSessionsByHost,
+            backendTerminalsByHost: backendTerminalsByHost,
             zellijSessionsByHost: zellijSessionsByHost,
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
@@ -5765,14 +5902,17 @@ final class WorkspaceSceneModel: ObservableObject {
     private func refreshHerdrSessionDiscovery() {
         guard !isShutDown else { return }
         herdrFreshHostIDs.removeAll()
+        backendTerminalFreshHostIDs.removeAll()
         for host in inventoryHosts.values where Self.supportsHerdr(host) {
             herdrSessionProbeBroker.invalidateSessions(on: host)
         }
+        scheduleBackendTerminalDiscovery(restarting: true)
         scheduleHerdrSessionDiscovery()
     }
 
     private func scheduleHerdrSessionDiscovery() {
         guard !isShutDown, herdrDiscoveryEnabled else { return }
+        scheduleBackendTerminalDiscovery()
         let targets = inventoryHosts.filter {
             Self.supportsHerdr($0.value)
         }
@@ -5848,11 +5988,10 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         herdrFreshHostIDs.insert(hostID)
         switch result {
-        case let .available(sessions, tuiAvailable, failures):
+        case let .available(sessions):
             herdrSessionsByHost[hostID] = sessions
-            herdrAvailabilityByHost[hostID] = tuiAvailable
-            herdrDiscoveryFailuresByHost[hostID] = (failures[.core] ?? failures[.tui])?
-                .localizedDescription
+            herdrAvailabilityByHost[hostID] = true
+            herdrDiscoveryFailuresByHost.removeValue(forKey: hostID)
         case .unavailable:
             herdrSessionsByHost[hostID] = []
             herdrAvailabilityByHost[hostID] = false
@@ -6295,6 +6434,7 @@ final class WorkspaceSceneModel: ObservableObject {
             .union(projectListWarningsByHost.keys)
             .union(directoryWarningsByHost.keys)
             .union(herdrDiscoveryFailuresByHost.keys)
+            .union(backendTerminalDiscoveryFailuresByHost.keys)
             .union(zellijDiscoveryFailuresByHost.keys)
         let warningsByHost = [UUID: String](
             uniqueKeysWithValues: hostIDs.compactMap { hostID in
@@ -6304,6 +6444,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     projectListWarningsByHost[hostID],
                     directoryWarningsByHost[hostID],
                     herdrDiscoveryFailuresByHost[hostID],
+                    backendTerminalDiscoveryFailuresByHost[hostID],
                     zellijDiscoveryFailuresByHost[hostID],
                 ].compactMap { $0 }
                 let unique = Array(Set(warnings)).sorted()
@@ -6324,11 +6465,13 @@ final class WorkspaceSceneModel: ObservableObject {
             || !snapshot.directoryWorkspaces.isEmpty
             || snapshot.hosts.contains { !$0.tmuxSessions.isEmpty }
             || snapshot.hosts.contains { !$0.herdrSessions.isEmpty }
+            || snapshot.hosts.contains { !$0.backendTerminals.isEmpty }
             || snapshot.hosts.contains { !$0.zellijSessions.isEmpty }
         let hasCachedInventory = hasVisibleInventory
             || !kwtInventoriesByHost.isEmpty
             || !tmuxSessionsByHost.isEmpty
             || herdrSessionsByHost.values.contains { !$0.isEmpty }
+            || backendTerminalsByHost.values.contains { !$0.isEmpty }
             || zellijSessionsByHost.values.contains { !$0.isEmpty }
         let hasPendingSources = isKwtInventoryLoading
             || isTmuxDiscoveryLoading
@@ -6544,6 +6687,16 @@ final class WorkspaceSceneModel: ObservableObject {
                 borrowedZellijConnectionStates.removeValue(forKey: handle.id)
                 pendingCreatedZellijSessions.removeValue(forKey: handle.id)
             }
+            for handle in nativeBackendTerminalCoordinator.detachAll(hostID: hostID) {
+                backendTerminalConnectionStates.removeValue(forKey: handle.id)
+            }
+        }
+        if let active = activeBackendTerminalSelection,
+           hostIDs.contains(active.hostID) {
+            backendTerminalReconnectSupervisor.cancel()
+            activeBackendTerminalSelection = nil
+            activeBackendTerminalHandle = nil
+            activeBackendTerminalRouteIdentity = nil
         }
         zellijKillAuthorities = zellijKillAuthorities.filter {
             !hostIDs.contains($0.value.hostID)
@@ -8762,8 +8915,9 @@ final class WorkspaceSceneModel: ObservableObject {
               let handle = activeBorrowedZellijHandle
         else { return nil }
         return AnyView(
-            BorrowedZellijSessionView(
-                handle: handle,
+            BorrowedSessionView(
+                sessionName: handle.name,
+                disconnectedMessage: "The Zellij session disconnected.",
                 hostName: host.name,
                 isRemoteHost: host.kind == .remote,
                 connectionState: borrowedZellijConnectionStates[handle.id],
@@ -8991,6 +9145,7 @@ final class WorkspaceSceneModel: ObservableObject {
            active != selection {
             closeBorrowedZellijSession(active)
         }
+        closeActiveBackendTerminal()
     }
 
     func closeBorrowedZellijSession(
@@ -9212,6 +9367,7 @@ final class WorkspaceSceneModel: ObservableObject {
     ) {
         guard activeBorrowedTmuxSelection == nil,
               activeBorrowedHerdrSelection == nil,
+              activeBackendTerminalSelection == nil,
               activeBorrowedZellijSelection == nil
               || activeBorrowedZellijSelection == selection
         else { return }
@@ -9423,7 +9579,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let navigationRevision = userNavigationRevision
         guard snapshot.host(id: selection.hostID)?.herdrSessions.contains(
             where: {
-                $0.matches(selection) && $0.state == .running
+                $0.name == selection.name && $0.state == .running
             }
         ) == true else {
             throw HerdrSessionPresentationError.sessionNotRunning(
@@ -9433,22 +9589,21 @@ final class WorkspaceSceneModel: ObservableObject {
         let validationID = UUID()
         herdrPresentationValidationID = validationID
         let previousHandle = activeBorrowedHerdrHandle
+        var previousBackendHandle: BorrowedBackendTerminalHandle?
         if activeBorrowedHerdrSelection != selection {
             if let previousHandle {
                 nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(
                     true, handle: previousHandle
                 )
             }
+            previousBackendHandle = holdBackendTerminalForSessionCheck()
             workspaceWindow?.makeFirstResponder(nil)
         }
         defer {
             if herdrPresentationValidationID == validationID {
                 herdrPresentationValidationID = nil
-                if let previousHandle {
-                    nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(
-                        false, handle: previousHandle
-                    )
-                }
+                releaseHerdrSessionAfterSessionCheck(previousHandle)
+                releaseBackendTerminalAfterSessionCheck(previousBackendHandle)
             }
         }
         let validation = try await revalidatedHerdrSession(selection)
@@ -9483,14 +9638,13 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
         invalidateZellijPresentationIntent()
-        guard selection.backend == .tui else { throw HerdrSessionPresentationError.unavailable }
         let activityGeneration = try captureSceneActivity()
         let navigationRevision = userNavigationRevision
         guard let host = snapshot.host(id: selection.hostID),
               host.herdrAvailable
         else { throw HerdrSessionPresentationError.unavailable }
         guard !host.herdrSessions.contains(where: {
-            $0.matches(selection)
+            $0.name == selection.name
         }) else {
             throw HerdrSessionPresentationError.sessionExists(selection.name)
         }
@@ -9512,14 +9666,13 @@ final class WorkspaceSceneModel: ObservableObject {
         _ selection: WorkspaceHerdrSessionSelection,
         action: HerdrSessionDestructiveAction
     ) async throws -> HerdrSessionLifecycleRequest {
-        guard selection.backend == .tui else { throw HerdrSessionPresentationError.unavailable }
         let activityGeneration = try captureSceneActivity()
         guard let hostSummary = snapshot.host(id: selection.hostID),
               hostSummary.herdrAvailable,
               let host = CommandHostResolver.resolve(hostSummary)
         else { throw HerdrSessionPresentationError.unavailable }
         guard let summary = hostSummary.herdrSessions.first(where: {
-            $0.matches(selection)
+            $0.name == selection.name
         }) else {
             throw HerdrSessionLifecycleError.sessionMissing(selection.name)
         }
@@ -9684,21 +9837,8 @@ final class WorkspaceSceneModel: ObservableObject {
         }
     }
 
-    private func probeHerdrSession(
-        name: String, backend: HerdrBackend, host: CommandHost, arguments: [String]
-    ) async -> HerdrSessionProbeOutcome {
-        if backend == .core {
-            return await .exact(
-                name: name, backend: .core,
-                discovery: herdrSessionValidationDiscovery(host, arguments, backend)
-            )
-        }
-        return await herdrSessionExactProbe(name, host, arguments)
-    }
-
     private func validatedHerdrSessionProbe(
         named name: String,
-        backend: HerdrBackend = .tui,
         on host: CommandHost,
         connection frozenConnection: SSHConnectionArgumentsSnapshot? = nil
     ) async -> HerdrSessionProbeValidation? {
@@ -9707,11 +9847,10 @@ final class WorkspaceSceneModel: ObservableObject {
         } else {
             await herdrConnectionSnapshot(on: host)
         }
-        let outcome = await probeHerdrSession(
-            name: name,
-            backend: backend,
-            host: host,
-            arguments: connection.arguments
+        let outcome = await herdrSessionExactProbe(
+            name,
+            host,
+            connection.arguments
         )
         let currentConnection = await herdrConnectionSnapshot(on: host)
         guard !Task.isCancelled,
@@ -9758,7 +9897,7 @@ final class WorkspaceSceneModel: ObservableObject {
     func isHerdrSessionLifecyclePending(
         _ selection: WorkspaceHerdrSessionSelection
     ) -> Bool {
-        selection.backend == .tui && herdrLifecycleCoordinator.isPending(.init(
+        herdrLifecycleCoordinator.isPending(.init(
             hostID: selection.hostID,
             sessionName: selection.name
         ))
@@ -9777,14 +9916,13 @@ final class WorkspaceSceneModel: ObservableObject {
     func restartHerdrSession(
         _ selection: WorkspaceHerdrSessionSelection
     ) async throws {
-        guard selection.backend == .tui else { throw HerdrSessionPresentationError.unavailable }
         let activityGeneration = try captureSceneActivity()
         let navigationRevision = userNavigationRevision
         guard let host = snapshot.host(id: selection.hostID),
               host.herdrAvailable
         else { throw HerdrSessionPresentationError.unavailable }
         guard let session = host.herdrSessions.first(where: {
-            $0.matches(selection)
+            $0.name == selection.name
         }) else {
             throw HerdrSessionPresentationError.sessionMissing(selection.name)
         }
@@ -9823,7 +9961,7 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: selection.hostID,
             sessionName: selection.name
         )
-        guard selection.backend == .core || !herdrLifecycleCoordinator.isPending(key) else {
+        guard !herdrLifecycleCoordinator.isPending(key) else {
             throw HerdrSessionPresentationError.operationPending(
                 selection.name
             )
@@ -9834,8 +9972,7 @@ final class WorkspaceSceneModel: ObservableObject {
         let connection = await herdrConnectionSnapshot(on: route)
         let result = await herdrSessionValidationDiscovery(
             route,
-            connection.arguments,
-            selection.backend
+            connection.arguments
         )
         if case let .failure(error) = result,
            SSHConnectionFailure.indicatesUnusableConnection(error) {
@@ -9851,22 +9988,18 @@ final class WorkspaceSceneModel: ObservableObject {
                 selection.name
             )
         }
-        guard selection
-            .backend == .core || (herdrLifecycleCoordinator.revision(for: selection.hostID)
-                == lifecycleRevision && !herdrLifecycleCoordinator.isPending(key))
+        guard herdrLifecycleCoordinator.revision(for: selection.hostID)
+            == lifecycleRevision,
+            !herdrLifecycleCoordinator.isPending(key)
         else {
             throw HerdrSessionPresentationError.stateChangedDuringValidation(
                 selection.name
             )
         }
         switch result {
-        case let .available(sessions, _, failures):
-            if !sessions.contains(where: { $0.matches(selection) }),
-               let failure = failures[selection.backend] {
-                throw failure
-            }
+        case let .available(sessions):
             return HerdrSessionValidation(
-                session: sessions.first { $0.matches(selection) },
+                session: sessions.first { $0.name == selection.name },
                 host: route,
                 connection: connection
             )
@@ -9928,6 +10061,7 @@ final class WorkspaceSceneModel: ObservableObject {
         if let activeZellij = activeBorrowedZellijSelection {
             closeBorrowedZellijSession(activeZellij)
         }
+        closeActiveBackendTerminal()
         if let active = activeBorrowedHerdrSelection,
            active != selection {
             closeBorrowedHerdrSession(active)
@@ -9964,7 +10098,6 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: selection.hostID,
             name: selection.name,
             host: attachmentHost,
-            backend: selection.backend,
             isDefault: validation?.session?.isDefault ?? false,
             launchMode: launchMode,
             sshConnectionSnapshot: validation?.connection
@@ -10012,8 +10145,7 @@ final class WorkspaceSceneModel: ObservableObject {
         activeBorrowedHerdrHandle = nil
         nativeHerdrSessionCoordinator.detach(
             hostID: selection.hostID,
-            name: selection.name,
-            backend: selection.backend
+            name: selection.name
         )
     }
 
@@ -10028,7 +10160,7 @@ final class WorkspaceSceneModel: ObservableObject {
             hostID: selection.hostID,
             sessionName: selection.name
         )
-        guard selection.backend == .core || !herdrLifecycleCoordinator.isPending(key),
+        guard !herdrLifecycleCoordinator.isPending(key),
               !suppressedHerdrStops.values.contains(where: {
                   $0.selection == selection
               })
@@ -10118,7 +10250,6 @@ final class WorkspaceSceneModel: ObservableObject {
         else { return }
         let probe = await validatedHerdrSessionProbe(
             named: selection.name,
-            backend: selection.backend,
             on: host
         )
         guard let probe else {
@@ -10134,7 +10265,7 @@ final class WorkspaceSceneModel: ObservableObject {
               activeBorrowedHerdrHandle == handle,
               snapshot.host(id: selection.hostID)
               .flatMap(CommandHostResolver.resolve) == host,
-              selection.backend == .core || !herdrLifecycleCoordinator.isPending(key),
+              !herdrLifecycleCoordinator.isPending(key),
               !suppressedHerdrStops.values.contains(where: {
                   $0.selection == selection
               })
@@ -10142,9 +10273,6 @@ final class WorkspaceSceneModel: ObservableObject {
         guard probe.outcome == .present else {
             switch probe.outcome {
             case .absent, .unavailable:
-                if selection.backend == .core, probe.outcome == .absent {
-                    closeBorrowedHerdrSession(selection)
-                }
                 refreshHerdrInventory(hostID: selection.hostID)
             case .failure(.cancelled):
                 break
@@ -10353,6 +10481,9 @@ final class WorkspaceSceneModel: ObservableObject {
         if activatesPresentation,
            let activeZellij = activeBorrowedZellijSelection {
             closeBorrowedZellijSession(activeZellij)
+        }
+        if activatesPresentation {
+            closeActiveBackendTerminal()
         }
         var selection = selection
         if let worktreeID = selection.worktreeID,
@@ -12874,7 +13005,6 @@ final class WorkspaceSceneModel: ObservableObject {
         if suppressedHerdrStops.values.contains(where: {
             $0.selection.hostID == handle.hostID
                 && $0.selection.name == handle.name
-                && $0.selection.backend == handle.backend
         }) {
             return
         }
@@ -13445,9 +13575,10 @@ final class WorkspaceSceneModel: ObservableObject {
             )
             return .stop
         }
-        let outcome = await probeHerdrSession(
-            name: context.selection.name, backend: context.selection.backend,
-            host: context.host, arguments: connection.arguments
+        let outcome = await herdrSessionExactProbe(
+            context.selection.name,
+            context.host,
+            connection.arguments
         )
         let currentConnection = await herdrConnectionSnapshot(on: context.host)
         guard !Task.isCancelled else { return .retry }
@@ -13510,6 +13641,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 return .stop
             }
+            // A new view would take input meant for the session being
+            // checked, so the reconnect tries again after the check.
+            guard !isCheckingSessionPresentation else { return .retry }
             guard presentHerdrSession(
                 context.selection,
                 validation: validation
@@ -14431,6 +14565,9 @@ final class WorkspaceSceneModel: ObservableObject {
     func resumeSessionReconnectAfterSSHRecovery(
         _ recoveryRequest: SessionConnectionRecoveryRequest
     ) {
+        if resumeBackendTerminalReconnectAfterSSHRecovery(recoveryRequest) {
+            return
+        }
         if case .needsAttention(_, true) = activeBorrowedHerdrRecoveryState,
            sessionConnectionRecoveryRequest == recoveryRequest,
            var context = activeHerdrReconnectContext,
@@ -15201,4 +15338,702 @@ final class WorkspaceSceneModel: ObservableObject {
         #endif
     }
 
+}
+
+// MARK: - Backend terminals
+
+enum BackendTerminalPresentationError: LocalizedError, Equatable {
+    case ended(String)
+    case hostUnavailable(String)
+    case hostChanged
+    case routeChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .routeChanged:
+            NativeBackendTerminalCoordinator.routeChangedReason
+        case let .ended(name):
+            "“\(name)” is no longer running."
+        case let .hostUnavailable(host):
+            "Add an SSH address for \(host) in Hosts settings."
+        case .hostChanged:
+            "The host's connection settings changed while Ghosthub was checking the terminal. Try again."
+        }
+    }
+}
+
+/// Herdr Core and Rex terminals: listed per host, attached one at a time in
+/// a borrowed surface. The backend owns each terminal; Ghosthub only attaches
+/// and detaches.
+extension WorkspaceSceneModel {
+    var activeBorrowedBackendTerminalConnectionState: ConnectionState? {
+        activeBackendTerminalHandle.flatMap { backendTerminalConnectionStates[$0.id] }
+    }
+
+    /// Backend terminal discovery has reported for every host that can run
+    /// one, so the sidebar can trust that its rows are complete.
+    private var isBackendTerminalDiscoveryComplete: Bool {
+        backendTerminalDiscoveryFailuresByHost.isEmpty
+            && inventoryHosts.allSatisfy { hostID, host in
+                !BackendTerminalInventoryClient.supports(host)
+                    || backendTerminalFreshHostIDs.contains(hostID)
+            }
+    }
+
+    /// A scheduled sweep lets a slow one finish. Only an explicit refresh or
+    /// a change of hosts replaces a sweep that is still running. With
+    /// `rerunAfterCurrent`, a sweep that is still running is followed by
+    /// another one instead of being treated as up to date.
+    private func scheduleBackendTerminalDiscovery(
+        restarting: Bool = false,
+        rerunAfterCurrent: Bool = false
+    ) {
+        guard !isShutDown, herdrDiscoveryEnabled else { return }
+        let targets = inventoryHosts.filter {
+            BackendTerminalInventoryClient.supports($0.value)
+        }
+        if !restarting, backendTerminalDiscoveryTask != nil,
+           targets == backendTerminalDiscoveryTargets {
+            if rerunAfterCurrent {
+                backendTerminalDiscoveryRerunPending = true
+            }
+            return
+        }
+        backendTerminalDiscoveryRerunPending = false
+        backendTerminalDiscoveryGeneration += 1
+        let generation = backendTerminalDiscoveryGeneration
+        backendTerminalDiscoveryTask?.cancel()
+        backendTerminalDiscoveryTargets = targets
+        let discovery = backendTerminalDiscovery
+        backendTerminalDiscoveryTask = Task { [weak self] in
+            await withTaskGroup(
+                of: (UUID, [BackendTerminalKind: BackendTerminalDiscoveryResult]).self
+            ) { group in
+                for (hostID, host) in targets {
+                    group.addTask {
+                        let probe = Task.detached(priority: .utility) {
+                            await discovery(host)
+                        }
+                        let results = await withTaskCancellationHandler {
+                            await probe.value
+                        } onCancel: {
+                            probe.cancel()
+                        }
+                        return (hostID, results)
+                    }
+                }
+                for await (hostID, results) in group {
+                    guard let self, !Task.isCancelled,
+                          generation == self.backendTerminalDiscoveryGeneration
+                    else {
+                        group.cancelAll()
+                        return
+                    }
+                    self.applyBackendTerminalDiscovery(results, hostID: hostID)
+                }
+            }
+            guard let self, generation == backendTerminalDiscoveryGeneration
+            else { return }
+            backendTerminalDiscoveryTask = nil
+            if backendTerminalDiscoveryRerunPending {
+                scheduleBackendTerminalDiscovery()
+            }
+            updateWorkspaceInventoryState()
+        }
+    }
+
+    private func applyBackendTerminalDiscovery(
+        _ results: [BackendTerminalKind: BackendTerminalDiscoveryResult],
+        hostID: UUID
+    ) {
+        var terminals: [BackendTerminalSummary] = []
+        var failures: [String] = []
+        for kind in BackendTerminalKind.allCases {
+            switch results[kind] {
+            case let .available(found):
+                terminals += found
+            case let .failure(error):
+                if case .cancelled = error {
+                    continue
+                }
+                failures.append(error.localizedDescription)
+                // Keep the last listing so a transient failure does not
+                // empty the sidebar group.
+                terminals += backendTerminalsByHost[hostID, default: []]
+                    .filter { $0.kind == kind }
+            case .unavailable, nil:
+                break
+            }
+        }
+        backendTerminalsByHost[hostID] = terminals
+        backendTerminalFreshHostIDs.insert(hostID)
+        if failures.isEmpty {
+            backendTerminalDiscoveryFailuresByHost.removeValue(forKey: hostID)
+        } else {
+            let hostName = snapshot.host(id: hostID)?.name ?? "Unknown host"
+            backendTerminalDiscoveryFailuresByHost[hostID] = failures
+                .map { "\(hostName): \($0)" }
+                .joined(separator: "\n")
+        }
+        applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
+        updateWorkspaceInventoryState()
+    }
+
+    /// Replaces one backend's rows on a host and keeps the other backends'.
+    private func replaceBackendTerminals(
+        _ found: [BackendTerminalSummary],
+        kind: BackendTerminalKind,
+        hostID: UUID
+    ) {
+        let current = backendTerminalsByHost[hostID]
+            ?? snapshot.host(id: hostID)?.backendTerminals ?? []
+        backendTerminalsByHost[hostID] = BackendTerminalKind.allCases.flatMap { each in
+            each == kind ? found : current.filter { $0.kind == each }
+        }
+        applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
+        updateWorkspaceInventoryState()
+    }
+
+    func prepareActiveBackendTerminalSurface() {
+        guard !isShutDown, let handle = activeBackendTerminalHandle else { return }
+        _ = nativeBackendTerminalCoordinator.surface(handle: handle)
+    }
+
+    /// Opens a listed terminal once the backend confirms, over the SSH
+    /// connection the attach will use, that the terminal still exists. The
+    /// current view stays until then, so a failed open leaves it in place.
+    func openBackendTerminal(
+        _ selection: WorkspaceBackendTerminalSelection
+    ) async throws {
+        try Task.checkCancellation()
+        let activityGeneration = try captureSceneActivity()
+        let navigationRevision = userNavigationRevision
+        guard let hostSummary = snapshot.host(id: selection.hostID),
+              let terminal = hostSummary.backendTerminals.first(where: {
+                  $0.matches(selection)
+              })
+        else {
+            throw BackendTerminalPresentationError.ended(selection.address)
+        }
+        guard let host = CommandHostResolver.resolve(hostSummary) else {
+            throw BackendTerminalPresentationError.hostUnavailable(hostSummary.name)
+        }
+        if activeBackendTerminalSelection == selection,
+           let handle = activeBackendTerminalHandle,
+           nativeBackendTerminalCoordinator.attachmentClosure(handle) == nil {
+            // Reselected while another open was checking: take input again.
+            backendTerminalPresentationValidationID = nil
+            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
+                false, handle: handle
+            )
+            nativeBackendTerminalCoordinator.requestKeyboardFocus(handle: handle)
+            releaseBackendTerminalAfterSessionCheck(nil)
+            return
+        }
+        cancelPendingTmuxPreviewActivations()
+        // The current terminal stays visible while the new one is checked,
+        // but it must not take the keystrokes meant for the new one.
+        let validationID = UUID()
+        backendTerminalPresentationValidationID = validationID
+        let previousHandle = holdBackendTerminalForSessionCheck()
+        let previousHerdrHandle = holdHerdrSessionForSessionCheck()
+        workspaceWindow?.makeFirstResponder(nil)
+        defer {
+            if backendTerminalPresentationValidationID == validationID {
+                backendTerminalPresentationValidationID = nil
+                releaseBackendTerminalAfterSessionCheck(previousHandle)
+                releaseHerdrSessionAfterSessionCheck(previousHerdrHandle)
+            }
+        }
+        let validated = try await validatedBackendTerminal(
+            selection, title: terminal.title, on: host
+        )
+        try requireActiveScene(activityGeneration)
+        guard navigationRevision == userNavigationRevision else {
+            throw CancellationError()
+        }
+        cancelPendingRestoration()
+        backendTerminalReconnectSupervisor.cancel()
+        pausedBackendTerminalReconnect = nil
+        presentBackendTerminal(selection, host: host, validated: validated)
+    }
+
+    private func resumePausedBackendTerminalReconnect() {
+        guard !isCheckingSessionPresentation,
+              let paused = pausedBackendTerminalReconnect
+        else { return }
+        pausedBackendTerminalReconnect = nil
+        guard activeBackendTerminalSelection == paused,
+              !backendTerminalReconnectSupervisor.isRunning,
+              let host = snapshot.host(id: paused.hostID)
+              .flatMap(CommandHostResolver.resolve)
+        else { return }
+        startBackendTerminalReconnect(paused, host: host, afterDelay: false)
+    }
+
+    /// Lists `selection`'s backend over a frozen SSH connection and returns
+    /// that connection when the terminal is still there.
+    private func validatedBackendTerminal(
+        _ selection: WorkspaceBackendTerminalSelection,
+        title: String,
+        on host: CommandHost,
+        requiredRoute: String? = nil
+    ) async throws -> SSHConnectionArgumentsSnapshot {
+        let connection = await herdrConnectionSnapshot(on: host)
+        // Another machine's listing says nothing about this terminal.
+        if let requiredRoute, let route = connection.routeIdentity,
+           route != requiredRoute {
+            throw BackendTerminalPresentationError.routeChanged
+        }
+        let result = await backendTerminalValidationDiscovery(
+            host, selection.kind, connection.arguments
+        )
+        if case let .failure(.commandFailed(_, status, stderr)) = result,
+           SSHConnectionFailure.indicatesUnusableConnection(
+               status: status,
+               output: stderr
+           ) {
+            await connection.invalidate()
+        }
+        try Task.checkCancellation()
+        guard !isShutDown,
+              snapshot.host(id: selection.hostID)
+              .flatMap(CommandHostResolver.resolve) == host
+        else {
+            throw BackendTerminalPresentationError.hostChanged
+        }
+        switch result {
+        case let .available(terminals):
+            replaceBackendTerminals(
+                terminals, kind: selection.kind, hostID: selection.hostID
+            )
+            guard terminals.contains(where: { $0.matches(selection) }) else {
+                throw BackendTerminalPresentationError.ended(title)
+            }
+            return connection
+        case .unavailable:
+            throw BackendTerminalCommandError.unavailable(selection.kind)
+        case .failure(.cancelled):
+            throw CancellationError()
+        case let .failure(error):
+            throw error
+        }
+    }
+
+    /// Keeps the window's restoration pending until the terminal is
+    /// confirmed and presented. A transient failure lists the host again and
+    /// retries; a terminal that ended gives up on the saved terminal.
+    private func beginBackendTerminalRestoration(
+        selection resolvedSelection: WorkspaceSelection,
+        terminal: WorkspaceBackendTerminalSelection,
+        expectedState: WorkspaceWindowState
+    ) {
+        guard backendTerminalRestorationTask == nil,
+              let host = snapshot.host(id: terminal.hostID)
+              .flatMap(CommandHostResolver.resolve)
+        else { return }
+        backendTerminalRestorationTask = Task { [weak self] in
+            guard let self else { return }
+            let validated: SSHConnectionArgumentsSnapshot
+            do {
+                validated = try await validatedBackendTerminal(
+                    terminal, title: terminal.address, on: host
+                )
+            } catch is CancellationError {
+                return
+            } catch BackendTerminalPresentationError.ended,
+                BackendTerminalCommandError.unavailable {
+                finishBackendTerminalRestoration(expectedState) {
+                    cancelPendingRestoration()
+                }
+                return
+            } catch {
+                finishBackendTerminalRestoration(expectedState) {
+                    backendTerminalFreshHostIDs.remove(terminal.hostID)
+                    scheduleBackendTerminalDiscovery(rerunAfterCurrent: true)
+                }
+                return
+            }
+            guard !Task.isCancelled else { return }
+            finishBackendTerminalRestoration(expectedState) {
+                applyRestoredSelection(resolvedSelection)
+                presentBackendTerminal(terminal, host: host, validated: validated)
+                pendingRestoration = nil
+                pendingRestorationLaunchIntent = nil
+                isWorkspaceRestorationPending = false
+                suppressesAutomaticWorktreeSessionOpen = false
+            }
+        }
+    }
+
+    private func finishBackendTerminalRestoration(
+        _ expectedState: WorkspaceWindowState,
+        _ finish: () -> Void
+    ) {
+        backendTerminalRestorationTask = nil
+        guard !isShutDown, pendingRestoration == expectedState else { return }
+        finish()
+    }
+
+    private func presentBackendTerminal(
+        _ selection: WorkspaceBackendTerminalSelection,
+        host: CommandHost,
+        validated: SSHConnectionArgumentsSnapshot
+    ) {
+        guard !isShutDown else { return }
+        if activeBackendTerminalSelection == selection,
+           let handle = activeBackendTerminalHandle,
+           nativeBackendTerminalCoordinator.attachmentClosure(handle) == nil {
+            return
+        }
+        if let activeTmux = activeBorrowedTmuxSelection {
+            hideBorrowedTmuxSession(activeTmux)
+        }
+        if let activeHerdr = activeBorrowedHerdrSelection {
+            closeBorrowedHerdrSession(activeHerdr)
+        }
+        if let activeZellij = activeBorrowedZellijSelection {
+            closeBorrowedZellijSession(activeZellij)
+        }
+        if let active = activeBackendTerminalSelection, active != selection {
+            closeBackendTerminal(active)
+        }
+        if let handle = activeBackendTerminalHandle,
+           nativeBackendTerminalCoordinator.attachmentClosure(handle) != nil {
+            // Reattaching replaces the closed client with a fresh one.
+            nativeBackendTerminalCoordinator.detach(selection)
+            backendTerminalConnectionStates.removeValue(forKey: handle.id)
+        }
+        let handle = nativeBackendTerminalCoordinator.attach(
+            selection, host: host, validated: validated
+        )
+        activeBackendTerminalSelection = selection
+        activeBackendTerminalHandle = handle
+        activeBackendTerminalRouteIdentity = validated.routeIdentity
+        clearBackendTerminalRecovery()
+        backendTerminalConnectionStates[handle.id] = .connecting
+    }
+
+    func closeBackendTerminal(_ selection: WorkspaceBackendTerminalSelection) {
+        guard activeBackendTerminalSelection == selection else { return }
+        backendTerminalReconnectSupervisor.cancel()
+        pausedBackendTerminalReconnect = nil
+        if let handle = activeBackendTerminalHandle {
+            backendTerminalConnectionStates.removeValue(forKey: handle.id)
+        }
+        activeBackendTerminalSelection = nil
+        activeBackendTerminalHandle = nil
+        activeBackendTerminalRouteIdentity = nil
+        clearBackendTerminalRecovery()
+        nativeBackendTerminalCoordinator.detach(selection)
+    }
+
+    /// Cmd-W cancels every open still checking its target, whatever its
+    /// session type, so none replaces the view after the close. Closing a
+    /// view to switch sessions does not call this.
+    func cancelPendingSessionOpens() {
+        userNavigationRevision &+= 1
+        cancelPendingHerdrShortcutNavigation()
+        cancelPendingBackendTerminalShortcutNavigation()
+        invalidateZellijPresentationIntent()
+    }
+
+    /// A Herdr session or backend terminal open is checking its target
+    /// before it replaces the view on screen.
+    var isCheckingSessionPresentation: Bool {
+        herdrPresentationValidationID != nil || backendTerminalPresentationValidationID != nil
+    }
+
+    /// Keeps the backend terminal on screen during another session's check,
+    /// but stops it taking keystrokes and holds its reconnect, which would
+    /// otherwise replace it with a view that takes input.
+    func holdBackendTerminalForSessionCheck() -> BorrowedBackendTerminalHandle? {
+        if backendTerminalReconnectSupervisor.isRunning,
+           let active = activeBackendTerminalSelection {
+            backendTerminalReconnectSupervisor.cancel()
+            pausedBackendTerminalReconnect = active
+        }
+        guard let handle = activeBackendTerminalHandle else { return nil }
+        nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(true, handle: handle)
+        return handle
+    }
+
+    /// Gives input and the reconnect back once no session check remains.
+    func releaseBackendTerminalAfterSessionCheck(_ handle: BorrowedBackendTerminalHandle?) {
+        guard !isCheckingSessionPresentation else { return }
+        if let handle {
+            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
+                false, handle: handle
+            )
+        }
+        resumePausedBackendTerminalReconnect()
+    }
+
+    /// Keeps the Herdr session on screen during another session's check,
+    /// but stops it taking keystrokes.
+    func holdHerdrSessionForSessionCheck() -> BorrowedHerdrSessionHandle? {
+        guard let handle = activeBorrowedHerdrHandle else { return nil }
+        nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(true, handle: handle)
+        return handle
+    }
+
+    func releaseHerdrSessionAfterSessionCheck(_ handle: BorrowedHerdrSessionHandle?) {
+        guard !isCheckingSessionPresentation, let handle else { return }
+        nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(false, handle: handle)
+    }
+
+    /// Withdraws this terminal's approval request so it cannot block a
+    /// request from another session.
+    private func clearBackendTerminalRecovery() {
+        activeBackendTerminalRecoveryState = nil
+        if let request = backendTerminalRecoveryRequest,
+           sessionConnectionRecoveryRequest == request {
+            sessionConnectionRecoveryRequest = nil
+        }
+        backendTerminalRecoveryRequest = nil
+    }
+
+    private func closeActiveBackendTerminal() {
+        if let active = activeBackendTerminalSelection {
+            closeBackendTerminal(active)
+        }
+    }
+
+    /// Reattaches when the terminal still exists on the route it was opened
+    /// over. A terminal that the backend no longer lists has ended, so its
+    /// presentation closes.
+    func reconnectBackendTerminal(_ selection: WorkspaceBackendTerminalSelection) {
+        guard activeBackendTerminalSelection == selection,
+              let host = snapshot.host(id: selection.hostID)
+              .flatMap(CommandHostResolver.resolve)
+        else { return }
+        if backendTerminalReconnectSupervisor.isRunning {
+            backendTerminalReconnectSupervisor.reconnectNow()
+            return
+        }
+        startBackendTerminalReconnect(selection, host: host, afterDelay: false)
+    }
+
+    func reconnectActiveBackendTerminalNow() {
+        if let active = activeBackendTerminalSelection {
+            reconnectBackendTerminal(active)
+        }
+    }
+
+    private func startBackendTerminalReconnect(
+        _ selection: WorkspaceBackendTerminalSelection,
+        host: CommandHost,
+        afterDelay: Bool
+    ) {
+        if isCheckingSessionPresentation {
+            pausedBackendTerminalReconnect = selection
+            return
+        }
+        if host.isRemote {
+            activeBackendTerminalRecoveryState = .reconnecting(
+                message: "Waiting for \(hostName(for: selection.hostID)). "
+                    + "Ghosthub will reconnect automatically."
+            )
+        }
+        backendTerminalReconnectSupervisor.isWaitingForAuthentication = { [weak self] in
+            self?.isWaitingForSSHBrowserAuthentication(on: host) == true
+        }
+        let attempt: SessionReconnectSupervisor.Attempt = { [weak self] in
+            await self?.attemptBackendTerminalReconnect(selection, host: host) ?? .stop
+        }
+        if afterDelay {
+            backendTerminalReconnectSupervisor.startAfterDelay(attempt: attempt)
+        } else {
+            backendTerminalReconnectSupervisor.start(attempt: attempt)
+        }
+    }
+
+    private func attemptBackendTerminalReconnect(
+        _ selection: WorkspaceBackendTerminalSelection,
+        host: CommandHost
+    ) async -> SessionReconnectDecision {
+        guard activeBackendTerminalSelection == selection else { return .stop }
+        guard canAttachToDisplay else { return .retry }
+        let openedRoute = activeBackendTerminalRouteIdentity
+        let validated: SSHConnectionArgumentsSnapshot
+        do {
+            validated = try await validatedBackendTerminal(
+                selection, title: selection.address, on: host,
+                requiredRoute: openedRoute
+            )
+        } catch BackendTerminalPresentationError.ended,
+            BackendTerminalCommandError.unavailable {
+            closeBackendTerminal(selection)
+            return .stop
+        } catch BackendTerminalPresentationError.hostChanged,
+            BackendTerminalPresentationError.routeChanged {
+            failActiveBackendTerminal(NativeBackendTerminalCoordinator.routeChangedReason)
+            return .stop
+        } catch is CancellationError {
+            return .stop
+        } catch BackendTerminalCommandError.cancelled {
+            return .retry
+        } catch let BackendTerminalCommandError.commandFailed(_, status, stderr)
+            where status == 255 && host.isRemote {
+            return backendTerminalRecoveryDecision(
+                SSHConnectionFailure.classify(status: status, output: stderr),
+                hostID: selection.hostID
+            )
+        } catch {
+            failActiveBackendTerminal(error.localizedDescription)
+            return .stop
+        }
+        guard activeBackendTerminalSelection == selection else { return .stop }
+        if let openedRoute, validated.routeIdentity != openedRoute {
+            failActiveBackendTerminal(NativeBackendTerminalCoordinator.routeChangedReason)
+            return .stop
+        }
+        presentBackendTerminal(selection, host: host, validated: validated)
+        return .stop
+    }
+
+    /// Only a transport failure retries by itself. A prompt waits for the
+    /// user to review the connection; a changed host key or configuration
+    /// waits for the user to fix it.
+    private func backendTerminalRecoveryDecision(
+        _ classification: SSHConnectionFailure.Classification,
+        hostID: UUID
+    ) -> SessionReconnectDecision {
+        let diagnostic = classification.diagnostic
+        switch classification.kind {
+        case .transport:
+            activeBackendTerminalRecoveryState = .reconnecting(
+                message: diagnostic.summary + " Ghosthub will reconnect automatically."
+            )
+            return .retry
+        case .authenticationRequired, .hostKeyReviewRequired:
+            let message = diagnostic.summary + " " + diagnostic.recoverySuggestion
+            activeBackendTerminalRecoveryState = .needsAttention(
+                message: message, canReviewConnection: true
+            )
+            if sessionConnectionRecoveryRequest == nil
+                || sessionConnectionRecoveryRequest == backendTerminalRecoveryRequest {
+                let request = SessionConnectionRecoveryRequest(
+                    hostID: hostID, message: message
+                )
+                backendTerminalRecoveryRequest = request
+                sessionConnectionRecoveryRequest = request
+            }
+            return .stop
+        case .hostKeyChanged, .configurationChanged:
+            clearBackendTerminalRecovery()
+            activeBackendTerminalRecoveryState = .needsAttention(
+                message: diagnostic.summary + " " + diagnostic.recoverySuggestion,
+                canReviewConnection: false
+            )
+            return .stop
+        }
+    }
+
+    /// Resumes after the user approved the connection that a reconnect
+    /// stopped for.
+    func resumeBackendTerminalReconnectAfterSSHRecovery(
+        _ request: SessionConnectionRecoveryRequest
+    ) -> Bool {
+        guard case .needsAttention(_, true) = activeBackendTerminalRecoveryState,
+              sessionConnectionRecoveryRequest == request,
+              let selection = activeBackendTerminalSelection,
+              selection.hostID == request.hostID,
+              let host = snapshot.host(id: selection.hostID)
+              .flatMap(CommandHostResolver.resolve)
+        else { return false }
+        clearBackendTerminalRecovery()
+        startBackendTerminalReconnect(selection, host: host, afterDelay: false)
+        return true
+    }
+
+    private func failActiveBackendTerminal(_ reason: String) {
+        clearBackendTerminalRecovery()
+        guard let handle = activeBackendTerminalHandle else { return }
+        backendTerminalConnectionStates[handle.id] = .disconnected(reason: reason)
+    }
+
+    /// A lost connection or a terminal view that could not be created yet
+    /// reconnects by itself. A clean detach, a failed launch, and a program
+    /// that exited stay as they are until the user retries.
+    private func nativeBackendTerminalStateChanged(
+        handle: BorrowedBackendTerminalHandle,
+        state: ConnectionState
+    ) {
+        guard activeBackendTerminalHandle == handle else { return }
+        backendTerminalConnectionStates[handle.id] = state
+        if state == .connected {
+            clearBackendTerminalRecovery()
+        }
+        guard case .disconnected = state,
+              let selection = activeBackendTerminalSelection,
+              let host = snapshot.host(id: handle.hostID)
+              .flatMap(CommandHostResolver.resolve)
+        else { return }
+        switch nativeBackendTerminalCoordinator.attachmentClosure(handle) {
+        case .retryableTransportFailure, .surfaceUnavailable:
+            startBackendTerminalReconnect(selection, host: host, afterDelay: true)
+        case let .processExited(code) where code == 255 && host.isRemote:
+            startBackendTerminalReconnect(selection, host: host, afterDelay: true)
+        case .detached, .processExited, .launchFailed, nil:
+            break
+        }
+    }
+
+    func borrowedBackendTerminalView(
+        host: HostSummary,
+        terminal: WorkspaceBackendTerminalSelection,
+        defersTerminalResize: Bool,
+        onReconnectNow: @escaping () -> Void = {},
+        onReviewConnection: @escaping () -> Void = {}
+    ) -> AnyView? {
+        guard CommandHostResolver.resolve(host) != nil else {
+            return AnyView(
+                ContentUnavailableView(
+                    "SSH unavailable",
+                    systemImage: "network.slash",
+                    description: Text(
+                        "Add an SSH address for \(host.name) in Hosts settings."
+                    )
+                )
+            )
+        }
+        guard activeBackendTerminalSelection == terminal,
+              let handle = activeBackendTerminalHandle
+        else { return nil }
+        let title = host.backendTerminals.first { $0.matches(terminal) }?.title
+            ?? terminal.address
+        return AnyView(
+            BorrowedSessionView(
+                sessionName: title,
+                disconnectedMessage: "The terminal disconnected.",
+                hostName: host.name,
+                isRemoteHost: host.kind == .remote,
+                connectionState: backendTerminalConnectionStates[handle.id],
+                recoveryState: activeBackendTerminalRecoveryState,
+                attachmentClosure:
+                nativeBackendTerminalCoordinator.attachmentClosure(handle),
+                defersTerminalResize: defersTerminalResize,
+                surface: { [weak self] in
+                    self?.nativeBackendTerminalCoordinator.surface(handle: handle)
+                },
+                onCloseRequest: { [weak self] in
+                    guard let self else { return }
+                    NotificationCenter.default.post(
+                        name: .ghosthubCloseTab,
+                        object: self
+                    )
+                },
+                onRetryRequest: { [weak self] in
+                    self?.reconnectBackendTerminal(terminal)
+                },
+                onReconnectNow: onReconnectNow,
+                onReviewConnection: onReviewConnection,
+                onHostSettingsRequest: { [weak self] in
+                    SettingsStore.shared.selectedDomain = .hosts
+                    self?.isSettingsPresented = true
+                }
+            )
+        )
+    }
 }

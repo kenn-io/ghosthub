@@ -67,8 +67,10 @@ unchanged. Release, nightly, and acceptance CI install the same compiler.
 Update this pin when Go ships relevant security fixes; rebuilding the app
 alone does not update a cached helper's Go runtime. Inspect a built helper
 with `go version -m .build/kwt/kwt` and run `make test-essential-workflows`
-before accepting a new helper. The Go 1.27.3 pin includes the
-[eMudhra certificate verification fix](https://go.dev/doc/devel/release#go1.27.3).
+before accepting a new helper. The pin is Go 1.27.4, the oldest
+release the pinned kwt accepts. It keeps the
+[eMudhra certificate verification fix](https://go.dev/doc/devel/release#go1.27.3)
+from Go 1.27.3.
 
 Each cross-compile retains its Go symbol table but omits debug
 information, then inspects that actual Mach-O, ELF, or PE artifact for the

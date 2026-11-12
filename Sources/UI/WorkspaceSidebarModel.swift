@@ -303,6 +303,7 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
     case tmuxSession
     case herdrSession
     case herdrTerminal
+    case rexTerminal
     case zellijSession
 
     public var systemImageName: String {
@@ -327,6 +328,8 @@ public enum WorkspaceSidebarRowIcon: Equatable, Sendable {
             return "rectangle.3.group"
         case .herdrTerminal:
             return "terminal"
+        case .rexTerminal:
+            return "rectangle.split.2x1"
         case .zellijSession:
             return "rectangle.split.3x1"
         }
@@ -339,6 +342,7 @@ public enum WorkspaceSidebarSessionBackend: Int, CaseIterable, Comparable, Senda
     case zellij
     case herdrTerminal
     case herdrTUI
+    case rex
 
     public static func < (lhs: Self, rhs: Self) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -351,6 +355,7 @@ public enum WorkspaceSidebarSessionBackend: Int, CaseIterable, Comparable, Senda
         case .zellij: "zellij"
         case .herdrTerminal: "herdr"
         case .herdrTUI: "herdr tui"
+        case .rex: "rex"
         }
     }
 
@@ -361,6 +366,7 @@ public enum WorkspaceSidebarSessionBackend: Int, CaseIterable, Comparable, Senda
         case .zellij: "Zellij session"
         case .herdrTerminal: "Herdr terminal"
         case .herdrTUI: "Herdr TUI session"
+        case .rex: "Rex terminal"
         }
     }
 }
@@ -389,16 +395,18 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         switch target {
         case .tmuxSession: .tmux
         case .zellijSession: .zellij
-        case let .herdrSession(_, _, backend):
-            backend == .core ? .herdrTerminal : .herdrTUI
+        case .herdrSession: .herdrTUI
+        case let .backendTerminal(_, kind, _):
+            kind == .rex ? .rex : .herdrTerminal
         case .host, .project, .worktree, .directoryWorkspace: nil
         }
     }
 
     /// Quiet text after a session's name. Herdr desktop panes in one tab
-    /// share a `space / tab` title, so their address tells them apart.
+    /// share a `space / tab` title, so their address tells them apart; a
+    /// Rex terminal shows its session and window.
     public var sessionDetail: String? {
-        guard sessionBackend == .herdrTerminal,
+        guard sessionBackend == .herdrTerminal || sessionBackend == .rex,
               let subtitle, subtitle != title
         else { return nil }
         return subtitle
@@ -413,11 +421,13 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
                 name: name,
                 socketName: socketName
             )
-        case let .herdrSession(hostID, name, backend):
-            WorkspaceSidebarModel.herdrSessionOrderID(
+        case let .herdrSession(hostID, name):
+            WorkspaceSidebarModel.herdrSessionOrderID(hostID: hostID, name: name)
+        case let .backendTerminal(hostID, kind, address):
+            WorkspaceSidebarModel.backendTerminalOrderID(
                 hostID: hostID,
-                name: name,
-                backend: backend
+                kind: kind,
+                address: address
             )
         case let .zellijSession(hostID, name):
             WorkspaceSidebarModel.zellijSessionOrderID(
@@ -837,6 +847,9 @@ public enum WorkspaceSidebarModel {
                         + host.herdrSessions.map {
                             herdrSessionRow($0, hostID: host.id)
                         }
+                        + host.backendTerminals.map {
+                            backendTerminalRow($0, hostID: host.id)
+                        }
                         + host.zellijSessions.map {
                             zellijSessionRow($0, hostID: host.id)
                         },
@@ -874,13 +887,22 @@ public enum WorkspaceSidebarModel {
 
     static func herdrSessionOrderID(
         hostID: UUID,
-        name: String,
-        backend: HerdrBackend = .tui
+        name: String
     ) -> String {
-        if backend == .core {
-            return "herdr-core:\(hostID.uuidString):\(name)"
+        "herdr:\(hostID.uuidString):\(name)"
+    }
+
+    /// Prefixed by backend so a terminal never collides with a session
+    /// of the same name in the shared manual order.
+    static func backendTerminalOrderID(
+        hostID: UUID,
+        kind: BackendTerminalKind,
+        address: String
+    ) -> String {
+        switch kind {
+        case .herdrCore: "herdr-core:\(hostID.uuidString):\(address)"
+        case .rex: "rex:\(hostID.uuidString):\(address)"
         }
-        return "herdr:\(hostID.uuidString):\(name)"
     }
 
     static func zellijSessionOrderID(
@@ -906,15 +928,26 @@ public enum WorkspaceSidebarModel {
         hostID: UUID
     ) -> WorkspaceSidebarRow {
         WorkspaceSidebarRow(
-            target: .herdrSession(hostID: hostID, name: session.name, backend: session.backend),
-            icon: session.backend == .core ? .herdrTerminal : .herdrSession,
+            target: .herdrSession(hostID: hostID, name: session.name),
+            icon: .herdrSession,
             title: session.title,
-            subtitle: session.backend == .core ? session.name : session
-                .state == .running
-                ? "Running"
-                : "Stopped",
+            subtitle: session.state == .running ? "Running" : "Stopped",
             herdrSessionState: session.state,
             herdrSessionIsDefault: session.isDefault
+        )
+    }
+
+    private static func backendTerminalRow(
+        _ terminal: BackendTerminalSummary,
+        hostID: UUID
+    ) -> WorkspaceSidebarRow {
+        WorkspaceSidebarRow(
+            target: .backendTerminal(
+                hostID: hostID, kind: terminal.kind, address: terminal.address
+            ),
+            icon: terminal.kind == .rex ? .rexTerminal : .herdrTerminal,
+            title: terminal.title,
+            subtitle: terminal.detail ?? terminal.address
         )
     }
 

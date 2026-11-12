@@ -516,7 +516,7 @@ struct WorkspaceRestorationTests {
             snapshot: environment.snapshot,
             nativeHerdrPathProvider: { _ in .success("/usr/bin/herdr") },
             herdrSessionDiscovery: { _ in .available([running]) },
-            herdrSessionValidationDiscovery: { _, _, _ in
+            herdrSessionValidationDiscovery: { _, _ in
                 let attempt = validationAttempts.withLock {
                     $0 += 1
                     return $0
@@ -592,7 +592,7 @@ struct WorkspaceRestorationTests {
                 }
             },
             herdrSessionDiscovery: { _ in .available([running]) },
-            herdrSessionValidationDiscovery: { _, _, _ in
+            herdrSessionValidationDiscovery: { _, _ in
                 .available([running])
             }
         )
