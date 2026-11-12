@@ -6558,6 +6558,96 @@ fn stale_kwt_publication_cannot_replace_the_current_project_tree() {
 }
 
 #[test]
+fn missing_kwt_helper_keeps_ownership_unknown_and_preserves_cached_workspaces() {
+    let runtime = Arc::new(ManualRefreshRuntime::default());
+    let snapshot = HostSnapshot::test_fixture(
+        "Ubuntu",
+        "boot",
+        42,
+        vec![
+            session::DiscoveredSession::new(
+                "review",
+                session::SessionIdentity::new(100, "$1", 200),
+                0,
+            ),
+            session::DiscoveredSession::new(
+                "custom-project",
+                session::SessionIdentity::new(100, "$2", 201),
+                0,
+            ),
+        ],
+    );
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").unwrap(),
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").unwrap(),
+    );
+    let workspace = Workspace::application_with_services(
+        TerminalAppearance::default(),
+        Some(spec),
+        Arc::new(FixedDiscovery::new(snapshot.clone())),
+        runtime.clone(),
+    );
+    workspace.connect_enabled_hosts().unwrap();
+    runtime.run_next_work();
+    let inventory = KwtInventory::parse(
+        br#"[{"repository":"project-id","name":"project","path":"/repos/project","last_touched":null,"registration_fingerprint":"project-fingerprint"}]"#,
+        br#"[{"path":"/repos/project","branch":"main","commit_hash":"abc","is_main":true,"created_at":null,"generation":"g1","repository":"project-id","session_name":"custom-project","tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
+        br#"[{"name":"scratch","path":"/work/scratch","session_name":"custom-directory","session_live":false,"tmux_socket_name":null,"tmux_attach_mode":"direct"}]"#,
+    ).unwrap();
+    let generation = workspace
+        .scene
+        .runtime
+        .kwt_refresh_generation
+        .load(Ordering::Acquire);
+    publish_kwt_inventory(
+        &workspace.scene,
+        generation,
+        snapshot.endpoint(),
+        snapshot.runtime(),
+        &inventory,
+    );
+    let selection = SessionSelection::new("wsl", "Ubuntu", "review");
+    let request = workspace.session_rename_request(&selection).unwrap();
+    let managed = SessionSelection::new("wsl", "Ubuntu", "custom-project");
+    assert!(workspace.session_rename_request(&managed).is_err());
+
+    workspace.refresh().unwrap();
+
+    assert!(workspace.session_rename_request(&managed).is_err());
+    assert!(workspace.session_rename_request(&selection).is_err());
+    assert!(
+        workspace
+            .rename_session(&request, "custom-project")
+            .is_err()
+    );
+    assert!(
+        workspace
+            .rename_session(&request, "custom-directory")
+            .is_err()
+    );
+    assert!(
+        workspace
+            .rename_session(&request, "unmanaged-name")
+            .is_err()
+    );
+    let refreshed = workspace.snapshot();
+    let host = &refreshed.hosts()[0];
+    assert_eq!(
+        host.projects()[0].worktrees()[0].session_name(),
+        "custom-project"
+    );
+    assert_eq!(
+        host.directory_workspaces()[0].session_name(),
+        "custom-directory"
+    );
+    assert_eq!(
+        host.kwt_diagnostic().unwrap().kind(),
+        DiagnosticKind::ExecutableNotFound
+    );
+    workspace.close();
+}
+
+#[test]
 fn background_cadence_refreshes_ready_hosts_and_reuses_the_admitted_host() {
     let runtime = Arc::new(ManualRefreshRuntime::default());
     let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(

@@ -299,103 +299,31 @@ fn native_kill_confirmation_preserves_cancelled_and_replaced_sessions() {
 }
 
 #[test]
-fn rename_keeps_clients_attached_across_scenes_and_retained_navigation() {
+fn missing_kwt_helper_blocks_rename_without_blocking_session_attachment() {
     let Some(fixture) =
-        Fixture::new("rename_keeps_clients_attached_across_scenes_and_retained_navigation")
+        Fixture::new("missing_kwt_helper_blocks_rename_without_blocking_session_attachment")
     else {
         return;
     };
-    let selection = fixture.selection("work");
-    fixture.workspace.attach(&selection).unwrap();
-    fixture.wait_terminal("work");
-    fixture.shell_probe("before-rename");
-    let other = fixture.workspace.open_scene();
-    other.select_host(selection.host_id()).unwrap();
-    other.switch_session(&selection).unwrap();
-    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "work"));
-    other.switch_session(&fixture.selection("keep")).unwrap();
-    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "keep"));
     fixture.wait(|| {
-        fixture.text(&[
-            "display-message",
-            "-p",
-            "-t",
-            "=keep:",
-            "#{session_attached}",
-        ]) == "1"
+        fixture.workspace.snapshot().hosts()[0]
+            .kwt_diagnostic()
+            .is_some()
     });
-    let clients = fixture.text(&["list-clients", "-F", "#{client_pid}:#{session_id}"]);
-    let identity = fixture.identity("work");
-    let request = fixture
-        .workspace
-        .session_rename_request(&selection)
-        .unwrap();
-    fixture
-        .workspace
-        .rename_session(&request, "release 'one")
-        .unwrap();
-    fixture.wait_terminal("release 'one");
-    assert_eq!(fixture.identity("release 'one"), identity);
-    assert_eq!(
-        fixture.text(&["list-clients", "-F", "#{client_pid}:#{session_id}"]),
-        clients
-    );
-    fixture.shell_probe("after-rename");
-    other
-        .switch_session(&fixture.selection("release 'one"))
-        .unwrap();
-    fixture.wait(|| matches!(other.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == "release 'one"));
-    assert_eq!(
-        fixture.text(&["list-clients", "-F", "#{client_pid}:#{session_id}"]),
-        clients
-    );
-    other.close();
-}
-
-#[test]
-fn rename_rejects_replacement_collision_and_kwt_owned_names() {
-    let Some(fixture) = Fixture::new("rename_rejects_replacement_collision_and_kwt_owned_names")
-    else {
-        return;
-    };
-    let request = fixture
-        .workspace
-        .session_rename_request(&fixture.selection("work"))
-        .unwrap();
-    for name in [
-        "keep",
-        "kwt-wt-owned",
-        "kwt-workspace-owned",
-        "invalid.name",
-    ] {
-        assert!(
-            fixture.workspace.rename_session(&request, name).is_err(),
-            "accepted {name}"
-        );
-    }
-    fixture.run(&["rename-session", "-t", "=work:", "original"]);
-    fixture.run(&["new-session", "-d", "-s", "work", "/bin/sh"]);
-    let replacement = fixture.identity("work");
-    fixture.workspace.rename_session(&request, "wrong").unwrap();
-    fixture.wait(|| {
+    let selection = fixture.selection("work");
+    assert!(
         fixture
             .workspace
-            .drain_events()
-            .0
-            .into_iter()
-            .any(|event| matches!(event, WorkspaceEvent::SessionRenamed { result: Err(_), .. }))
-    });
-    assert_eq!(fixture.identity("work"), replacement);
-    assert!(
-        !fixture
-            .command(&["has-session", "-t", "=wrong:"])
-            .status
-            .success()
+            .session_rename_request(&selection)
+            .is_err()
     );
+    fixture.workspace.attach(&selection).unwrap();
+    fixture.wait_terminal("work");
+    fixture.shell_probe("ownership-unknown");
     assert!(
         fixture
-            .command(&["has-session", "-t", "=original:"])
-            .status
-            .success()
+            .workspace
+            .session_rename_request(&selection)
+            .is_err()
     );
 }

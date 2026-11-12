@@ -1785,6 +1785,8 @@ POSIX SSH hosts share these rules; KWT owns worktree and directory names.
 Rename requires completed KWT discovery without an inventory error, or
 confirmation that KWT is absent. Pending discovery cannot establish that a
 custom session name is unmanaged. Submission checks ownership again.
+Missing bundled tooling leaves ownership unknown and keeps cached workspace
+records. Developer builds need the bundled helper to enable Rename.
 
 The Rust sidebar does not yet have agent-attention data or Needs Attention
 sorting, Herdr desktop terminals, worktree diff/PR/check

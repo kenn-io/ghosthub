@@ -546,6 +546,8 @@ characters. KWT-owned worktree and directory sessions keep their assigned
 names; names starting with `kwt-wt-` or `kwt-workspace-` are reserved.
 Rename is available after KWT discovery finishes successfully or confirms
 that KWT is not installed. If discovery fails, refresh the host first.
+Developer builds without the bundled KWT helper cannot check ownership and
+do not offer Rename; use a build with the helper included.
 Renaming supports local Linux/WSL sessions and connected POSIX SSH hosts.
 Manual sidebar order follows the renamed session.
 

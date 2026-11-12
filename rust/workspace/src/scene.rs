@@ -3583,11 +3583,16 @@ pub(crate) fn reserve_kwt_refresh(scene: &Arc<Scene>, supersede: bool) -> Option
         .as_ref()
         .is_none_or(|config| config.kwt_bundle().is_none())
     {
-        publish_kwt_unavailable(
+        // A missing discovery tool cannot establish that KWT owns no sessions.
+        publish_kwt_error(
             scene,
             scene.runtime.kwt_refresh_generation.load(Ordering::Acquire),
             &endpoint,
             &runtime,
+            HostDiagnostic::new(
+                DiagnosticKind::ExecutableNotFound,
+                "This build has no KWT helper. Workspace ownership is unknown.",
+            ),
         );
         return None;
     }
