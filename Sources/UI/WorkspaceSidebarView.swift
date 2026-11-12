@@ -543,8 +543,9 @@ struct WorkspaceSidebarView: View {
         }
     }
 
-    /// Host name, dimmed detail, and connection dot. The disclosure chevron
-    /// and + menu appear on hover; the chevron stays while collapsed.
+    /// Host name, dimmed detail, and connection dot. Clicking the row
+    /// collapses or expands the host without changing the active session.
+    /// The chevron is a hint: it shows on hover and stays while collapsed.
     private func hostHeader(
         _ section: WorkspaceSidebarSection,
         disclosureKey: String
@@ -561,16 +562,11 @@ struct WorkspaceSidebarView: View {
             activeZellijSession: activeZellijSession
         )
         // The status dot and name sit flush with the sidebar title. The
-        // disclosure chevron trails the name, as in macOS sidebar sections,
-        // and the + menu stays visible so session creation is discoverable.
+        // chevron trails the name, as in macOS sidebar sections, and the
+        // + menu stays visible so session creation is discoverable.
         return HStack(spacing: 2) {
             Button {
-                onNavigateAwayFromSession()
-                selection.select(
-                    section.row.target,
-                    in: snapshot,
-                    visibility: visibility
-                )
+                toggle(disclosureKey)
             } label: {
                 HStack(spacing: 6) {
                     Circle()
@@ -596,6 +592,12 @@ struct WorkspaceSidebarView: View {
                             .truncationMode(.tail)
                     }
                     Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .foregroundStyle(.tertiary)
+                        .opacity(isHovered || !expanded ? 1 : 0)
+                        .accessibilityHidden(true)
                 }
                 .padding(.horizontal, 4)
                 .frame(height: 26)
@@ -604,12 +606,11 @@ struct WorkspaceSidebarView: View {
             }
             .buttonStyle(.plain)
             .workspaceAccessibility(
-                WorkspaceAccessibilityModel.descriptor(
-                    for: section.row,
-                    isSelected: isSelected
+                WorkspaceAccessibilityModel.disclosureDescriptor(
+                    title: host.sidebarTitle,
+                    isExpanded: expanded
                 )
             )
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
             .accessibilityIdentifier("sidebar-host-\(host.id.uuidString)")
 
             if let warning {
@@ -620,26 +621,6 @@ struct WorkspaceSidebarView: View {
                     "Show connection issue for \(host.sidebarTitle)"
                 )
             }
-
-            Button {
-                toggle(disclosureKey)
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 18, height: 22)
-                    .contentShape(Rectangle())
-                    .opacity(isHovered || !expanded ? 1 : 0)
-            }
-            .buttonStyle(.plain)
-            .workspaceAccessibility(
-                WorkspaceAccessibilityModel.disclosureDescriptor(
-                    title: host.sidebarTitle,
-                    isExpanded: expanded
-                )
-            )
-            .accessibilityIdentifier("sidebar-host-disclosure-\(host.id.uuidString)")
 
             hostMenuButton(host)
         }

@@ -20,7 +20,8 @@ moving away from Herdr or Zellij detaches only its presentation and leaves its s
 running. Stopped Herdr rows are dimmed, marked **stopped**, and listed last. Expand a host
 to see its current inventory and connection diagnostics.
 
-Each open window or tab keeps its own expanded and collapsed hosts and
+Click a host's name to collapse or expand it. Collapsing a host leaves the
+open session attached. Each open window or tab keeps its own expanded and collapsed hosts and
 projects. Expanding a host or project in one window leaves other windows as
 you arranged them. New windows start with hosts expanded and projects
 collapsed.
