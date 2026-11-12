@@ -6,6 +6,7 @@ mod windows_key;
 
 mod session_rename;
 mod sidebar;
+mod worktrees_settings;
 use sidebar::menus::SidebarMenu;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -479,17 +480,25 @@ enum SettingsPane {
     Appearance,
     Sidebar,
     Terminal,
+    Worktrees,
     Hosts,
 }
 
 impl SettingsPane {
-    const ALL: [Self; 4] = [Self::Appearance, Self::Sidebar, Self::Terminal, Self::Hosts];
+    const ALL: [Self; 5] = [
+        Self::Appearance,
+        Self::Sidebar,
+        Self::Terminal,
+        Self::Worktrees,
+        Self::Hosts,
+    ];
 
     const fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
             Self::Sidebar => "Sidebar",
             Self::Terminal => "Terminal",
+            Self::Worktrees => "Worktrees",
             Self::Hosts => "Hosts",
         }
     }
@@ -497,7 +506,7 @@ impl SettingsPane {
     const fn subtitle(self) -> &'static str {
         match self {
             Self::Appearance => "Choose a terminal theme and installed monospace font.",
-            Self::Sidebar => "",
+            Self::Sidebar | Self::Worktrees => "",
             Self::Terminal => "Control cursor, pointer, and remote clipboard behavior.",
             Self::Hosts => "Connect the machines and tmux sessions in your SSH network.",
         }
@@ -505,9 +514,10 @@ impl SettingsPane {
 
     const fn adjacent(self, reverse: bool) -> Option<Self> {
         match (self, reverse) {
-            (Self::Sidebar, false) | (Self::Hosts, true) => Some(Self::Terminal),
+            (Self::Sidebar, false) | (Self::Worktrees, true) => Some(Self::Terminal),
             (Self::Appearance, false) | (Self::Terminal, true) => Some(Self::Sidebar),
-            (Self::Terminal, false) => Some(Self::Hosts),
+            (Self::Terminal, false) | (Self::Hosts, true) => Some(Self::Worktrees),
+            (Self::Worktrees, false) => Some(Self::Hosts),
             (Self::Hosts, false) | (Self::Appearance, true) => None,
             (Self::Sidebar, true) => Some(Self::Appearance),
         }
@@ -659,6 +669,7 @@ struct SettingsDialog {
     sidebar_field: usize,
     appearance_editor: AppearanceEditor,
     terminal_editor: TerminalEditor,
+    worktrees_editor: worktrees_settings::Editor,
     selected_host_id: Option<String>,
     host_editor: Option<SshHostEditor>,
     pending_remove: Option<ConfiguredSshHost>,
@@ -679,6 +690,7 @@ impl SettingsDialog {
             sidebar_field: 0,
             appearance_editor: AppearanceEditor::new(appearance, font_families),
             terminal_editor: TerminalEditor::new(terminal),
+            worktrees_editor: worktrees_settings::Editor::default(),
             selected_host_id: selected.map(|host| host.id().to_owned()),
             host_editor: selected.map(|host| SshHostEditor::new(Some(host))),
             pending_remove: None,
@@ -689,6 +701,10 @@ impl SettingsDialog {
 
 fn focus_settings_detail(dialog: &mut SettingsDialog, reverse: bool) -> bool {
     match dialog.pane {
+        SettingsPane::Worktrees => {
+            dialog.worktrees_editor.clear_focused = reverse;
+            true
+        }
         SettingsPane::Sidebar => {
             dialog.sidebar_field = if reverse {
                 sidebar::settings::FIELD_COUNT - 1
@@ -731,31 +747,33 @@ fn focus_settings_detail(dialog: &mut SettingsDialog, reverse: bool) -> bool {
 }
 
 fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
+    let edge = Some(if reverse {
+        SettingsPane::Hosts
+    } else {
+        SettingsPane::Appearance
+    });
     if let Some(pane) = dialog.sidebar_focus {
         if let Some(next) = pane.adjacent(reverse) {
             dialog.sidebar_focus = Some(next);
         } else if focus_settings_detail(dialog, reverse) {
             dialog.sidebar_focus = None;
         } else {
-            dialog.sidebar_focus = Some(if reverse {
-                SettingsPane::Hosts
-            } else {
-                SettingsPane::Appearance
-            });
+            dialog.sidebar_focus = edge;
         }
         return;
     }
 
     match dialog.pane {
+        SettingsPane::Worktrees => {
+            if dialog.worktrees_editor.advance_focus(reverse) {
+                dialog.sidebar_focus = edge;
+            }
+        }
         SettingsPane::Sidebar => {
             if (reverse && dialog.sidebar_field == 0)
                 || (!reverse && dialog.sidebar_field == sidebar::settings::FIELD_COUNT - 1)
             {
-                dialog.sidebar_focus = Some(if reverse {
-                    SettingsPane::Hosts
-                } else {
-                    SettingsPane::Appearance
-                });
+                dialog.sidebar_focus = edge;
             } else if reverse {
                 dialog.sidebar_field -= 1;
             } else {
@@ -776,11 +794,7 @@ fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
                 dialog.appearance_editor.field == last
             };
             if at_edge {
-                dialog.sidebar_focus = Some(if reverse {
-                    SettingsPane::Hosts
-                } else {
-                    SettingsPane::Appearance
-                });
+                dialog.sidebar_focus = edge;
             } else {
                 dialog.appearance_editor.field =
                     adjacent_appearance_field(dialog.appearance_editor.field, reverse, custom);
@@ -795,11 +809,7 @@ fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
                 dialog.terminal_editor.field == TerminalField::RemoteClipboardWrite
             };
             if at_edge {
-                dialog.sidebar_focus = Some(if reverse {
-                    SettingsPane::Hosts
-                } else {
-                    SettingsPane::Appearance
-                });
+                dialog.sidebar_focus = edge;
             } else {
                 dialog.terminal_editor.field = dialog.terminal_editor.field.adjacent(reverse);
             }
@@ -816,11 +826,7 @@ fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
                 editor.field == SshField::SocketDirectory
             };
             if at_edge {
-                dialog.sidebar_focus = Some(if reverse {
-                    SettingsPane::Hosts
-                } else {
-                    SettingsPane::Appearance
-                });
+                dialog.sidebar_focus = edge;
             } else {
                 editor.field = editor.field.adjacent(reverse);
             }
@@ -2026,6 +2032,11 @@ impl RootView {
             terminal,
             font_families,
         ));
+        if let Some(dialog) = &mut self.settings_dialog {
+            dialog.worktrees_editor = worktrees_settings::Editor::new(
+                &self.workspace.configured_sidebar().hidden_session_patterns,
+            );
+        }
         self.session_action_menu = None;
         self.sidebar_menu = None;
         window.focus(&self.settings_focus);
@@ -2412,6 +2423,10 @@ impl RootView {
         {
             cx.notify();
             cx.stop_propagation();
+            return;
+        }
+        if detail_pane == Some(SettingsPane::Worktrees) && key != "tab" {
+            self.edit_worktree_patterns(event, cx);
             return;
         }
         if detail_pane == Some(SettingsPane::Sidebar) && key != "tab" {
@@ -6473,6 +6488,7 @@ impl RootView {
             SettingsPane::Appearance => self.settings_appearance_editor(cx),
             SettingsPane::Terminal => self.settings_terminal_editor(cx),
             SettingsPane::Sidebar => self.settings_sidebar_editor(cx),
+            SettingsPane::Worktrees => self.settings_worktrees_editor(cx),
             SettingsPane::Hosts => div()
                 .flex_1()
                 .min_h_0()
@@ -9631,6 +9647,7 @@ mod tests {
                 SettingsPane::Appearance,
                 SettingsPane::Sidebar,
                 SettingsPane::Terminal,
+                SettingsPane::Worktrees,
                 SettingsPane::Hosts,
             ]
         );
@@ -9669,6 +9686,8 @@ mod tests {
         assert_eq!(focused_settings_detail(&dialog), None);
 
         advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Worktrees));
+        advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Hosts));
         advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, None);
@@ -9690,6 +9709,49 @@ mod tests {
             dialog.terminal_editor.field,
             TerminalField::RemoteClipboardWrite
         );
+    }
+
+    #[test]
+    fn worktree_patterns_and_clear_button_participate_in_settings_focus_order() {
+        let mut dialog = SettingsDialog::new(
+            &[],
+            AppearanceSettingsDraft {
+                theme: TerminalTheme::ClearDark,
+                font_family: "Cascadia Mono".into(),
+                font_size: "14".into(),
+                background: "#212734".into(),
+                foreground: "#e6e6e6".into(),
+            },
+            TerminalSettingsDraft {
+                cursor_style: CursorStyle::Bar,
+                allow_shell_integration_cursor: false,
+                hide_mouse_while_typing: true,
+                allow_remote_clipboard_write: true,
+            },
+            Vec::new(),
+        );
+        dialog.pane = SettingsPane::Worktrees;
+        dialog.sidebar_focus = Some(SettingsPane::Hosts);
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(
+            focused_settings_detail(&dialog),
+            Some(SettingsPane::Worktrees)
+        );
+        assert!(!dialog.worktrees_editor.clear_focused);
+        advance_settings_focus(&mut dialog, false);
+        assert!(dialog.worktrees_editor.clear_focused);
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
+        advance_settings_focus(&mut dialog, true);
+        assert_eq!(
+            focused_settings_detail(&dialog),
+            Some(SettingsPane::Worktrees)
+        );
+        assert!(dialog.worktrees_editor.clear_focused);
+        advance_settings_focus(&mut dialog, true);
+        assert!(!dialog.worktrees_editor.clear_focused);
+        advance_settings_focus(&mut dialog, true);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Hosts));
     }
 
     #[test]

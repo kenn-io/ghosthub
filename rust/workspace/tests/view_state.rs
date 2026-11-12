@@ -48,6 +48,8 @@ fn sidebar_edits_merge_across_windows_and_survive_restart_without_changing_hosts
             settings.backend_label = BackendLabel::Dot;
             settings.row_height = SidebarRowHeight::Compact;
             settings.hide_root_checkout = true;
+            settings.hidden_session_patterns =
+                vec![" scratch-* ".into(), String::new(), "scratch-*".into()];
         })
         .unwrap();
     other
@@ -65,6 +67,8 @@ fn sidebar_edits_merge_across_windows_and_survive_restart_without_changing_hosts
     let loaded = ApplicationConfig::load(&roots).unwrap();
     assert_eq!(loaded.sidebar().row_height, SidebarRowHeight::Compact);
     assert!(loaded.sidebar().hide_root_checkout);
+    assert!(other.configured_sidebar().hides_tmux_session("scratch-api"));
+    assert_eq!(loaded.sidebar().hidden_session_patterns, ["scratch-*"]);
     assert_eq!(loaded.ssh_hosts()[0].name(), "Studio");
     assert_eq!(loaded.terminal().font_size(), 18);
     workspace.close();
@@ -92,6 +96,19 @@ fn sidebar_edits_merge_across_windows_and_survive_restart_without_changing_hosts
     assert_eq!(
         restarted.configured_sidebar().backend_label,
         BackendLabel::Dot
+    );
+    assert!(
+        restarted
+            .configured_sidebar()
+            .hides_tmux_session("scratch-api")
+    );
+    restarted
+        .update_sidebar(|settings| settings.hidden_session_patterns.clear())
+        .unwrap();
+    assert!(
+        !restarted
+            .configured_sidebar()
+            .hides_tmux_session("scratch-api")
     );
     restarted.close();
     fs::remove_dir_all(root).unwrap();

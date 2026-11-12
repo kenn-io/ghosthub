@@ -450,3 +450,53 @@ fn rename_actions_exclude_kwt_owned_and_unavailable_sessions() {
             .contains(&SessionRowAction::Rename)
     );
 }
+
+#[test]
+fn session_patterns_filter_tmux_navigation_and_preserve_other_backends() {
+    let host = HostItem::wsl(
+        "Ubuntu",
+        None,
+        HostConnectionState::Ready,
+        ["build", "scratch-api", "scratch-web"]
+            .map(|name| workspace::SessionItem::new(name, 0))
+            .into(),
+        None,
+    )
+    .with_zellij_sessions(vec![workspace::SessionItem::new("scratch-api", 0)])
+    .with_herdr_sessions(vec![workspace::HerdrSessionItem::new(
+        "scratch-web",
+        false,
+        HerdrSessionState::Running,
+    )]);
+    let active = SessionSelection::new(host.id(), host.endpoint(), "scratch-api");
+    let retained = SessionSelection::new(host.id(), host.endpoint(), "scratch-web");
+    let preferences = SidebarPreferences {
+        hidden_session_patterns: vec!["scratch-*".into()],
+        ..SidebarPreferences::default()
+    };
+    let rows = sessions(&host, Some(&active), &[retained], &preferences);
+    let visible: Vec<_> = rows
+        .iter()
+        .map(|row| (row.selection().kind(), row.selection().session()))
+        .collect();
+    assert_eq!(
+        visible,
+        [
+            (workspace::SessionKind::Tmux, "build"),
+            (workspace::SessionKind::Zellij, "scratch-api"),
+            (workspace::SessionKind::Herdr, "scratch-web")
+        ]
+    );
+    assert_eq!(
+        adjacent_session(&rows, Some(&active), false)
+            .unwrap()
+            .session(),
+        "build"
+    );
+    assert_eq!(
+        adjacent_session(&rows, Some(&active), true).unwrap().kind(),
+        workspace::SessionKind::Herdr
+    );
+    let restored = sessions(&host, Some(&active), &[], &SidebarPreferences::default());
+    assert!(restored.iter().any(|row| row.selection() == &active));
+}

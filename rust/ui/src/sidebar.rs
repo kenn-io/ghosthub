@@ -136,6 +136,7 @@ pub(super) fn sessions(
     let mut rows: Vec<_> =
         tree_sessions(host, active, retained, preferences.hide_worktree_sessions)
             .into_iter()
+            .filter(|row| !preferences.hides_tmux_session(row.selection.session()))
             .chain(tree_zellij_sessions(host, active, retained))
             .map(SidebarSession::Session)
             .chain(

@@ -250,8 +250,9 @@ impl ApplicationConfig {
     pub fn replace_sidebar(
         &mut self,
         roots: &Roots,
-        sidebar: SidebarPreferences,
+        mut sidebar: SidebarPreferences,
     ) -> Result<(), ConfigError> {
+        sidebar.normalize();
         let mut candidate = self.clone();
         candidate.sidebar = sidebar;
         candidate.save(roots)?;
