@@ -2416,7 +2416,10 @@ public struct RootView: View {
     }
 
     private func handleCloseTab() {
+        // A shortcut that is still checking its target must not open it
+        // after the user closed the view it started from.
         cancelHerdrPresentationIntents()
+        handlers.cancelPendingSessionOpens?()
         if activeHerdrSession != nil {
             deactivateHerdrSession()
             return

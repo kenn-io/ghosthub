@@ -42,8 +42,8 @@ struct WorkspaceBackendTerminalTests {
             name: "This Mac",
             kind: .selfHost,
             platform: .macOS,
-            herdrSessions: remote ? [] : herdrSessions,
-            herdrAvailable: !remote && !herdrSessions.isEmpty,
+            herdrSessions: herdrSessions,
+            herdrAvailable: !herdrSessions.isEmpty,
             backendTerminals: remote ? [] : terminals,
             zellijSessions: zellijSessions,
             zellijAvailable: !zellijSessions.isEmpty
@@ -85,6 +85,10 @@ struct WorkspaceBackendTerminalTests {
         let validationGate = Mutex<AsyncGate?>(nil)
         /// Holds only the next validation until opened.
         let nextValidationGate = Mutex<AsyncGate?>(nil)
+        /// This Mac's Herdr sessions, when a test changes them.
+        let herdrSessions = Mutex<[HerdrSessionSummary]?>(nil)
+        /// Holds only the next Herdr session check until opened.
+        let nextHerdrValidationGate = Mutex<AsyncGate?>(nil)
 
         init(_ terminals: [BackendTerminalSummary]) {
             self.terminals = Mutex(terminals)
@@ -135,6 +139,12 @@ struct WorkspaceBackendTerminalTests {
         startServices: Bool = false
     ) throws -> WorkspaceSceneModel {
         let fake = fake ?? FakeHost(environment.host.backendTerminals)
+        let localHerdrSessions = environment.snapshot
+            .host(id: environment.localHostID)?.herdrSessions ?? []
+        let herdrDiscovery: WorkspaceSceneModel.HerdrSessionDiscovery = { host in
+            guard host == .local else { return .available([]) }
+            return .available(fake.herdrSessions.withLock { $0 } ?? localHerdrSessions)
+        }
         return try makeModel(
             database: environment.database,
             localHostID: environment.localHostID,
@@ -152,7 +162,7 @@ struct WorkspaceBackendTerminalTests {
                 ))
             },
             tmuxSessionDiscovery: { _ in .success([]) },
-            herdrSessionDiscovery: { _ in .available(environment.host.herdrSessions) },
+            herdrSessionDiscovery: herdrDiscovery,
             backendTerminalDiscovery: discovery ?? { _ in
                 [.rex: fake.listing(.rex), .herdrCore: fake.listing(.herdrCore)]
             },
@@ -161,6 +171,15 @@ struct WorkspaceBackendTerminalTests {
             presentationSSHConnectionProvider: { _, _ in
                 fake.attaches.withLock { $0 += 1 }
                 return testKwtSSHAttachment(routeIdentity: fake.attachRoute.withLock { $0 })
+            },
+            herdrSessionValidationDiscovery: { host, _ in
+                if let gate = fake.nextHerdrValidationGate.withLock({ gate in
+                    defer { gate = nil }
+                    return gate
+                }) {
+                    await gate.wait()
+                }
+                return await herdrDiscovery(host)
             },
             tmuxReconnectIntervals: [.milliseconds(10)],
             startServices: startServices
@@ -741,13 +760,13 @@ struct WorkspaceBackendTerminalTests {
         try closeNewestSurface(store, closed: &closed, exitCode: 255)
         await waitUntilMainActor { model.sessionConnectionRecoveryRequest != nil }
 
-        model.closeBackendTerminalFromUser(rex)
+        model.closeBackendTerminal(rex)
 
         #expect(model.sessionConnectionRecoveryRequest == nil)
         await model.shutdown()
     }
 
-    @Test("closing a terminal cancels a shortcut still checking the next one")
+    @Test("Cmd-W cancels a shortcut still checking the next terminal")
     func closeCancelsShortcut() async throws {
         let terminals = ["01", "02"].map {
             BackendTerminalSummary(kind: .rex, address: "block:\($0)", title: "shell \($0)")
@@ -767,7 +786,8 @@ struct WorkspaceBackendTerminalTests {
         fake.validationGate.withLock { $0 = gate }
 
         #expect(model.performApplicationShortcut(.nextSibling))
-        model.closeBackendTerminalFromUser(first)
+        model.cancelPendingSessionOpens()
+        model.closeBackendTerminal(first)
         gate.open()
         try await Task.sleep(for: .milliseconds(100))
 
@@ -829,6 +849,76 @@ struct WorkspaceBackendTerminalTests {
         await #expect(throws: BackendTerminalPresentationError.self) {
             try await opening.value
         }
+        await launchSurface(model, store: store, after: 1)
+
+        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(fake.attaches.withLock { $0 } == 2)
+        await model.shutdown()
+    }
+    @Test("Cmd-W from a terminal cancels a shortcut still checking a Herdr session")
+    func closeCancelsHerdrShortcut() async throws {
+        let environment = try environment(
+            terminals: [Self.rexTerminal],
+            herdrSessions: [.init(name: "work", isDefault: false, state: .running)]
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        model.selection.select(
+            .backendTerminal(hostID: rex.hostID, kind: rex.kind, address: rex.address),
+            in: environment.snapshot
+        )
+        model.isFocusedWindow = true
+        let gate = AsyncGate()
+        fake.nextHerdrValidationGate.withLock { $0 = gate }
+
+        #expect(model.performApplicationShortcut(.nextSibling))
+        #expect(model.pendingHerdrShortcutSelection?.name == "work")
+        model.cancelPendingSessionOpens()
+        model.closeBackendTerminal(rex)
+        gate.open()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(model.activeBorrowedHerdrSelection == nil)
+        #expect(model.activeBackendTerminalSelection == nil)
+        await model.shutdown()
+    }
+
+    @Test("a terminal's reconnect waits while a Herdr session is checked")
+    func reconnectWaitsForHerdrCheck() async throws {
+        let environment = try environment(
+            terminals: [Self.rexTerminal],
+            herdrSessions: [.init(name: "work", isDefault: false, state: .running)],
+            remote: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        await launchSurface(model, store: store)
+
+        let gate = AsyncGate()
+        fake.nextHerdrValidationGate.withLock { $0 = gate }
+        let opening = Task { @MainActor in
+            try await model.openBorrowedHerdrSession(
+                .init(hostID: environment.localHostID, name: "work")
+            )
+        }
+        await waitUntilMainActor { fake.nextHerdrValidationGate.withLock { $0 == nil } }
+
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 255)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(fake.attaches.withLock { $0 } == 1)
+
+        // The Herdr session ended, so its open fails and the terminal
+        // reconnects.
+        fake.herdrSessions.withLock { $0 = [] }
+        gate.open()
+        await #expect(throws: (any Error).self) { try await opening.value }
         await launchSurface(model, store: store, after: 1)
 
         #expect(model.activeBackendTerminalSelection == rex)

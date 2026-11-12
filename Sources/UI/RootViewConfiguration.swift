@@ -463,6 +463,8 @@ public struct InteractionHandlers {
     public let cancelPendingZellijPresentation: (() -> Void)?
     public let openBackendTerminal: ((WorkspaceBackendTerminalSelection) async throws -> Void)?
     public let closeBackendTerminal: ((WorkspaceBackendTerminalSelection) -> Void)?
+    /// Cancels every session open that is still checking its target.
+    public let cancelPendingSessionOpens: (() -> Void)?
     public let prepareZellijSessionKill:
         ((WorkspaceZellijSessionSelection) async throws
             -> ZellijSessionKillRequest)?
@@ -563,6 +565,7 @@ public struct InteractionHandlers {
         cancelPendingZellijPresentation: (() -> Void)? = nil,
         openBackendTerminal: ((WorkspaceBackendTerminalSelection) async throws -> Void)? = nil,
         closeBackendTerminal: ((WorkspaceBackendTerminalSelection) -> Void)? = nil,
+        cancelPendingSessionOpens: (() -> Void)? = nil,
         prepareZellijSessionKill:
         ((WorkspaceZellijSessionSelection) async throws
             -> ZellijSessionKillRequest)? = nil,
@@ -655,6 +658,7 @@ public struct InteractionHandlers {
         self.cancelPendingZellijPresentation = cancelPendingZellijPresentation
         self.openBackendTerminal = openBackendTerminal
         self.closeBackendTerminal = closeBackendTerminal
+        self.cancelPendingSessionOpens = cancelPendingSessionOpens
         self.prepareZellijSessionKill = prepareZellijSessionKill
         self.killZellijSession = killZellijSession
         self.cancelZellijSessionKill = cancelZellijSessionKill

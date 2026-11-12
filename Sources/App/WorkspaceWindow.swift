@@ -1081,7 +1081,10 @@ struct WorkspaceWindow: View {
                     try await sceneModel.openBackendTerminal(selection)
                 },
                 closeBackendTerminal: { [sceneModel] selection in
-                    sceneModel.closeBackendTerminalFromUser(selection)
+                    sceneModel.closeBackendTerminal(selection)
+                },
+                cancelPendingSessionOpens: { [sceneModel] in
+                    sceneModel.cancelPendingSessionOpens()
                 },
                 prepareZellijSessionKill: { [sceneModel] selection in
                     try await sceneModel.prepareZellijSessionKill(selection)

@@ -1686,6 +1686,60 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("a Herdr reconnect waits while another session is checked")
+    func reconnectWaitsForSessionCheck() async throws {
+        var environment = try remoteEnvironment()
+        let api = HerdrSessionSummary(name: "api", isDefault: true, state: .running)
+        let web = HerdrSessionSummary(name: "web", isDefault: false, state: .running)
+        environment.snapshot.hosts[0].herdrSessions = [api, web]
+        let store = RecordingNativeSessionSurfaceStore()
+        let listed = Mutex([api, web])
+        let validations = Mutex(0)
+        let gate = AsyncGate()
+        let model = try makeHerdrModel(
+            environment,
+            store: store,
+            discovery: { _ in .available(listed.withLock { $0 }) },
+            validationDiscovery: { _, _ in
+                // Hold the second open, the one for "web".
+                let call = validations.withLock { count in
+                    count += 1
+                    return count
+                }
+                if call == 2 {
+                    await gate.wait()
+                }
+                return .available(listed.withLock { $0 })
+            },
+            exactProbe: { _, _, _ in .present }
+        )
+        let apiSelection = WorkspaceHerdrSessionSelection(
+            hostID: environment.hostID, name: "api"
+        )
+        try await model.openBorrowedHerdrSession(apiSelection)
+        await launchHerdrSurface(model, store: store)
+
+        let opening = Task { @MainActor in
+            try await model.openBorrowedHerdrSession(
+                .init(hostID: environment.hostID, name: "web")
+            )
+        }
+        await waitUntilMainActor { validations.withLock { $0 } == 2 }
+        let close = try #require(store.surface.closeObservers.values.first)
+        close(false, 255)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(store.requestedKeys.count == 1)
+
+        // "web" ended, so its open fails and "api" reconnects.
+        listed.withLock { $0 = [api] }
+        gate.open()
+        await #expect(throws: (any Error).self) { try await opening.value }
+        await waitUntilMainActor { store.requestedKeys.count == 2 }
+
+        #expect(model.activeBorrowedHerdrSelection == apiSelection)
+        await model.shutdown()
+    }
+
     @Test("reconnect accepts same-route lease rollover during validation")
     func reconnectAcceptsSameRouteLeaseRollover() async throws {
         let environment = try remoteEnvironment()

@@ -9586,22 +9586,21 @@ final class WorkspaceSceneModel: ObservableObject {
         let validationID = UUID()
         herdrPresentationValidationID = validationID
         let previousHandle = activeBorrowedHerdrHandle
+        var previousBackendHandle: BorrowedBackendTerminalHandle?
         if activeBorrowedHerdrSelection != selection {
             if let previousHandle {
                 nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(
                     true, handle: previousHandle
                 )
             }
+            previousBackendHandle = holdBackendTerminalForSessionCheck()
             workspaceWindow?.makeFirstResponder(nil)
         }
         defer {
             if herdrPresentationValidationID == validationID {
                 herdrPresentationValidationID = nil
-                if let previousHandle {
-                    nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(
-                        false, handle: previousHandle
-                    )
-                }
+                releaseHerdrSessionAfterSessionCheck(previousHandle)
+                releaseBackendTerminalAfterSessionCheck(previousBackendHandle)
             }
         }
         let validation = try await revalidatedHerdrSession(selection)
@@ -13639,6 +13638,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
                 return .stop
             }
+            // A new view would take input meant for the session being
+            // checked, so the reconnect tries again after the check.
+            guard !isCheckingSessionPresentation else { return .retry }
             guard presentHerdrSession(
                 context.selection,
                 validation: validation
@@ -15510,7 +15512,7 @@ extension WorkspaceSceneModel {
                 false, handle: handle
             )
             nativeBackendTerminalCoordinator.requestKeyboardFocus(handle: handle)
-            resumePausedBackendTerminalReconnect()
+            releaseBackendTerminalAfterSessionCheck(nil)
             return
         }
         cancelPendingTmuxPreviewActivations()
@@ -15518,29 +15520,14 @@ extension WorkspaceSceneModel {
         // but it must not take the keystrokes meant for the new one.
         let validationID = UUID()
         backendTerminalPresentationValidationID = validationID
-        let previousHandle = activeBackendTerminalHandle
-        if let previousHandle {
-            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
-                true, handle: previousHandle
-            )
-        }
+        let previousHandle = holdBackendTerminalForSessionCheck()
+        let previousHerdrHandle = holdHerdrSessionForSessionCheck()
         workspaceWindow?.makeFirstResponder(nil)
-        // A reconnect would replace the suspended view with one that takes
-        // input, so it waits until this check ends.
-        if backendTerminalReconnectSupervisor.isRunning,
-           let active = activeBackendTerminalSelection {
-            backendTerminalReconnectSupervisor.cancel()
-            pausedBackendTerminalReconnect = active
-        }
         defer {
             if backendTerminalPresentationValidationID == validationID {
                 backendTerminalPresentationValidationID = nil
-                if let previousHandle {
-                    nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
-                        false, handle: previousHandle
-                    )
-                }
-                resumePausedBackendTerminalReconnect()
+                releaseBackendTerminalAfterSessionCheck(previousHandle)
+                releaseHerdrSessionAfterSessionCheck(previousHerdrHandle)
             }
         }
         let validated = try await validatedBackendTerminal(
@@ -15557,7 +15544,9 @@ extension WorkspaceSceneModel {
     }
 
     private func resumePausedBackendTerminalReconnect() {
-        guard let paused = pausedBackendTerminalReconnect else { return }
+        guard !isCheckingSessionPresentation,
+              let paused = pausedBackendTerminalReconnect
+        else { return }
         pausedBackendTerminalReconnect = nil
         guard activeBackendTerminalSelection == paused,
               !backendTerminalReconnectSupervisor.isRunning,
@@ -15724,11 +15713,58 @@ extension WorkspaceSceneModel {
         nativeBackendTerminalCoordinator.detach(selection)
     }
 
-    /// Cmd-W also cancels a shortcut that is still checking the next
-    /// terminal, so that terminal cannot open after the close.
-    func closeBackendTerminalFromUser(_ selection: WorkspaceBackendTerminalSelection) {
+    /// Cmd-W cancels every open still checking its target, whatever its
+    /// session type, so none replaces the view after the close. Closing a
+    /// view to switch sessions does not call this.
+    func cancelPendingSessionOpens() {
+        userNavigationRevision &+= 1
+        cancelPendingHerdrShortcutNavigation()
         cancelPendingBackendTerminalShortcutNavigation()
-        closeBackendTerminal(selection)
+        invalidateZellijPresentationIntent()
+    }
+
+    /// A Herdr session or backend terminal open is checking its target
+    /// before it replaces the view on screen.
+    var isCheckingSessionPresentation: Bool {
+        herdrPresentationValidationID != nil || backendTerminalPresentationValidationID != nil
+    }
+
+    /// Keeps the backend terminal on screen during another session's check,
+    /// but stops it taking keystrokes and holds its reconnect, which would
+    /// otherwise replace it with a view that takes input.
+    func holdBackendTerminalForSessionCheck() -> BorrowedBackendTerminalHandle? {
+        if backendTerminalReconnectSupervisor.isRunning,
+           let active = activeBackendTerminalSelection {
+            backendTerminalReconnectSupervisor.cancel()
+            pausedBackendTerminalReconnect = active
+        }
+        guard let handle = activeBackendTerminalHandle else { return nil }
+        nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(true, handle: handle)
+        return handle
+    }
+
+    /// Gives input and the reconnect back once no session check remains.
+    func releaseBackendTerminalAfterSessionCheck(_ handle: BorrowedBackendTerminalHandle?) {
+        guard !isCheckingSessionPresentation else { return }
+        if let handle {
+            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
+                false, handle: handle
+            )
+        }
+        resumePausedBackendTerminalReconnect()
+    }
+
+    /// Keeps the Herdr session on screen during another session's check,
+    /// but stops it taking keystrokes.
+    func holdHerdrSessionForSessionCheck() -> BorrowedHerdrSessionHandle? {
+        guard let handle = activeBorrowedHerdrHandle else { return nil }
+        nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(true, handle: handle)
+        return handle
+    }
+
+    func releaseHerdrSessionAfterSessionCheck(_ handle: BorrowedHerdrSessionHandle?) {
+        guard !isCheckingSessionPresentation, let handle else { return }
+        nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(false, handle: handle)
     }
 
     /// Withdraws this terminal's approval request so it cannot block a
@@ -15774,7 +15810,7 @@ extension WorkspaceSceneModel {
         host: CommandHost,
         afterDelay: Bool
     ) {
-        if backendTerminalPresentationValidationID != nil {
+        if isCheckingSessionPresentation {
             pausedBackendTerminalReconnect = selection
             return
         }

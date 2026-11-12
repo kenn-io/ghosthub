@@ -264,8 +264,9 @@ every host's backends have reported.
 Opening a terminal lists its backend again over a frozen SSH connection. The
 current view stays until the terminal is confirmed, so a failed open leaves it
 in place and shows the error. While that check runs, the current terminal
-takes no keystrokes and its reconnect waits. Closing the current terminal
-cancels a shortcut that is still checking the next one. The attach then requires that connection's route,
+takes no keystrokes and its reconnect waits. The same holds when a Herdr
+session and a backend terminal replace each other. Cmd-W cancels every
+shortcut still checking its target, so nothing opens after the close. The attach then requires that connection's route,
 so a changed SSH alias cannot reach a same-addressed terminal on another
 machine. Reconnect checks the route before it reads the listing. A changed route
 stops with a prompt to reopen, whatever the other machine lists. On the
