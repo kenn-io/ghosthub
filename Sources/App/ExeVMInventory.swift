@@ -719,7 +719,11 @@ final class ExeVMInventoryStore: ObservableObject {
                 configKey: configKey,
                 name: vm.vmName,
                 platform: .linux,
-                sshDestination: vm.sshDestination
+                sshDestination: vm.sshDestination,
+                // Discovered VMs have no Hosts settings row, so a user whose
+                // ssh client lacks compression support could not turn this
+                // off. Compression earns little on a VM link, so never ask.
+                compression: false
             ),
             metadata: ExeVMMetadata(
                 accountConfigKey: account.configKey,

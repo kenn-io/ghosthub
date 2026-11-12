@@ -517,7 +517,10 @@ ordered route snapshot. The snapshot carries a digest of the complete resolved
 route and a versioned, allowlisted execution projection for each hop. Direct
 and Tailscale-discovered destinations use the same contract.
 
-SSH compression is enabled by default and configurable per host in Settings.
+SSH compression is enabled by default for configured hosts and configurable per
+host in Settings. Discovered exe.dev VMs always request no compression: the
+provider supplies them dynamically, so they have no Settings row and a user
+whose ssh client lacks compression support could not turn it off.
 Ghosthub sends the explicit choice to kwt for resolution, leases, and commands;
 kwt applies it to the destination while jump hosts retain their own OpenSSH
 settings. The choice travels in the route snapshot for revalidation and its

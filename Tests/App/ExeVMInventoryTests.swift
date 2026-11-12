@@ -240,6 +240,51 @@ struct ExeVMInventoryTests {
     }
 
     @MainActor
+    @Test("discovered VMs route without requesting SSH compression")
+    func discoveredVMsRouteWithoutCompression() async throws {
+        let client = ExeVMClient { _, _, startMarker, endMarker in
+            (
+                0,
+                """
+                \(startMarker)
+                {"vms":[{"vm_name":"build","ssh_dest":"vm+build@exe.dev","status":"running"}]}
+                \(endMarker)
+                """,
+                ""
+            )
+        }
+        let store = ExeVMInventoryStore(client: client)
+        let discovered = Task { @MainActor in
+            for await hosts in store.$hosts.values where !hosts.isEmpty {
+                return
+            }
+        }
+        store.refresh(accounts: [ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev"
+        )])
+        await discovered.value
+
+        // A discovered VM has no Hosts settings row, so a user whose ssh
+        // client lacks compression support could not turn this off.
+        let snapshot = ConfiguredHostOverlay.apply(
+            [],
+            exeHosts: store.hosts,
+            to: .empty
+        )
+        #expect(CommandHostResolver.resolve(
+            try #require(snapshot.hosts.first)
+        ) == .ssh(SSHHostInfo(
+            user: "vm+build",
+            hostname: "exe.dev",
+            port: nil,
+            platform: .posix,
+            compression: false
+        )))
+    }
+
+    @MainActor
     @Test("refresh cancellation and invalidation stay scoped")
     func refreshLifecycleIsScopedToExactOperation() async throws {
         let client = ExeVMClient { host, _, startMarker, endMarker in
