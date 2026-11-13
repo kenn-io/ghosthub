@@ -8,6 +8,7 @@ use workspace::{
     WorkspaceContent, WorkspaceEvent, WorkspaceSnapshot,
 };
 
+mod attention;
 mod herdr;
 mod kwt;
 mod recovery;

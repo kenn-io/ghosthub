@@ -44,6 +44,7 @@ struct RecordingRunner {
     admission_directory: Mutex<AdmissionDirectoryState>,
     herdr_outputs: Mutex<VecDeque<CommandOutput>>,
     zellij_outputs: Mutex<VecDeque<CommandOutput>>,
+    agent_outputs: Mutex<VecDeque<CommandOutput>>,
 }
 
 #[derive(Debug, Default)]
@@ -82,6 +83,7 @@ impl RecordingRunner {
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
+            agent_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -104,6 +106,7 @@ impl RecordingRunner {
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
+            agent_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -130,6 +133,7 @@ impl RecordingRunner {
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
+            agent_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -160,6 +164,7 @@ impl RecordingRunner {
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
+            agent_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -182,6 +187,7 @@ impl RecordingRunner {
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
+            agent_outputs: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -226,7 +232,10 @@ impl RecordingRunner {
             .expect("calls lock")
             .iter()
             .filter(|(_, args)| {
-                !is_admission_call(args) && !is_herdr_call(args) && !is_zellij_call(args)
+                !is_admission_call(args)
+                    && !is_herdr_call(args)
+                    && !is_zellij_call(args)
+                    && !args.iter().any(|arg| arg == "list-panes")
             })
             .cloned()
             .collect()
@@ -343,6 +352,14 @@ impl CommandRunner for RecordingRunner {
             .expect("calls lock")
             .push((program.to_owned(), args.to_vec()));
         self.timeouts.lock().expect("timeouts lock").push(timeout);
+        if args.iter().any(|arg| arg == "list-panes") {
+            return Ok(self
+                .agent_outputs
+                .lock()
+                .expect("agent outputs lock")
+                .pop_front()
+                .unwrap_or_else(|| output(1, "", "pane probe failed")));
+        }
         if is_herdr_call(args) {
             return Ok(self
                 .herdr_outputs
@@ -2485,4 +2502,41 @@ fn consumes_the_windows_hosted_posix_wsl_contract() {
         fixture.expected.attached_clients
     );
     run.finish().expect("consume all WSL host fixtures");
+}
+
+#[test]
+fn optional_agent_probe_enriches_inventory_and_does_not_hide_sessions_on_failure() {
+    for probe in [
+        output(0, "4242|$3|1700000000|%0|input 100 codex\n", ""),
+        output(1, "", "pane probe failed"),
+        output(0, "invalid pane output", ""),
+    ] {
+        let success = probe.status == 0 && probe.stdout.starts_with(b"4242");
+        let runner = RecordingRunner::new(vec![
+            instance_output(),
+            output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+            instance_output(),
+        ]);
+        runner.agent_outputs.lock().unwrap().push_back(probe);
+        let host = test_host(LocalConfig::with_distro("Ubuntu").unwrap(), runner);
+        let snapshot = discover(&host).unwrap();
+        assert_eq!(snapshot.sessions().len(), 1);
+        assert_eq!(snapshot.sessions()[0].name(), "work");
+        assert_eq!(
+            snapshot.sessions()[0]
+                .agent_activity()
+                .map(session::AgentActivity::label),
+            success.then(|| "Codex is waiting for input".to_owned())
+        );
+        let (_, args) = host
+            .runner()
+            .all_calls()
+            .into_iter()
+            .find(|(_, args)| args.iter().any(|arg| arg == "list-panes"))
+            .unwrap();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-F", session::AGENT_PANE_FORMAT])
+        );
+    }
 }

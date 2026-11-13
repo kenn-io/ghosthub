@@ -525,9 +525,10 @@ Right-click a host and choose **Refresh** to reread its inventory. **Connect**,
 **Cancel**, and **Retry** stay visible in the header when needed.
 
 Open the three-line **Sidebar options** button beside **Workspaces** and
-choose **Manual**, **Name**, or **Backend** to sort the list. The icon gains a
-filled circle when sorting by Name or Backend. In Manual mode, drag sessions
-into your preferred order, including across backends on the same host.
+choose **Manual**, **Name**, **Backend**, or **Needs Attention** to sort the
+list. The icon gains a filled circle when a sort is active. In Manual mode,
+drag sessions into your preferred order, including across backends on the
+same host.
 Stopped Herdr sessions stay at the bottom.
 With a session open, **Ctrl-Tab** and **Ctrl-Shift-Tab** follow the displayed
 session order and skip stopped sessions.
@@ -545,9 +546,40 @@ these settings through the gear button, then **Sidebar**.
 
 ![Sidebar settings and the live preview in the Rust application on Linux](/docs/assets/guide-rust-sidebar-settings.png)
 
-Agent attention, Herdr desktop terminals, hidden-worktree
-filtering, and worktree diff/PR/check indicators are still being added to the
-Rust port.
+Herdr desktop terminals, hidden-worktree filtering, and worktree diff/PR/check
+indicators are still being added to the Rust port.
+
+### Live agent badges
+
+Tmux sessions show **Approval**, **Input**, or **Working** when KWT agent hooks
+are installed on their host. Hover the row to see the agent name. These badges
+work on the local Linux/WSL default server and on the default and `kwt` servers
+of SSH hosts, including SSH connections from native Windows. Registered
+worktree and directory rows on those servers show the same state.
+
+Choose **Needs Attention** from Sidebar options or **Settings → Sidebar** to
+put approval and input requests first, then working agents. Equal-priority
+sessions keep their manual order. Stopped Herdr sessions stay at the bottom,
+and sibling shortcuts follow the displayed order.
+
+![The Rust sidebar with live agent requests and Needs Attention sorting](/docs/assets/guide-rust-agent-attention.png)
+
+Install hooks explicitly on each host where agents run:
+
+```sh
+kwt agent-hook install
+```
+
+Run this with KWT installed on that host, then follow its instructions for your
+agent. In Codex, open `/hooks` to trust the hooks. Ghosthub reads the pane state;
+it does not install hooks or read terminal text. Badges refresh about every
+ten seconds while Ghosthub is in front, or when you choose **Refresh** from
+the host menu. An agent that does not send hooks has no
+badge. A failed hook read does not prevent opening sessions.
+
+Completed-turn acknowledgements and **Done** badges are not yet available in
+the Rust app. Protected worktree servers, Herdr, and Zellij do not yet show
+agent badges.
 
 ### Hide tmux sessions by name
 

@@ -86,6 +86,7 @@ pub(crate) struct Runtime {
     pub(crate) refresh_finished: AtomicU64,
     pub(crate) refresh_publication: Mutex<()>,
     pub(crate) inventory_cadence_started: AtomicBool,
+    pub(crate) attention_polls: Mutex<crate::remote_attention::Polls>,
     pub(crate) kwt_cadence_started: AtomicBool,
     pub(crate) kwt_refresh_generation: AtomicU64,
     pub(crate) kwt_discovery_cancel: Mutex<Option<CancellationToken>>,
@@ -398,7 +399,7 @@ pub(crate) fn set_remote_host_snapshot(
     host.sessions = snapshot
         .sessions()
         .iter()
-        .map(|session| SessionItem::new(session.name(), session.attached_clients()))
+        .map(SessionItem::from_discovered)
         .collect();
     host.diagnostic = None;
     host.tmux_available = snapshot.tmux_binary().is_some();
@@ -408,7 +409,7 @@ pub(crate) fn set_remote_host_snapshot(
     host.kwt_sessions = snapshot
         .sessions_on(host::RemoteTmuxServer::Kwt)
         .iter()
-        .map(|session| SessionItem::new(session.name(), session.attached_clients()))
+        .map(SessionItem::from_discovered)
         .collect();
     host.kwt_tmux_diagnostic = snapshot
         .kwt_tmux_diagnostic()

@@ -2159,11 +2159,29 @@ impl<R: CommandRunner> LocalHost<R> {
         let mut runtime = self.resolve_runtime(&endpoint, cancellation)?;
         for _attempt in 0..DISCOVERY_ATTEMPTS {
             let creation_term = self.verify_tmux(&endpoint, &runtime, attacher, cancellation)?;
-            let sessions = self.discover_sessions(&endpoint, cancellation)?;
+            let mut sessions = self.discover_sessions(&endpoint, cancellation)?;
             let herdr = self.discover_herdr(&endpoint, cancellation);
             let zellij = self.discover_zellij(&endpoint, cancellation);
             let observed_runtime = self.resolve_runtime(&endpoint, cancellation)?;
             if runtime == observed_runtime {
+                if !sessions.is_empty()
+                    && let Ok(output) = self.run_tmux_command(
+                        &endpoint,
+                        cancellation,
+                        None,
+                        &[
+                            "-f",
+                            "/dev/null",
+                            "list-panes",
+                            "-a",
+                            "-F",
+                            session::AGENT_PANE_FORMAT,
+                        ],
+                    )
+                    && output.status == 0
+                {
+                    session::apply_agent_activity(&mut sessions, &output.stdout);
+                }
                 return Ok(HostSnapshot {
                     endpoint,
                     runtime,

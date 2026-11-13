@@ -500,3 +500,81 @@ fn session_patterns_filter_tmux_navigation_and_preserve_other_backends() {
     let restored = sessions(&host, Some(&active), &[], &SidebarPreferences::default());
     assert!(restored.iter().any(|row| row.selection() == &active));
 }
+
+#[test]
+fn attention_sort_keeps_manual_ties_backend_identity_and_stopped_rows() {
+    let activity = |name, hook| {
+        workspace::SessionItem::new(name, 0)
+            .with_agent_activity(workspace::AgentActivity::parse(hook).unwrap())
+    };
+    let host = HostItem::ssh(
+        "studio",
+        "Studio",
+        "studio.example",
+        HostConnectionState::Ready,
+        vec![
+            activity("approve", "approval 100 codex"),
+            activity("input", "input 101 claude"),
+            activity("working", "working 102 gemini"),
+            workspace::SessionItem::new("plain", 0),
+        ],
+        None,
+    )
+    .with_zellij_sessions(vec![workspace::SessionItem::new("approve", 0)])
+    .with_herdr_sessions(vec![workspace::HerdrSessionItem::new(
+        "stopped",
+        false,
+        HerdrSessionState::Stopped,
+    )]);
+    let preferences = SidebarPreferences {
+        session_sort: SidebarSort::Attention,
+        session_order: ["plain", "working", "input", "approve"]
+            .map(|name| order_id(&SessionSelection::new("studio", "studio.example", name)))
+            .to_vec(),
+        ..SidebarPreferences::default()
+    };
+    let rows = sessions(&host, None, &[], &preferences);
+    let titles: Vec<_> = rows.iter().map(|row| row.selection().session()).collect();
+    assert_eq!(
+        titles,
+        ["input", "approve", "working", "plain", "approve", "stopped"]
+    );
+    assert_eq!(
+        rows[0].activity().unwrap().label(),
+        "Claude is waiting for input"
+    );
+    assert!(
+        rows[4].activity().is_none(),
+        "same-name Zellij row has no tmux hook"
+    );
+    let elsewhere = SessionSelection::new("studio", "elsewhere.example", "input");
+    let rows = sessions(&host, Some(&elsewhere), &[], &preferences);
+    assert!(
+        rows.iter()
+            .find(|row| row.selection() == &elsewhere)
+            .unwrap()
+            .activity()
+            .is_none()
+    );
+}
+
+#[test]
+fn unavailable_hosts_do_not_present_cached_hook_activity() {
+    let host = HostItem::ssh(
+        "studio",
+        "Studio",
+        "studio.example",
+        HostConnectionState::Unavailable,
+        vec![
+            workspace::SessionItem::new("review", 0).with_agent_activity(
+                workspace::AgentActivity::parse("approval 100 codex").unwrap(),
+            ),
+        ],
+        None,
+    );
+    assert!(
+        sessions(&host, None, &[], &SidebarPreferences::default())[0]
+            .activity()
+            .is_none()
+    );
+}

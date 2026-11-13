@@ -20,11 +20,16 @@ fn sort_title(sort: SidebarSort) -> &'static str {
         SidebarSort::Manual => "Manual",
         SidebarSort::Name => "Name",
         SidebarSort::Backend => "Backend",
+        SidebarSort::Attention => "Needs Attention",
     }
 }
 
-pub(crate) const SORTS: [SidebarSort; 3] =
-    [SidebarSort::Manual, SidebarSort::Name, SidebarSort::Backend];
+pub(crate) const SORTS: [SidebarSort; 4] = [
+    SidebarSort::Manual,
+    SidebarSort::Name,
+    SidebarSort::Backend,
+    SidebarSort::Attention,
+];
 const LABELS: [(BackendLabel, &str); 3] = [
     (BackendLabel::Chip, "Chip"),
     (BackendLabel::Text, "Text"),
@@ -207,8 +212,8 @@ impl RootView {
                 }
                 window.focus(&self.focus);
             }
-            SidebarMenu::Options if matches!(index, 3 | 4) => {
-                let submenu = if index == 3 {
+            SidebarMenu::Options if matches!(index, 4 | 5) => {
+                let submenu = if index == 4 {
                     SidebarMenu::BackendLabel
                 } else {
                     SidebarMenu::RowHeight
@@ -216,7 +221,7 @@ impl RootView {
                 self.open_sidebar_menu(submenu, point, window, cx);
                 return;
             }
-            SidebarMenu::Options if index == 7 => {
+            SidebarMenu::Options if index == 8 => {
                 self.open_settings(window, cx);
                 if let Some(dialog) = &mut self.settings_dialog {
                     dialog.pane = SettingsPane::Sidebar;
@@ -225,9 +230,9 @@ impl RootView {
             }
             SidebarMenu::Options => {
                 if let Err(error) = self.workspace.update_sidebar(|preferences| match index {
-                    0..=2 => preferences.session_sort = SORTS[index],
-                    5 => preferences.hide_worktree_sessions = !preferences.hide_worktree_sessions,
-                    6 => preferences.hide_root_checkout = !preferences.hide_root_checkout,
+                    0..=3 => preferences.session_sort = SORTS[index],
+                    6 => preferences.hide_worktree_sessions = !preferences.hide_worktree_sessions,
+                    7 => preferences.hide_root_checkout = !preferences.hide_root_checkout,
                     _ => {}
                 }) {
                     self.diagnostic = Some(error.to_string());
@@ -278,8 +283,8 @@ impl RootView {
             return;
         };
         let index = match menu {
-            SidebarMenu::BackendLabel => 3,
-            SidebarMenu::RowHeight => 4,
+            SidebarMenu::BackendLabel => 4,
+            SidebarMenu::RowHeight => 5,
             _ => return,
         };
         self.open_sidebar_menu(SidebarMenu::Options, point, window, cx);
@@ -405,7 +410,7 @@ impl RootView {
                     "enter" | "space" => {
                         this.choose_sidebar_menu(this.sidebar_menu_index, window, cx);
                     }
-                    "right" if is_options && matches!(this.sidebar_menu_index, 3 | 4) => {
+                    "right" if is_options && matches!(this.sidebar_menu_index, 4 | 5) => {
                         this.choose_sidebar_menu(this.sidebar_menu_index, window, cx);
                     }
                     "left" => this.parent_sidebar_menu(window, cx),
@@ -435,7 +440,7 @@ impl RootView {
             );
         }
         for (index, (title, reason)) in options.into_iter().enumerate() {
-            if is_options && matches!(index, 3 | 5 | 7) {
+            if is_options && matches!(index, 4 | 6 | 8) {
                 items = items.child(div().h(px(1.0)).my_1().bg(rgb(0x36_3c48)));
             }
             items = items.child(
@@ -464,7 +469,7 @@ impl RootView {
                         el.tooltip(move |_, cx| tooltip(reason.clone(), cx))
                     })
                     .child(div().flex_1().child(title))
-                    .when(is_options && matches!(index, 3 | 4), |el| el.child("›")),
+                    .when(is_options && matches!(index, 4 | 5), |el| el.child("›")),
             );
         }
         Some(

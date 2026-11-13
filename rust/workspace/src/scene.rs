@@ -2251,9 +2251,12 @@ pub(crate) fn schedule_inventory_refresh(scene: &Arc<Scene>) -> std::io::Result<
                     Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
                     Err(TryLockError::WouldBlock) => None,
                 };
-                if let Some(_operation) = operation {
+                if let Some(_operation) = operation
+                    && scene.runtime.local_config.is_some()
+                {
                     let _refresh_started = workspace.refresh_if_ready();
                 }
+                crate::remote_attention::refresh_all(&scene.runtime);
             }
             if let Err(error) = schedule_inventory_refresh(&scene) {
                 scene

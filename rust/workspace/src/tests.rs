@@ -28,7 +28,7 @@ use terminal::TerminalEngine;
 
 const TEST_REMOTE_ROUTE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-fn remote_host_fixture(config: &RemoteTmuxConfig) -> RuntimeRemoteHost {
+pub(super) fn remote_host_fixture(config: &RemoteTmuxConfig) -> RuntimeRemoteHost {
     let controller =
         KwtSshExecutable::from_absolute(std::env::current_exe().expect("test executable path"))
             .expect("absolute controller path");
@@ -1660,7 +1660,7 @@ impl ManualRefreshRuntime {
             .collect()
     }
 
-    fn fail_next_work(&self, before_failure: impl FnOnce() + Send + 'static) {
+    pub(super) fn fail_next_work(&self, before_failure: impl FnOnce() + Send + 'static) {
         *self
             .before_spawn_failure
             .lock()
@@ -6724,6 +6724,73 @@ fn background_cadence_refreshes_ready_hosts_and_reuses_the_admitted_host() {
     runtime.run_next_work();
 
     assert_eq!(discovery.reused_hosts.load(Ordering::Acquire), 1);
+    assert_eq!(
+        workspace.snapshot().hosts()[0].connection(),
+        HostConnectionState::Ready
+    );
+}
+
+#[test]
+fn local_cadence_keeps_refreshing_while_an_ssh_badge_read_is_pending() {
+    let refresh = Arc::new(ManualRefreshRuntime::default());
+    let discovery = Arc::new(FixedDiscovery::new(HostSnapshot::test_fixture(
+        "Ubuntu",
+        "boot",
+        42,
+        Vec::new(),
+    )));
+    let spec = LocalHostSpec::available(
+        LocalConfig::with_distro("Ubuntu").unwrap(),
+        WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").unwrap(),
+    );
+    let workspace = Workspace::application_with_services(
+        TerminalAppearance::default(),
+        Some(spec),
+        discovery.clone(),
+        refresh.clone(),
+    );
+    workspace.connect_host("wsl").unwrap();
+    refresh.run_next_work();
+    refresh.run_next_deadline(); // The completed initial discovery's deadline.
+    let (remote, request) = remote_kill_refresh_fixture();
+    let entry = remote
+        .scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .unwrap()
+        .remove(&request.host_id)
+        .unwrap();
+    workspace
+        .scene
+        .runtime
+        .remote_hosts
+        .lock()
+        .unwrap()
+        .insert(request.host_id, entry);
+    workspace
+        .scene
+        .runtime
+        .hosts
+        .write()
+        .unwrap()
+        .extend(remote.snapshot().hosts().iter().cloned());
+    workspace.set_inventory_polling_enabled(true);
+    workspace.start_inventory_cadence().unwrap();
+    refresh.run_next_deadline();
+    assert_eq!(refresh.work.lock().unwrap().len(), 2);
+    refresh.run_next_work(); // Local discovery; leave SSH work pending.
+    assert_eq!(discovery.reused_hosts.load(Ordering::Acquire), 1);
+    refresh.run_next_deadline(); // The completed local refresh's deadline.
+    refresh.run_next_deadline(); // The next cadence still runs.
+    let local = refresh.work.lock().unwrap().pop_back().unwrap();
+    local();
+    assert_eq!(discovery.reused_hosts.load(Ordering::Acquire), 2);
+    assert_eq!(
+        refresh.work.lock().unwrap().len(),
+        1,
+        "SSH read remains pending"
+    );
     assert_eq!(
         workspace.snapshot().hosts()[0].connection(),
         HostConnectionState::Ready

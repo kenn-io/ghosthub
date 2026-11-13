@@ -2160,6 +2160,9 @@ struct WorkspaceHerdrPresentationTests {
         )
         try await model.openBorrowedHerdrSession(herdr)
         await launchHerdrSurface(model, store: store)
+        await waitUntilMainActor {
+            model.activeBorrowedHerdrConnectionState == .connected
+        }
         probes.withLock { $0 = 0 }
 
         displays.withLock { $0 = 0 }
@@ -2174,7 +2177,11 @@ struct WorkspaceHerdrPresentationTests {
 
         displays.withLock { $0 = 1 }
         model.handleDisplayParametersChanged()
-        await waitUntilMainActor { store.requestedKeys.count == 2 }
+        await waitUntilMainActor {
+            store.requestedKeys.count >= 2
+                && model.activeBorrowedHerdrConnectionState == .connected
+                && !model.herdrReconnectSupervisorIsRunning
+        }
 
         #expect(model.activeBorrowedHerdrSelection == herdr)
         await model.shutdown()

@@ -23,8 +23,8 @@ pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseIn
 use model::DiagnosticKind;
 use session::HerdrLaunchTarget;
 pub use session::{
-    HerdrLifecycleAction, HerdrSessionName, HerdrSessionNameError, HerdrSessionState, SessionName,
-    SessionNameError, ZellijSessionName, ZellijSessionNameError,
+    AgentActivity, AgentState, HerdrLifecycleAction, HerdrSessionName, HerdrSessionNameError,
+    HerdrSessionState, SessionName, SessionNameError, ZellijSessionName, ZellijSessionNameError,
 };
 use surface::{CursorShape, GridSize, PixelSize, Rgb, SurfaceStore};
 use terminal::{
@@ -33,6 +33,7 @@ use terminal::{
 };
 
 mod pump;
+mod remote_attention;
 mod remote_herdr;
 mod remote_kwt;
 mod remote_recovery;
@@ -288,6 +289,7 @@ impl Default for Appearance {
 pub struct SessionItem {
     name: String,
     attached_clients: u32,
+    agent_activity: Option<session::AgentActivity>,
 }
 
 impl SessionItem {
@@ -296,7 +298,14 @@ impl SessionItem {
         Self {
             name: name.into(),
             attached_clients,
+            agent_activity: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_agent_activity(mut self, activity: AgentActivity) -> Self {
+        self.agent_activity = Some(activity);
+        self
     }
 
     #[must_use]
@@ -307,6 +316,20 @@ impl SessionItem {
     #[must_use]
     pub const fn attached_clients(&self) -> u32 {
         self.attached_clients
+    }
+
+    #[must_use]
+    pub fn from_discovered(session: &session::DiscoveredSession) -> Self {
+        Self {
+            name: session.name().to_owned(),
+            attached_clients: session.attached_clients(),
+            agent_activity: session.agent_activity().cloned(),
+        }
+    }
+
+    #[must_use]
+    pub const fn agent_activity(&self) -> Option<&session::AgentActivity> {
+        self.agent_activity.as_ref()
     }
 }
 
@@ -966,6 +989,25 @@ impl HostItem {
     #[must_use]
     pub fn sessions(&self) -> &[SessionItem] {
         &self.sessions
+    }
+
+    /// Live hook data is scoped to the current host and exact tmux server.
+    #[must_use]
+    pub fn tmux_agent_activity(&self, name: &str, socket: Option<&str>) -> Option<&AgentActivity> {
+        if !self.accepts_session_actions() {
+            return None;
+        }
+        let sessions = match socket {
+            None if self.tmux_diagnostic.is_none() => &self.sessions,
+            Some("kwt") if self.is_ssh() && self.kwt_tmux_diagnostic.is_none() => {
+                &self.kwt_sessions
+            }
+            _ => return None,
+        };
+        sessions
+            .iter()
+            .find(|session| session.name() == name)?
+            .agent_activity()
     }
 
     #[must_use]
@@ -4171,6 +4213,7 @@ impl Workspace {
                     refresh_finished: AtomicU64::new(0),
                     refresh_publication: Mutex::new(()),
                     inventory_cadence_started: AtomicBool::new(false),
+                    attention_polls: Mutex::new(remote_attention::Polls::default()),
                     kwt_cadence_started: AtomicBool::new(false),
                     kwt_refresh_generation: AtomicU64::new(0),
                     kwt_discovery_cancel: Mutex::new(None),
@@ -4365,6 +4408,7 @@ impl Workspace {
                 refresh_finished: AtomicU64::new(0),
                 refresh_publication: Mutex::new(()),
                 inventory_cadence_started: AtomicBool::new(false),
+                attention_polls: Mutex::new(remote_attention::Polls::default()),
                 kwt_cadence_started: AtomicBool::new(false),
                 kwt_refresh_generation: AtomicU64::new(0),
                 kwt_discovery_cancel: Mutex::new(None),
@@ -4425,6 +4469,7 @@ impl Workspace {
                     refresh_finished: AtomicU64::new(0),
                     refresh_publication: Mutex::new(()),
                     inventory_cadence_started: AtomicBool::new(false),
+                    attention_polls: Mutex::new(remote_attention::Polls::default()),
                     kwt_cadence_started: AtomicBool::new(false),
                     kwt_refresh_generation: AtomicU64::new(0),
                     kwt_discovery_cancel: Mutex::new(None),
@@ -5928,7 +5973,15 @@ impl Workspace {
     /// scheduled.
     pub fn start_inventory_cadence(&self) -> Result<(), WorkspaceError> {
         start_event_pump(&self.scene.runtime)?;
-        if self.scene.runtime.local_config.is_none() {
+        if self.scene.runtime.local_config.is_none()
+            && self
+                .scene
+                .runtime
+                .remote_hosts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        {
             return Ok(());
         }
         if self
@@ -10403,7 +10456,7 @@ fn ready_content(snapshot: &HostSnapshot) -> WorkspaceContent {
         sessions: snapshot
             .sessions()
             .iter()
-            .map(|session| SessionItem::new(session.name(), session.attached_clients()))
+            .map(SessionItem::from_discovered)
             .collect(),
     }
 }

@@ -636,7 +636,7 @@ fn start_workspace_session(
     }
 }
 
-fn workspace_tmux(fixture: &Fixture, kwt_socket: bool, args: &[&str]) -> String {
+pub(super) fn workspace_tmux(fixture: &Fixture, kwt_socket: bool, args: &[&str]) -> String {
     if !kwt_socket {
         return fixture.tmux(args);
     }
@@ -1191,7 +1191,11 @@ fn repairs_the_remote_helper_and_scopes_failure_away_from_terminals() {
     std::fs::write(&corrupt, b"#!/bin/sh\nexit 99\n").unwrap();
     std::fs::rename(corrupt, &helper).unwrap();
     fixture.connect();
-    wait_kwt_ready(&fixture);
+    fixture.wait(|snapshot| {
+        snapshot.hosts().iter().any(|host| {
+            host.id() == fixture.host_id && host.kwt_available() && !host.kwt_refreshing()
+        }) && std::fs::read(&helper).is_ok_and(|bytes| bytes == expected)
+    });
     assert_eq!(std::fs::read(&helper).unwrap(), expected);
 
     let project_path = fixture.root.join("orbit");
