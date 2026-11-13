@@ -93,6 +93,32 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         )
     }
 
+    /// Read or explicitly install hooks in this SSH account using its managed helper.
+    ///
+    /// # Errors
+    /// Returns a helper, SSH, command, or unreadable-status error.
+    pub fn agent_hooks(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        action: crate::AgentHookAction,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<crate::AgentHookStatus>, RemoteTmuxError> {
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let output = self.kwt_command(
+            snapshot.lease(),
+            &helper,
+            &["agent-hook", action.command(), "--json"],
+            if action == crate::AgentHookAction::Install {
+                CommandKind::Mutation
+            } else {
+                CommandKind::Inventory
+            },
+            cancellation,
+        )?;
+        crate::agent_hooks::parse(&output.stdout)
+            .map_err(|error| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, error))
+    }
+
     /// Register one explicit remote repository path through the pinned helper.
     ///
     /// # Errors

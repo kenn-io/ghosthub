@@ -8,6 +8,7 @@ use workspace::{
     WorkspaceContent, WorkspaceEvent, WorkspaceSnapshot,
 };
 
+mod agent_hooks;
 mod attention;
 mod herdr;
 mod kwt;

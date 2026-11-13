@@ -932,6 +932,44 @@ impl<R: CommandRunner> LocalHost<R> {
             })
     }
 
+    /// Read or explicitly install hooks with the pinned helper on this account.
+    ///
+    /// # Errors
+    /// Returns a runtime, helper, command, or unreadable-status error.
+    pub fn agent_hooks(
+        &self,
+        endpoint: &LocalEndpoint,
+        runtime: &LinuxRuntimeIdentity,
+        action: crate::AgentHookAction,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<crate::AgentHookStatus>, HostError> {
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        let bundle = self.config.kwt_bundle().ok_or_else(|| {
+            HostError::new(
+                DiagnosticKind::ExecutableNotFound,
+                "This build does not include the KWT helper",
+            )
+        })?;
+        let helper = self.ensure_kwt_helper(endpoint, runtime, bundle, cancellation)?;
+        let output = self.run_scrubbed(
+            endpoint,
+            &[&helper, "agent-hook", action.command(), "--json"],
+            cancellation,
+        )?;
+        if output.status != 0 {
+            return Err(classify_kwt_command_failure(
+                &output,
+                match action {
+                    crate::AgentHookAction::Status => "read agent hook status",
+                    crate::AgentHookAction::Install => "install agent hooks",
+                },
+            ));
+        }
+        self.require_runtime(endpoint, runtime, cancellation)?;
+        crate::agent_hooks::parse(&output.stdout)
+            .map_err(|error| HostError::new(DiagnosticKind::MalformedOutput, error))
+    }
+
     /// Resolve the current WSL instance and read only KWT inventory.
     ///
     /// This does not perform tmux admission, tmux discovery, or Herdr

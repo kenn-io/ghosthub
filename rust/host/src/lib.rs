@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 pub use model::DiagnosticKind as HostErrorKind;
 
+mod agent_hooks;
 mod command_process;
+pub use agent_hooks::{AgentHookAction, AgentHookStatus};
 mod herdr;
 mod kwt;
 mod local;

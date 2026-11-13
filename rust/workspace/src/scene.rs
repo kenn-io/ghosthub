@@ -392,6 +392,7 @@ pub(crate) fn release_scene(scene: &Scene) {
     }
     unregister_scene(&scene.runtime, scene.id);
     crate::remote_kwt::cancel_scene(scene);
+    crate::agent_hooks::cancel_scene(scene);
     {
         // The detach denies the withheld paste at the worker before killing
         // it. Constructive entry points parked on this mutex observe the
@@ -4270,7 +4271,8 @@ fn cancel_dropped_event(scene: &Scene, event: WorkspaceEvent) {
         // enqueued as sheddable entries, so overflow cannot hand them to
         // this cancellation path. (`KwtWorktreeCreated` above is the one
         // exception: only NON-owning scenes' informational copies shed.)
-        WorkspaceEvent::SessionRenamed { .. }
+        WorkspaceEvent::AgentHooksFinished { .. }
+        | WorkspaceEvent::SessionRenamed { .. }
         | WorkspaceEvent::KwtProjectMutationFinished { .. }
         | WorkspaceEvent::KwtProjectMutationFailed { .. }
         | WorkspaceEvent::KwtWorktreeRemovalReady { .. }
