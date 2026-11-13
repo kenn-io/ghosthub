@@ -86,6 +86,7 @@ pub(crate) struct Runtime {
     pub(crate) refresh_finished: AtomicU64,
     pub(crate) refresh_publication: Mutex<()>,
     pub(crate) inventory_cadence_started: AtomicBool,
+    pub(crate) attention_polls: Mutex<crate::remote_attention::Polls>,
     pub(crate) kwt_cadence_started: AtomicBool,
     pub(crate) kwt_refresh_generation: AtomicU64,
     pub(crate) kwt_discovery_cancel: Mutex<Option<CancellationToken>>,

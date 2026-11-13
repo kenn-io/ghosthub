@@ -1809,7 +1809,11 @@ Local inventory reads and separate read-only SSH hook polling update badges
 about every ten seconds while a window is active. SSH reads reuse the current
 lease and publish only while the connection and inventory generations match;
 hook changes do not advance inventory authority or interrupt session operations.
-This cadence also runs with only SSH hosts configured.
+This cadence also runs with only SSH hosts configured. A shared queue runs at
+most two host reads at once, coalesces pending reads per host, and leaves the
+local refresh timer independent of remote completion. Badge publication changes
+only tmux activity fields; each backend retains its own inventory, diagnostics,
+and pending lifecycle state.
 
 Completed-turn acknowledgement requires observing the actual session shown by
 the attached tmux client, including switches made inside tmux. That observation

@@ -39,4 +39,4 @@
 --disable preferKeyPath
 
 # Exclude build artifacts and vendored code
---exclude .build,tools,host
+--exclude .build,tools,host,rust/target
