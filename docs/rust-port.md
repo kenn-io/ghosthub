@@ -1788,6 +1788,14 @@ custom session name is unmanaged. Submission checks ownership again.
 Missing bundled tooling leaves ownership unknown and keeps cached workspace
 records. Developer builds need the bundled helper to enable Rename.
 
+Settings → **Worktrees** edits hidden tmux session patterns, one per line.
+Patterns match whole names on every host: `*` matches zero or more characters,
+and `?` matches one Unicode character. Edits persist immediately under
+`[sidebar].hidden-session-patterns`, and **Clear patterns** restores every row.
+Only tmux session rows and their sibling-navigation destinations are filtered;
+project/worktree entries, active terminals, retained clients, and other
+backends remain available. The same matcher is exposed to config consumers.
+
 The Rust sidebar does not yet have agent-attention data or Needs Attention
 sorting, Herdr desktop terminals, worktree diff/PR/check
 status, or hidden-worktree metadata. Those integrations remain separate parity
@@ -1802,7 +1810,7 @@ The parity inventory is:
 | Sidebar | Shared session list; Manual, Name, and Backend sorting; saved drag order; Chip, Text, or Dot labels; Regular or Compact rows; worktree-session and root-checkout visibility; live preview |
 | Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, remote clipboard writes, and atomic persistence |
 | Keyboard | Runtime shortcuts exist; pane not yet implemented |
-| Worktrees | Project/worktree workflows exist; preferences pane not yet implemented |
+| Worktrees | Saved wildcard patterns hide tmux rows from the sidebar and sibling navigation; project worktrees and terminals stay available |
 | Agents | Not yet implemented |
 | Privacy | Anonymous usage-reporting preference not yet implemented |
 | Integrations | Not yet implemented |
@@ -1847,6 +1855,7 @@ row-height = "regular" # regular, compact
 hide-worktree-sessions = true
 hide-root-checkout = false
 session-order = [] # Saved by dragging rows in Manual mode.
+hidden-session-patterns = [] # Case-sensitive whole-name wildcards: * and ?.
 
 [[ssh-host]]
 name = "Studio"

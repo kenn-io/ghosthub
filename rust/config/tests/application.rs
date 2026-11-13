@@ -391,3 +391,56 @@ fn roots_at(root: &std::path::Path) -> Roots {
         helpers: value,
     }
 }
+
+#[test]
+fn hidden_session_patterns_match_whole_names_and_persist_without_changing_hosts() {
+    let mut config = ApplicationConfig::from_toml(r#"
+[sidebar]
+hidden-session-patterns = [" scratch-* ", "", "build-?", "scratch-*", "[literal]", "作業?", "é?", "emoji-?"]
+[[ssh-host]]
+name = "Studio"
+hostname = "studio.example"
+"#).unwrap();
+    for (name, hidden) in [
+        ("scratch-", true),
+        ("scratch-review", true),
+        ("Scratch-review", false),
+        ("prefix-scratch-review", false),
+        ("build-1", true),
+        ("build-12", false),
+        ("[literal]", true),
+        ("l", false),
+        ("作業中", true),
+        ("éx", true),
+        ("emoji-👩‍💻", true),
+    ] {
+        assert_eq!(config.sidebar().hides_tmux_session(name), hidden, "{name}");
+    }
+    let root = temporary_root("session-patterns");
+    let roots = roots_at(&root);
+    let mut sidebar = config.sidebar().clone();
+    sidebar.hidden_session_patterns = vec![
+        " scratch-* ".into(),
+        String::new(),
+        "scratch-*".into(),
+        "build-?".into(),
+    ];
+    config.replace_sidebar(&roots, sidebar).unwrap();
+    let loaded = ApplicationConfig::load(&roots).unwrap();
+    assert_eq!(
+        loaded.sidebar().hidden_session_patterns,
+        ["scratch-*", "build-?"]
+    );
+    assert!(loaded.sidebar().hides_tmux_session("scratch-review"));
+    assert_eq!(loaded.ssh_hosts()[0].name(), "Studio");
+    let mut cleared = loaded.sidebar().clone();
+    cleared.hidden_session_patterns.clear();
+    config.replace_sidebar(&roots, cleared).unwrap();
+    assert!(
+        !ApplicationConfig::load(&roots)
+            .unwrap()
+            .sidebar()
+            .hides_tmux_session("scratch-review")
+    );
+    fs::remove_dir_all(root).unwrap();
+}

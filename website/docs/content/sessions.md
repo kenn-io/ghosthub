@@ -549,6 +549,22 @@ Agent attention, Herdr desktop terminals, hidden-worktree
 filtering, and worktree diff/PR/check indicators are still being added to the
 Rust port.
 
+### Hide tmux sessions by name
+
+Open **Settings → Worktrees** and enter one pattern per line under
+**Hidden session patterns**. Matching is case-sensitive and covers the whole
+name: `scratch-*` hides names starting with `scratch-`, and `build-?` matches
+`build-1` but not `build-12`. `*` matches any number of characters; `?` matches
+one character.
+
+Edits save immediately and apply to local and SSH hosts. Matching tmux rows
+leave the sidebar and **Ctrl-Tab** navigation. Running terminals stay attached,
+project worktrees remain visible, and Herdr and Zellij rows are unaffected.
+Choose **Clear patterns** to restore the rows. The patterns survive restarting
+Ghosthub; configuration users can edit `[sidebar].hidden-session-patterns`.
+
+![Worktrees settings filter tmux session rows while leaving the current terminal attached](/docs/assets/guide-rust-session-patterns.png)
+
 ### Session controls
 
 Right-click a session or select its **⋯** button. The available actions depend
