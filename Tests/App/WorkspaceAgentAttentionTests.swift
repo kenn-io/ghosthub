@@ -139,6 +139,8 @@ extension WorkspaceTmuxDiscoveryTests {
         await fixture.discover()
         fixture.model.isFocusedWindow = true
         await fixture.open("desk", attachedTo: "$2")
+        // The surface can connect before tmux verifies its initial session.
+        await waitUntilMainActor { fixture.model.shownTmuxSession?.name == "desk" }
 
         // The user switches the client to anchor with tmux's own keys.
         fixture.newestClientShows("$1")
