@@ -843,8 +843,9 @@ an explicit destination compression choice on route resolution, lease
 acquisition, and command execution. Ghosthub enables compression by default for
 configured hosts; Settings > Hosts provides a per-host **SSH compression**
 toggle that overrides the destination's OpenSSH setting without editing the
-user's configuration. Discovered exe.dev VMs request no compression, because
-Settings > Hosts has no row for a dynamically listed host.
+user's configuration. An exe.dev account's discovery connection and the VMs it
+supplies both request no compression, because Settings > Hosts has no row for
+an account or for a dynamically listed host.
 Jump hosts retain their OpenSSH compression settings. Saving a changed toggle
 releases that host's attachments; subsequent connections use the new choice.
 Compression contributes to the route identity, so a connection with the other

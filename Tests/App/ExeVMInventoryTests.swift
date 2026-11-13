@@ -240,6 +240,46 @@ struct ExeVMInventoryTests {
     }
 
     @MainActor
+    @Test("account discovery borrows an uncompressed connection")
+    func accountDiscoveryBorrowsUncompressedConnection() async throws {
+        let observedHost = LockedValue<SSHHostInfo?>(nil)
+        let client = ExeVMClient(
+            runner: { _, _, startMarker, endMarker in
+                (0, "\(startMarker)\n{\"vms\":[]}\n\(endMarker)", "")
+            },
+            commandLease: KwtSSHCommandLease { host in
+                observedHost.store(host)
+                return KwtSSHConnection(
+                    arguments: [],
+                    routeIdentity: "sha256:exe-route",
+                    generation: 1
+                )
+            }
+        )
+        let store = ExeVMInventoryStore(client: client)
+        let loaded = Task { @MainActor in
+            for await statuses in store.$statuses.values {
+                if case .loaded = statuses["personal"] {
+                    return
+                }
+            }
+        }
+        store.refresh(accounts: [ExeAccount(
+            configKey: "personal",
+            name: "Personal",
+            sshDestination: "exe.dev"
+        )])
+        await loaded.value
+
+        // Discovery runs before any VM exists, so a compressed control
+        // connection would fail first on a client without compression
+        // support and leave the account with no VMs to fix.
+        let host = try #require(observedHost.load())
+        #expect(host.hostname == "exe.dev")
+        #expect(host.compression == false)
+    }
+
+    @MainActor
     @Test("discovered VMs route without requesting SSH compression")
     func discoveredVMsRouteWithoutCompression() async throws {
         let client = ExeVMClient { _, _, startMarker, endMarker in

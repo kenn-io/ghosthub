@@ -47,13 +47,28 @@ struct ExeVMClient: Sendable {
         self.commandLease = commandLease ?? .unlessInjected(runner != nil)
     }
 
+    /// An exe.dev account has no compression toggle either, so the control
+    /// connection that discovers VMs never asks for compression, exactly
+    /// like the VMs themselves. A client built without compression support
+    /// would otherwise fail here, before any VM could be listed.
+    static func controlHost(for account: ExeAccount) -> SSHHostInfo? {
+        guard let host = CommandHostResolver.parseSSHDestination(
+            account.sshDestination
+        ) else { return nil }
+        return SSHHostInfo(
+            user: host.user,
+            hostname: host.hostname,
+            port: host.port,
+            platform: host.platform,
+            compression: false
+        )
+    }
+
     func listVMs(
         for account: ExeAccount,
         sshConnectionArguments: [String]? = nil
     ) throws -> [ExeVMRecord] {
-        guard let host = CommandHostResolver.parseSSHDestination(
-            account.sshDestination
-        ) else {
+        guard let host = Self.controlHost(for: account) else {
             throw ExeVMInventoryError.invalidDestination
         }
         let nonce = UUID().uuidString
@@ -91,9 +106,7 @@ struct ExeVMClient: Sendable {
     func listVMsBorrowingConnection(
         for account: ExeAccount
     ) async throws -> [ExeVMRecord] {
-        guard let host = CommandHostResolver.parseSSHDestination(
-            account.sshDestination
-        ) else {
+        guard let host = Self.controlHost(for: account) else {
             throw ExeVMInventoryError.invalidDestination
         }
         return try await commandLease.withConnection(on: .ssh(host)) {
@@ -135,9 +148,7 @@ struct ExeVMClient: Sendable {
             }
             return probed.result
         }
-        guard let host = CommandHostResolver.parseSSHDestination(
-            account.sshDestination
-        ) else {
+        guard let host = Self.controlHost(for: account) else {
             return .failed(ExeVMInventoryError.invalidDestination.localizedDescription)
         }
         do {
