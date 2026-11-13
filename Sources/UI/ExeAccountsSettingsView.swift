@@ -696,7 +696,11 @@ struct ExeAccountsSettingsView: View {
             configKey: "exe-control.\(account.configKey)",
             name: account.name,
             platform: .linux,
-            sshDestination: account.sshDestination
+            sshDestination: account.sshDestination,
+            // Matches the discovery connection and the discovered VMs: an
+            // account has no compression toggle, so the connection check and
+            // host-key trust must not demand compression either.
+            compression: false
         )
     }
 

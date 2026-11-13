@@ -154,6 +154,9 @@ it does not sign you in. Check the account and SSH key used for that host.
 For text-heavy terminals on a slow connection, SSH compression can reduce the
 amount of output sent over the network. Ghosthub enables it by default for
 remote hosts, including hosts you added before this setting was available.
+exe.dev accounts are the exception: Ghosthub lists their VMs dynamically
+instead of storing them, so neither the account nor its VMs have an **SSH
+compression** toggle, and Ghosthub never requests compression for either.
 
 To change it for a host, open **Settings → Hosts**, select the host, and change
 **SSH compression**, then select **Done**. The setting takes effect on new SSH
