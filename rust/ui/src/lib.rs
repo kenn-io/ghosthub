@@ -6333,19 +6333,6 @@ impl RootView {
             .border_r_1()
             .border_color(rgb(0x2a_2f39))
             .bg(rgb(0x14_171d))
-            .child(
-                div()
-                    .h(px(42.0))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(rgb(0x2a_2f39))
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x8f_96_a3))
-                    .child("HOSTS"),
-            )
             .child(rows)
             .child(footer)
             .into_any_element()
@@ -8743,6 +8730,12 @@ fn clear_terminal_input_state(
     *input_refusal = InputRefusal::default();
 }
 
+impl Drop for RootView {
+    fn drop(&mut self) {
+        self.workspace.close();
+    }
+}
+
 impl Focusable for RootView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
@@ -9517,7 +9510,14 @@ pub fn run(status: PortStatus, workspace: Workspace) {
                 window_decorations: Some(WindowDecorations::Client),
                 ..Default::default()
             },
-            move |window, cx| cx.new(|cx| RootView::new(status, workspace.clone(), window, cx)),
+            move |window, cx| {
+                let closing_workspace = workspace.clone();
+                window.on_window_should_close(cx, move |_, _| {
+                    closing_workspace.close();
+                    true
+                });
+                cx.new(|cx| RootView::new(status, workspace.clone(), window, cx))
+            },
         )
         .expect("failed to open the Ghosthub window");
 

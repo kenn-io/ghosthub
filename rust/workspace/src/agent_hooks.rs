@@ -151,34 +151,35 @@ impl Workspace {
         }
         drop(navigation);
         drop(publication);
-        let scene = Arc::clone(&self.scene);
+        let runtime = Arc::clone(&self.scene.runtime);
+        let scene = Arc::downgrade(&self.scene);
         let host_id = host_id.to_owned();
         let pending_host = host_id.clone();
         if let Err(error) = self.scene.runtime.refresh_runtime.spawn(
             "ghosthub-agent-hooks",
             Box::new(move || {
-                let result = if cancellation.is_cancelled()
-                    || !target.current(&scene.runtime, &pending_host)
-                {
-                    Err("Agent hook request cancelled; reload the host's settings".to_owned())
-                } else {
-                    target.run(action, &cancellation)
-                };
+                let result =
+                    if cancellation.is_cancelled() || !target.current(&runtime, &pending_host) {
+                        Err("Agent hook request cancelled; reload the host's settings".to_owned())
+                    } else {
+                        target.run(action, &cancellation)
+                    };
                 let result = {
-                    let _publication = scene
-                        .runtime
+                    let _publication = runtime
                         .remote_publication
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if cancellation.is_cancelled() || !target.current(&scene.runtime, &pending_host)
-                    {
+                    if cancellation.is_cancelled() || !target.current(&runtime, &pending_host) {
                         Err("The host changed; reload agent hook status".to_owned())
                     } else {
                         result
                     }
                 };
-                finish(&scene.runtime, id);
-                if !scene.closed.load(std::sync::atomic::Ordering::Acquire) {
+                finish(&runtime, id);
+                if let Some(scene) = scene
+                    .upgrade()
+                    .filter(|scene| !scene.closed.load(std::sync::atomic::Ordering::Acquire))
+                {
                     crate::scene::push_lossless_event(
                         &scene,
                         WorkspaceEvent::AgentHooksFinished {
@@ -354,6 +355,42 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn disposing_the_owner_cancels_hooks_before_the_worker_runs() {
+        let (workspace, refresh) = fixture();
+        let other = workspace.open_scene();
+        let runtime = Arc::clone(&workspace.scene.runtime);
+        let scene = Arc::downgrade(&workspace.scene);
+        let install = workspace
+            .agent_hooks("ssh:studio", AgentHookAction::Install)
+            .unwrap();
+        let status = other
+            .agent_hooks("ssh:studio", AgentHookAction::Status)
+            .unwrap();
+        let tokens = {
+            let state = runtime.agent_hooks.lock().unwrap();
+            [install, status].map(|id| state.0[&id].cancellation.clone())
+        };
+        drop(workspace);
+        assert!(
+            tokens[0].is_cancelled(),
+            "disposal cancels without resuming the worker"
+        );
+        assert!(
+            scene.upgrade().is_none(),
+            "pending hooks must not own the window's scene"
+        );
+        assert!(
+            !tokens[1].is_cancelled(),
+            "another window's request stays live"
+        );
+        refresh.run_next_work();
+        refresh.run_next_work();
+        assert!(runtime.agent_hooks.lock().unwrap().0.is_empty());
+        assert!(other.drain_events().0.iter().any(|event| matches!(event,
+            WorkspaceEvent::AgentHooksFinished { operation_id, .. } if *operation_id == status)));
     }
 
     #[test]
