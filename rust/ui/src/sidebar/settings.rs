@@ -7,7 +7,7 @@ fn choices(field: usize) -> &'static [&'static str] {
     match field {
         0 => &["Chip", "Text", "Dot"],
         1 => &["Regular", "Compact"],
-        2 => &["Manual", "Name", "Backend"],
+        2 => &["Manual", "Name", "Backend", "Needs Attention"],
         _ => &["Off", "On"],
     }
 }
@@ -55,7 +55,9 @@ pub(super) fn sample_host() -> HostItem {
         "studio.example",
         HostConnectionState::Ready,
         vec![
-            workspace::SessionItem::new("build", 0),
+            workspace::SessionItem::new("build", 0).with_agent_activity(
+                workspace::AgentActivity::parse("approval 100 codex").expect("sample hook"),
+            ),
             workspace::SessionItem::new("atlas/main", 0),
         ],
         None,

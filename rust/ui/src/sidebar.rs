@@ -61,6 +61,21 @@ impl SidebarSession {
         }
     }
 
+    fn activity(&self) -> Option<&workspace::AgentActivity> {
+        match self {
+            Self::Session(row) => row.agent_activity.as_ref(),
+            Self::Herdr(_) => None,
+        }
+    }
+
+    fn attention_rank(&self) -> u8 {
+        match self.activity().map(workspace::AgentActivity::state) {
+            Some(workspace::AgentState::Approval | workspace::AgentState::Input) => 0,
+            Some(workspace::AgentState::Working) => 1,
+            None => 2,
+        }
+    }
+
     fn actions(&self, host: &HostItem) -> Vec<SessionRowAction> {
         match self {
             Self::Session(row) => {
@@ -158,7 +173,7 @@ pub(super) fn sessions(
                 compare_names(left.selection().session(), right.selection().session())
             });
         }
-        SidebarSort::Manual => {
+        SidebarSort::Manual | SidebarSort::Attention => {
             let positions: HashMap<_, _> = preferences
                 .session_order
                 .iter()
@@ -172,6 +187,9 @@ pub(super) fn sessions(
                     .unwrap_or(usize::MAX)
             });
         }
+    }
+    if preferences.session_sort == SidebarSort::Attention {
+        rows.sort_by_key(SidebarSession::attention_rank);
     }
     rows.sort_by_key(SidebarSession::stopped);
     rows
@@ -248,6 +266,24 @@ fn label(kind: workspace::SessionKind, style: BackendLabel) -> gpui::AnyElement 
         .into_any_element()
 }
 
+pub(super) fn activity_badge(activity: &workspace::AgentActivity) -> gpui::Div {
+    let color = match activity.state() {
+        workspace::AgentState::Approval => 0xe8_ad66,
+        workspace::AgentState::Input => 0xc0_9be8,
+        workspace::AgentState::Working => 0x79_c9a3,
+    };
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(3.0))
+        .text_size(px(10.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgb(color))
+        .child(div().size(px(5.0)).rounded_full().bg(rgb(color)))
+        .child(activity.title())
+}
+
 fn content(row: &SidebarSession, preferences: &SidebarPreferences) -> gpui::AnyElement {
     let selection = row.selection();
     let mut body = div()
@@ -285,6 +321,9 @@ fn content(row: &SidebarSession, preferences: &SidebarPreferences) -> gpui::AnyE
                 .text_color(rgb(0x84_8c9a))
                 .child(operation),
         );
+    }
+    if let Some(activity) = row.activity() {
+        body = body.child(activity_badge(activity));
     }
     body.when(preferences.backend_label != BackendLabel::Dot, |el| {
         el.child(label(selection.kind(), preferences.backend_label))
@@ -355,6 +394,10 @@ impl RootView {
         if let Some(socket) = selection.tmux_socket_name() {
             hint.push_str(" · ");
             hint.push_str(socket);
+        }
+        if let Some(activity) = row.activity() {
+            hint.push_str(" · ");
+            hint.push_str(&activity.label());
         }
         let mut element = div()
             .id(gpui::SharedString::from(order_id(&selection)))

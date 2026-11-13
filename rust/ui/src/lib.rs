@@ -2090,6 +2090,10 @@ impl RootView {
         let draft = editor.draft.clone();
         match self.workspace.save_ssh_host(original_id.as_deref(), &draft) {
             Ok(id) => {
+                if let Err(error) = self.workspace.start_inventory_cadence() {
+                    self.diagnostic = Some(error.to_string());
+                }
+
                 let saved = self
                     .workspace
                     .configured_ssh_hosts()
@@ -7676,6 +7680,7 @@ impl RootView {
                     project_index,
                     worktree_index,
                     worktree.branch().to_owned(),
+                    host.tmux_agent_activity(worktree.session_name(), worktree.tmux_socket_name()),
                     selection,
                     if is_active {
                         WorktreeRowPresence::Active
@@ -7764,6 +7769,7 @@ impl RootView {
                 usize::MAX,
                 index,
                 workspace.name().to_owned(),
+                host.tmux_agent_activity(workspace.session_name(), workspace.tmux_socket_name()),
                 selection,
                 if is_active {
                     WorktreeRowPresence::Active
@@ -7789,6 +7795,7 @@ impl RootView {
         project_index: usize,
         worktree_index: usize,
         label: String,
+        activity: Option<&workspace::AgentActivity>,
         selection: SessionSelection,
         presence: WorktreeRowPresence,
         can_open: bool,
@@ -7850,6 +7857,12 @@ impl RootView {
                     .text_color(rgb(if is_active { 0xe5_ed_f7 } else { 0xc4_c9_d2 }))
                     .child(label),
             );
+        if let Some(activity) = activity {
+            let hint = activity.label();
+            row = row
+                .child(sidebar::activity_badge(activity))
+                .tooltip(move |_, cx| sidebar::tooltip(hint.clone(), cx));
+        }
         let mut actions = tmux_row_actions(is_active, can_kill);
         if let Some(target) = remove_target {
             actions.push(SessionRowAction::RemoveWorktree(Box::new(target)));
@@ -8080,6 +8093,7 @@ fn terminal_presentation_id(content: &WorkspaceContent) -> Option<u64> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TreeSession {
+    agent_activity: Option<workspace::AgentActivity>,
     selection: SessionSelection,
     kill_selection: SessionSelection,
     state: TreeSessionState,
@@ -8416,6 +8430,12 @@ fn tree_sessions(
                 (false, false, false, _) => TreeSessionState::Cached,
             };
             TreeSession {
+                agent_activity: (selection.endpoint() == host.endpoint())
+                    .then(|| {
+                        host.tmux_agent_activity(selection.session(), selection.tmux_socket_name())
+                            .cloned()
+                    })
+                    .flatten(),
                 // A retained client can outlive its project. Keep it for opening,
                 // but use the ordinary inventory target for destructive confirmation.
                 kill_selection: if discovered && !host_owns_worktree_presentation(host, &selection)
@@ -8535,6 +8555,7 @@ fn tree_zellij_sessions(
                 (false, false, false, _) => TreeSessionState::Cached,
             };
             TreeSession {
+                agent_activity: None,
                 show_endpoint: selection.endpoint() != host.endpoint(),
                 kill_selection: selection.clone(),
                 selection,

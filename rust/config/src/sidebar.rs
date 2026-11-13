@@ -8,6 +8,7 @@ pub enum SidebarSort {
     Manual,
     Name,
     Backend,
+    Attention,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

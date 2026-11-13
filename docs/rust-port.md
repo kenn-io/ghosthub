@@ -1796,10 +1796,27 @@ Only tmux session rows and their sibling-navigation destinations are filtered;
 project/worktree entries, active terminals, retained clients, and other
 backends remain available. The same matcher is exposed to config consumers.
 
-The Rust sidebar does not yet have agent-attention data or Needs Attention
-sorting, Herdr desktop terminals, worktree diff/PR/check
-status, or hidden-worktree metadata. Those integrations remain separate parity
-work; no inactive controls are shown for them.
+Live agent attention reads the public `@kwt_agent` pane option on the local
+Linux/WSL default tmux server and the default and canonical KWT servers over
+SSH. Each pane joins inventory by server PID, session ID, and creation time;
+approval outranks input, then working, with the newest timestamp breaking a
+tie. Missing, malformed, or failed optional pane reads leave sessions usable.
+No terminal text is read. Rows expose the state and agent label to UI and
+workspace API consumers. Needs Attention sorting preserves manual order within
+waiting and working groups; stopped Herdr sessions remain last. Existing hooks
+must be installed explicitly with `kwt agent-hook install` on the agent host.
+Local inventory reads and separate read-only SSH hook polling update badges
+about every ten seconds while a window is active. SSH reads reuse the current
+lease and publish only while the connection and inventory generations match;
+hook changes do not advance inventory authority or interrupt session operations.
+This cadence also runs with only SSH hosts configured.
+
+Completed-turn acknowledgement requires observing the actual session shown by
+the attached tmux client, including switches made inside tmux. That observation
+is not yet implemented, so completed turns have no badge. Protected worktree
+servers, Herdr, and Zellij also have no agent attention yet. The Agents settings
+pane and hook installation UI remain separate parity work, alongside Herdr
+desktop terminals, worktree diff/PR/check status, and hidden-worktree metadata.
 
 The parity inventory is:
 
@@ -1807,11 +1824,11 @@ The parity inventory is:
 | --- | --- |
 | Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
 | Appearance | Built-in themes, Custom colors, installed-font and size pickers, live preview, and atomic persistence |
-| Sidebar | Shared session list; Manual, Name, and Backend sorting; saved drag order; Chip, Text, or Dot labels; Regular or Compact rows; worktree-session and root-checkout visibility; live preview |
+| Sidebar | Shared session list; Manual, Name, Backend, and Needs Attention sorting; saved drag order; Chip, Text, or Dot labels; Regular or Compact rows; worktree-session and root-checkout visibility; live preview |
 | Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, remote clipboard writes, and atomic persistence |
 | Keyboard | Runtime shortcuts exist; pane not yet implemented |
 | Worktrees | Saved wildcard patterns hide tmux rows from the sidebar and sibling navigation; project worktrees and terminals stay available |
-| Agents | Not yet implemented |
+| Agents | Live approval, input, and working badges from explicit KWT hooks; completion acknowledgement and hook setup UI remain unimplemented |
 | Privacy | Anonymous usage-reporting preference not yet implemented |
 | Integrations | Not yet implemented |
 

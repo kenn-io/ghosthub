@@ -398,7 +398,7 @@ pub(crate) fn set_remote_host_snapshot(
     host.sessions = snapshot
         .sessions()
         .iter()
-        .map(|session| SessionItem::new(session.name(), session.attached_clients()))
+        .map(SessionItem::from_discovered)
         .collect();
     host.diagnostic = None;
     host.tmux_available = snapshot.tmux_binary().is_some();
@@ -408,7 +408,7 @@ pub(crate) fn set_remote_host_snapshot(
     host.kwt_sessions = snapshot
         .sessions_on(host::RemoteTmuxServer::Kwt)
         .iter()
-        .map(|session| SessionItem::new(session.name(), session.attached_clients()))
+        .map(SessionItem::from_discovered)
         .collect();
     host.kwt_tmux_diagnostic = snapshot
         .kwt_tmux_diagnostic()

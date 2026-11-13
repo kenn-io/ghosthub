@@ -6,7 +6,9 @@ use std::fmt;
 use serde::Deserialize;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod attention;
 pub mod probe;
+pub use attention::{AGENT_PANE_FORMAT, AgentActivity, AgentState, apply_agent_activity};
 
 pub const IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_attach_identity_mismatch_v1__";
 
@@ -101,6 +103,7 @@ pub struct DiscoveredSession {
     name: String,
     identity: SessionIdentity,
     attached_clients: u32,
+    agent_activity: Option<AgentActivity>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -372,6 +375,7 @@ impl DiscoveredSession {
             name: name.into(),
             identity,
             attached_clients,
+            agent_activity: None,
         }
     }
 
@@ -388,6 +392,11 @@ impl DiscoveredSession {
     #[must_use]
     pub const fn attached_clients(&self) -> u32 {
         self.attached_clients
+    }
+
+    #[must_use]
+    pub const fn agent_activity(&self) -> Option<&AgentActivity> {
+        self.agent_activity.as_ref()
     }
 }
 

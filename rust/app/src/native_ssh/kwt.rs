@@ -636,7 +636,7 @@ fn start_workspace_session(
     }
 }
 
-fn workspace_tmux(fixture: &Fixture, kwt_socket: bool, args: &[&str]) -> String {
+pub(super) fn workspace_tmux(fixture: &Fixture, kwt_socket: bool, args: &[&str]) -> String {
     if !kwt_socket {
         return fixture.tmux(args);
     }

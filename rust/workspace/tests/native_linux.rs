@@ -327,3 +327,39 @@ fn missing_kwt_helper_blocks_rename_without_blocking_session_attachment() {
             .is_err()
     );
 }
+
+#[test]
+fn pane_hooks_refresh_live_agent_activity_without_changing_the_session() {
+    let Some(fixture) =
+        Fixture::new("pane_hooks_refresh_live_agent_activity_without_changing_the_session")
+    else {
+        return;
+    };
+    let identity = fixture.identity("work");
+    for (hook, expected) in [
+        ("approval 100 codex", Some("Codex needs approval")),
+        ("input 101 claude", Some("Claude is waiting for input")),
+        ("working 102 gemini", Some("Gemini is working")),
+        ("done 103 codex", None),
+        ("malformed", None),
+    ] {
+        fixture.run(&["set-option", "-p", "-t", "=work:", "@kwt_agent", hook]);
+        fixture.workspace.refresh().unwrap();
+        fixture.wait(|| {
+            let snapshot = fixture.workspace.snapshot();
+            let host = &snapshot.hosts()[0];
+            host.connection() == HostConnectionState::Ready
+                && host
+                    .tmux_agent_activity("work", None)
+                    .map(workspace::AgentActivity::label)
+                    .as_deref()
+                    == expected
+        });
+        assert_eq!(fixture.identity("work"), identity);
+        assert!(
+            fixture.workspace.snapshot().hosts()[0]
+                .tmux_agent_activity("keep", None)
+                .is_none()
+        );
+    }
+}

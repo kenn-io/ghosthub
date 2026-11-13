@@ -534,10 +534,19 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             // Without an executable neither server has authoritative inventory.
             None => Ok((Vec::new(), resolution_diagnostic.clone())),
         };
-        let (sessions, tmux_diagnostic) = inventory(RemoteTmuxServer::Default)?;
-        let (kwt_sessions, kwt_tmux_diagnostic) = inventory(RemoteTmuxServer::Kwt)?;
+        let (mut sessions, tmux_diagnostic) = inventory(RemoteTmuxServer::Default)?;
+        let (mut kwt_sessions, kwt_tmux_diagnostic) = inventory(RemoteTmuxServer::Kwt)?;
         let herdr = self.discover_herdr(lease, cancellation)?;
         let zellij = self.discover_zellij(lease, cancellation)?;
+        if let Some(binary) = &tmux_binary {
+            self.enrich_agent_activity(
+                lease,
+                binary,
+                &mut sessions,
+                &mut kwt_sessions,
+                cancellation,
+            );
+        }
         Ok(RemoteSessionInventory {
             tmux_binary,
             tmux_diagnostic,
@@ -547,6 +556,67 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             herdr,
             zellij,
         })
+    }
+
+    /// Read only live hook state through the existing lease. This does not
+    /// reconnect, change session inventory, or advance its generation.
+    #[must_use]
+    pub fn refresh_agent_activity(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        cancellation: &CancellationToken,
+    ) -> RemoteTmuxSnapshot {
+        let mut updated = snapshot.clone();
+        if let Some(binary) = &snapshot.tmux_binary {
+            self.enrich_agent_activity(
+                snapshot.lease(),
+                binary,
+                &mut updated.sessions,
+                &mut updated.kwt_sessions,
+                cancellation,
+            );
+        }
+        updated
+    }
+
+    fn enrich_agent_activity(
+        &self,
+        lease: &SshLease,
+        binary: &str,
+        sessions: &mut [DiscoveredSession],
+        kwt_sessions: &mut [DiscoveredSession],
+        cancellation: &CancellationToken,
+    ) {
+        for (server, sessions) in [
+            (RemoteTmuxServer::Default, sessions),
+            (RemoteTmuxServer::Kwt, kwt_sessions),
+        ] {
+            if sessions.is_empty() {
+                continue;
+            }
+            let command = posix_command(&tmux_server_command(
+                &self.config,
+                server,
+                binary,
+                RemoteCommandLocale::StableOutput,
+                [
+                    "-f",
+                    "/dev/null",
+                    "list-panes",
+                    "-a",
+                    "-F",
+                    session::AGENT_PANE_FORMAT,
+                ],
+            ));
+            let output = self
+                .run_framed_remote_shell(lease, &command, "GHOSTHUB_AGENT_PANES", cancellation)
+                .ok()
+                .filter(|output| output.status == 0);
+            session::apply_agent_activity(
+                sessions,
+                output.as_ref().map_or(&[], |output| &output.stdout),
+            );
+        }
     }
 
     /// Select a terminal type proven usable by the remote terminfo database.
