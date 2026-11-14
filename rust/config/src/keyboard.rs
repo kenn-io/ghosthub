@@ -117,6 +117,9 @@ impl KeyChord {
         if chord.control && chord.shift && key == "v" {
             return Err(ConfigError::new("Ctrl+Shift+V is reserved for Paste"));
         }
+        if chord.control && chord.shift && key == "c" {
+            return Err(ConfigError::new("Ctrl+Shift+C is reserved for Copy"));
+        }
         if (chord.alt && matches!(key, "tab" | "f4"))
             || (chord.control && key == "escape")
             || (chord.control && chord.alt && key == "delete")

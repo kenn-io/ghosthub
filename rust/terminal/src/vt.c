@@ -12,6 +12,10 @@ typedef struct {
     GhosttyRenderStateRowCells cells;
     GhosttyKeyEncoder encoder;
     GhosttyKeyEvent key;
+    GhosttyTrackedGridRef selection_anchor;
+    GhosttyTerminalScreen selection_screen;
+    uint8_t *selection_text;
+    size_t selection_len;
     GhosttyBuffer text;
     Effect effect;
     void *userdata;
@@ -29,6 +33,7 @@ typedef struct {
     const uint8_t *text;
     size_t len;
     uint8_t foreground[3], background[3], style;
+    bool selected;
 } VtCell;
 
 static void check(GhosttyResult result) {
@@ -75,6 +80,8 @@ static void clipboard_read(GhosttyTerminal terminal, void *userdata,
 
 void vt_free(Vt *vt) {
     if (!vt) return;
+    ghostty_tracked_grid_ref_free(vt->selection_anchor);
+    ghostty_free(NULL, vt->selection_text, vt->selection_len);
     ghostty_key_event_free(vt->key);
     ghostty_key_encoder_free(vt->encoder);
     ghostty_render_state_row_cells_free(vt->cells);
@@ -130,6 +137,66 @@ void vt_colors(Vt *vt, const uint8_t *rgb) {
     check(ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground));
     check(ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background));
     check(ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, &palette));
+}
+
+bool vt_clear_selection(Vt *vt) {
+    ghostty_tracked_grid_ref_free(vt->selection_anchor);
+    vt->selection_anchor = NULL;
+    GhosttySelection selection;
+    GhosttyResult result = ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
+    if (result == GHOSTTY_NO_VALUE) return false;
+    check(result);
+    check(ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, NULL));
+    return true;
+}
+
+void vt_select(Vt *vt, uint8_t action, uint16_t x, uint16_t y) {
+    GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
+        .value = {.coordinate = {.x = x, .y = y}}};
+    if (action == 0) {
+        check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &vt->selection_screen));
+        check(ghostty_terminal_grid_ref_track(vt->terminal, point, &vt->selection_anchor));
+    } else if (action == 1 && vt->selection_anchor) {
+        GhosttyTerminalScreen screen;
+        check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen));
+        if (screen != vt->selection_screen) return;
+        GhosttySelection selection = {0};
+        GhosttyResult result = ghostty_tracked_grid_ref_snapshot(vt->selection_anchor, &selection.start);
+        if (result == GHOSTTY_NO_VALUE) return;
+        check(result);
+        // A primary/alternate-screen switch must not move a drag to another screen.
+        GhosttyPointCoordinate start;
+        result = ghostty_terminal_point_from_grid_ref(vt->terminal, &selection.start,
+            GHOSTTY_POINT_TAG_VIEWPORT, &start);
+        if (result == GHOSTTY_NO_VALUE) return;
+        check(result);
+        check(ghostty_terminal_grid_ref(vt->terminal, point, &selection.end));
+        check(ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection));
+    } else if (action == 2) {
+        ghostty_tracked_grid_ref_free(vt->selection_anchor);
+        vt->selection_anchor = NULL;
+    }
+}
+
+bool vt_copy_selection(Vt *vt, const uint8_t **text, size_t *len) {
+    GhosttySelection selection;
+    GhosttyResult result = ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
+    if (result == GHOSTTY_NO_VALUE) return false;
+    check(result);
+    GhosttyFormatter formatter;
+    check(ghostty_formatter_terminal_new(NULL, &formatter, vt->terminal));
+    GhosttyFormatterFormat format = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+    bool trim = true;
+    check(ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_EMIT, &format));
+    check(ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim));
+    check(ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &trim));
+    check(ghostty_formatter_set(formatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection));
+    ghostty_free(NULL, vt->selection_text, vt->selection_len);
+    check(ghostty_formatter_format_alloc(formatter, NULL, &vt->selection_text, &vt->selection_len));
+    ghostty_formatter_free(formatter);
+    *text = vt->selection_text;
+    *len = vt->selection_len;
+    return vt->selection_len > 0;
 }
 
 void vt_cursor(Vt *vt, uint8_t shape) {
@@ -230,6 +297,8 @@ bool vt_row(Vt *vt, uint64_t *identity, bool *dirty) {
 
 bool vt_cell(Vt *vt, VtCell *cell) {
     if (!ghostty_render_state_row_cells_next(vt->cells)) return false;
+    check(ghostty_render_state_row_cells_get(vt->cells,
+        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &cell->selected));
     GhosttyResult result = ghostty_render_state_row_cells_get(vt->cells,
         GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8, &vt->text);
     if (result == GHOSTTY_OUT_OF_SPACE) {

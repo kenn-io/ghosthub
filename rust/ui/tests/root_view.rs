@@ -9,6 +9,21 @@ use ui::{
 use workspace::{HostConnectionState, HostDiagnostic, HostItem, MouseAction};
 
 #[test]
+fn selection_highlight_repaints_cells_and_keeps_hidden_text_hidden() {
+    let mut frame = SurfaceFrame::blank(1, GridSize::new(3, 1).unwrap());
+    frame.set_cursor(None);
+    *frame.cell_mut(0) = Cell::plain("a");
+    *frame.cell_mut(1) = Cell::plain("b");
+    frame.cell_mut(0).selected = true;
+    frame.cell_mut(1).selected = true;
+    frame.cell_mut(1).style.insert(CellStyle::HIDDEN);
+    let rows = surface_paint_rows(&frame);
+    assert_eq!(rows[0][0].background(), 0x24_527c);
+    assert_eq!(rows[0][1].foreground(), rows[0][1].background());
+    assert_eq!(rows[0][2].background(), 0x0c_0f14);
+}
+
+#[test]
 fn host_projection_keeps_connection_failures_scoped() {
     let host = HostItem::wsl(
         "Ubuntu",

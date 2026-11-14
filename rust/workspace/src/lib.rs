@@ -143,6 +143,7 @@ const PENDING_KWT_CREATION_REFRESH_LIMIT: u8 = 3;
 const PENDING_KWT_CREATION_LIFETIME: Duration = Duration::from_mins(3);
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // Independent terminal preferences.
 pub struct Appearance {
     theme: TerminalTheme,
     font_family: String,
@@ -152,14 +153,17 @@ pub struct Appearance {
     cursor_style: CursorStyle,
     allow_shell_integration_cursor: bool,
     hide_mouse_while_typing: bool,
+    copy_on_select: bool,
     allow_remote_clipboard_write: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // Independent terminal preferences.
 pub struct TerminalSettingsDraft {
     pub cursor_style: CursorStyle,
     pub allow_shell_integration_cursor: bool,
     pub hide_mouse_while_typing: bool,
+    pub copy_on_select: bool,
     pub allow_remote_clipboard_write: bool,
 }
 
@@ -169,6 +173,7 @@ impl From<&TerminalAppearance> for TerminalSettingsDraft {
             cursor_style: value.cursor_style(),
             allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
             hide_mouse_while_typing: value.hide_mouse_while_typing(),
+            copy_on_select: value.copy_on_select(),
             allow_remote_clipboard_write: value.allow_remote_clipboard_write(),
         }
     }
@@ -180,6 +185,7 @@ impl From<&Appearance> for TerminalSettingsDraft {
             cursor_style: value.cursor_style(),
             allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
             hide_mouse_while_typing: value.hide_mouse_while_typing(),
+            copy_on_select: value.copy_on_select(),
             allow_remote_clipboard_write: value.allow_remote_clipboard_write(),
         }
     }
@@ -260,6 +266,11 @@ impl Appearance {
     }
 
     #[must_use]
+    pub const fn copy_on_select(&self) -> bool {
+        self.copy_on_select
+    }
+
+    #[must_use]
     pub const fn allow_remote_clipboard_write(&self) -> bool {
         self.allow_remote_clipboard_write
     }
@@ -276,6 +287,7 @@ impl From<TerminalAppearance> for Appearance {
             cursor_style: value.cursor_style(),
             allow_shell_integration_cursor: value.allow_shell_integration_cursor(),
             hide_mouse_while_typing: value.hide_mouse_while_typing(),
+            copy_on_select: value.copy_on_select(),
             allow_remote_clipboard_write: value.allow_remote_clipboard_write(),
         }
     }
@@ -4644,7 +4656,8 @@ impl Workspace {
                     draft.allow_shell_integration_cursor,
                     draft.hide_mouse_while_typing,
                 )
-                .with_remote_clipboard_write(draft.allow_remote_clipboard_write);
+                .with_remote_clipboard_write(draft.allow_remote_clipboard_write)
+                .with_copy_on_select(draft.copy_on_select);
             let roots = settings.roots.clone();
             settings
                 .config
@@ -4720,7 +4733,8 @@ impl Workspace {
                 settings.config.terminal().cursor_style(),
                 settings.config.terminal().allow_shell_integration_cursor(),
                 settings.config.terminal().hide_mouse_while_typing(),
-            );
+            )
+            .with_copy_on_select(settings.config.terminal().copy_on_select());
             let roots = settings.roots.clone();
             settings
                 .config
@@ -7775,6 +7789,23 @@ impl Workspace {
             .active()
             .ok_or_else(|| WorkspaceError::new("no active terminal"))?
             .send_mouse(input)
+            .map_err(|error| WorkspaceError::from_worker(&error))
+    }
+
+    /// Copy the active terminal's selection through the scene's clipboard events.
+    ///
+    /// # Errors
+    /// Returns an error when no terminal is active or its input queue is unavailable.
+    pub fn copy_terminal_selection(&self) -> Result<(), WorkspaceError> {
+        let worker = self
+            .scene
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        worker
+            .active()
+            .ok_or_else(|| WorkspaceError::new("no active terminal"))?
+            .copy_selection()
             .map_err(|error| WorkspaceError::from_worker(&error))
     }
 
