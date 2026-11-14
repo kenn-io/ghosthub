@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GhosthubBackendTerminal
 import GhosthubHerdr
@@ -1053,6 +1054,55 @@ struct WorkspaceBackendTerminalTests {
 
         #expect(model.activeBorrowedTmuxSelection == tmux)
         #expect(!store.surface.isKeyboardInteractionSuspended)
+        await model.shutdown()
+    }
+
+    @Test(
+        "a tmux session takes focus back when a Zellij open fails, unless focus moved",
+        arguments: [false, true]
+    )
+    func failedZellijOpenRestoresTmuxFocus(focusMoved: Bool) async throws {
+        let environment = try environment(terminals: [], zellijSessions: [.init(name: "work")])
+        let store = RecordingNativeSessionSurfaceStore()
+        let gate = AsyncGate()
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            zellijSessionDiscovery: { _ in
+                await gate.wait()
+                // The session ended after the sidebar listed it.
+                return .available([])
+            }
+        )
+        let tmux = WorkspaceTmuxSessionSelection(hostID: environment.host.id, name: "tmux-work")
+        model.openBorrowedTmuxSession(tmux)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestedKeys.contains { $0.target == .tmuxSession }
+        }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let elsewhere = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        window.contentView = elsewhere
+        model.workspaceWindow = window
+
+        model.openBorrowedZellijSession(.init(hostID: environment.host.id, name: "work"))
+        #expect(window.firstResponder === window)
+        if focusMoved {
+            #expect(window.makeFirstResponder(elsewhere))
+        }
+        let requestsBeforeFailure = store.surface.keyboardFocusRequestCount
+        gate.open()
+        await waitUntilMainActor { model.pendingZellijPresentationSelection == nil }
+
+        #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
+        #expect(
+            store.surface.keyboardFocusRequestCount
+                == requestsBeforeFailure + (focusMoved ? 0 : 1)
+        )
         await model.shutdown()
     }
 

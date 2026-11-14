@@ -266,8 +266,12 @@ current view stays until the terminal is confirmed, so a failed open leaves it
 in place and shows the error. While that check runs, the current terminal
 takes no keystrokes and its reconnect waits. The same holds when a Herdr
 session or a Zellij session is checked, whatever the current view is: tmux,
-Zellij, Herdr, or a backend terminal. Returning to the shown tmux session
-gives it input back at once. Cmd-W cancels every
+Zellij, Herdr, or a backend terminal. Every held view gets input back when
+the last pending check ends, so an open that replaces another cannot leave a
+view blocked. If the open fails and the held view is still shown, it takes
+keyboard focus again unless the user navigated or focused something else.
+Returning to the shown tmux or Zellij session gives it input back at once.
+Cmd-W cancels every
 shortcut still checking its target, so nothing opens after the close. The attach then requires that connection's route,
 so a changed SSH alias cannot reach a same-addressed terminal on another
 machine. Reconnect checks the route before it reads the listing. A changed route
