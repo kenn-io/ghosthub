@@ -15,6 +15,9 @@ struct KwtSSHDestinationRequest: Hashable, Sendable {
 
 /// Shares SSH acquisition across windows in two stages: one kwt route
 /// resolution per destination, then one pooled lease per route identity.
+/// Commands use the route's primary master; each terminal reserves a place
+/// on the first master whose session budget has room for it, and a command
+/// turned away by a full master runs on another master of the same route.
 ///
 /// Every new ownership boundary resolves again, so a configuration change
 /// surfaces as `ssh_configuration_changed` before a caller joins a route;
@@ -44,11 +47,17 @@ actor KwtSSHAcquisitionCoordinator {
     }
 
     private let resolve: Resolver
-    private let pool: KwtSSHConnectionPool
+    private let lanes: KwtSSHConnectionLanes
+    private let budget: SSHSessionBudget
     private var resolutions: [KwtSSHDestinationRequest: Resolution] = [:]
     private var subscribers: [UUID: Subscriber] = [:]
     private var browserPrompts: [String: KwtSSHLeasePrompt] = [:]
     private var nextOrder: UInt64 = 0
+    /// Routes with a prompt on screen, and lease operations waiting to show
+    /// theirs. Masters of one route authenticate separately, so their
+    /// prompts take turns instead of reaching one window at once.
+    private var promptingRoutes: Set<String> = []
+    private var promptQueues: [String: [CheckedContinuation<Void, Never>]] = [:]
 
     init(
         resolve: @escaping Resolver = { request in
@@ -56,16 +65,22 @@ actor KwtSSHAcquisitionCoordinator {
                 try KwtSSHRouteClient().resolve(request.host)
             }
         },
-        pool: KwtSSHConnectionPool = .shared
+        pool: KwtSSHConnectionPool = .shared,
+        lanes: KwtSSHConnectionLanes? = nil,
+        budget: SSHSessionBudget = .shared
     ) {
         self.resolve = resolve
-        self.pool = pool
+        self.lanes = lanes ?? (pool === KwtSSHConnectionPool.shared
+            ? .shared
+            : KwtSSHConnectionLanes(primary: pool))
+        self.budget = budget
     }
 
     func acquire(
         request: KwtSSHDestinationRequest,
         subscriberID: UUID,
         canPresentPrompts: Bool,
+        purpose: KwtSSHConnectionPurpose = .commands,
         prompt: @escaping PromptHandler
     ) async throws -> KwtSSHConnection {
         nextOrder &+= 1
@@ -89,20 +104,26 @@ actor KwtSSHAcquisitionCoordinator {
                 if canPresentPrompts, let notice = browserPrompts[route.routeIdentity] {
                     _ = try await prompt(route, notice)
                 }
-                let connection = try await pool.acquire(
+                let leasePrompt: KwtSSHLeaseClient.PromptHandler = {
+                    [weak self] leasePrompt in
+                    guard let self else { throw CancellationError() }
+                    return try await answerPrompt(
+                        route: route,
+                        prompt: leasePrompt
+                    )
+                }
+                let hostKeyPolicy: KwtSSHHostKeyPolicy =
+                    canPresentPrompts ? .review : .strict
+                let connection = try await acquirePlaced(
+                    purpose: purpose,
                     route: route,
                     subscriberID: subscriberID,
-                    hostKeyPolicy: canPresentPrompts ? .review : .strict,
-                    prompt: { [weak self] leasePrompt in
-                        guard let self else { throw CancellationError() }
-                        return try await answerPrompt(
-                            route: route,
-                            prompt: leasePrompt
-                        )
-                    }
+                    hostKeyPolicy: hostKeyPolicy,
+                    prompt: leasePrompt
                 )
                 subscribers.removeValue(forKey: subscriberID)
                 browserPrompts.removeValue(forKey: route.routeIdentity)
+                registerOverflow(for: connection, request: request)
                 return connection
             } catch {
                 await cancel(
@@ -141,10 +162,92 @@ actor KwtSSHAcquisitionCoordinator {
             if !subscribers.values.contains(where: { $0.routeIdentity == routeIdentity }) {
                 browserPrompts.removeValue(forKey: routeIdentity)
             }
-            await pool.cancelAcquisition(
-                routeIdentity: routeIdentity,
-                subscriberID: subscriberID
+            for pool in lanes.activePools {
+                await pool.cancelAcquisition(
+                    routeIdentity: routeIdentity,
+                    subscriberID: subscriberID
+                )
+            }
+        }
+    }
+
+    /// Uses the first master with room for the purpose, leasing the next
+    /// master when every earlier one is full. Commands normally stay on the
+    /// primary master; they move only when terminals hold every session it
+    /// allows. A terminal reserves its session for its whole lifetime. A new
+    /// master authenticates on its own, so it may prompt like the first one.
+    private func acquirePlaced(
+        purpose: KwtSSHConnectionPurpose,
+        route: KwtSSHRouteSnapshot,
+        subscriberID: UUID,
+        hostKeyPolicy: KwtSSHHostKeyPolicy,
+        prompt: @escaping KwtSSHLeaseClient.PromptHandler
+    ) async throws -> KwtSSHConnection {
+        for index in 0 ..< KwtSSHConnectionLanes.maximumLanes {
+            let connection = try await lanes.pool(index).acquire(
+                route: route,
+                subscriberID: subscriberID,
+                hostKeyPolicy: hostKeyPolicy,
+                prompt: prompt
             )
+            switch purpose {
+            case .commands:
+                if budget.hasCommandRoom(arguments: connection.arguments) {
+                    return connection
+                }
+            case .terminal:
+                if let reservation = budget.reserveTerminal(
+                    arguments: connection.arguments
+                ) {
+                    connection.holdSessionReservation(reservation)
+                    return connection
+                }
+            }
+            try? await connection.release()
+            try Task.checkCancellation()
+        }
+        throw KwtSSHLeaseError.operationFailed(
+            code: "ssh_session_capacity",
+            message: "Every SSH connection to this host is full. "
+                + "Close a session and try again.",
+            retryable: true
+        )
+    }
+
+    /// Lets commands stranded on this connection's master, because terminals
+    /// hold every session there, run on another master of the same route.
+    /// The replacement is leased without prompts and must keep the route
+    /// identity.
+    private nonisolated func registerOverflow(
+        for connection: KwtSSHConnection,
+        request: KwtSSHDestinationRequest
+    ) {
+        let routeIdentity = connection.routeIdentity
+        let budget = budget
+        budget.registerOverflow(arguments: connection.arguments) {
+            [weak self] deadline in
+            guard let self else { return nil }
+            return KwtSSHOverflowWait.lease(until: deadline) {
+                let replacement = try await self.acquire(
+                    request: request,
+                    subscriberID: UUID(),
+                    canPresentPrompts: false,
+                    prompt: { _, _ in
+                        throw KwtSSHLeaseError.operationFailed(
+                            code: "ssh_interaction_required",
+                            message: "SSH authentication requires an active window.",
+                            retryable: false
+                        )
+                    }
+                )
+                guard replacement.routeIdentity == routeIdentity,
+                      budget.hasCommandRoom(arguments: replacement.arguments)
+                else {
+                    try? await replacement.release()
+                    return nil
+                }
+                return replacement
+            }
         }
     }
 
@@ -186,6 +289,37 @@ actor KwtSSHAcquisitionCoordinator {
     }
 
     private func answerPrompt(
+        route: KwtSSHRouteSnapshot,
+        prompt: KwtSSHLeasePrompt
+    ) async throws -> String {
+        await beginPrompt(routeIdentity: route.routeIdentity)
+        defer { endPrompt(routeIdentity: route.routeIdentity) }
+        try Task.checkCancellation()
+        return try await presentPrompt(route: route, prompt: prompt)
+    }
+
+    private func beginPrompt(routeIdentity: String) async {
+        guard promptingRoutes.contains(routeIdentity) else {
+            promptingRoutes.insert(routeIdentity)
+            return
+        }
+        await withCheckedContinuation { continuation in
+            promptQueues[routeIdentity, default: []].append(continuation)
+        }
+    }
+
+    private func endPrompt(routeIdentity: String) {
+        guard var queue = promptQueues[routeIdentity], !queue.isEmpty else {
+            promptQueues.removeValue(forKey: routeIdentity)
+            promptingRoutes.remove(routeIdentity)
+            return
+        }
+        let next = queue.removeFirst()
+        promptQueues[routeIdentity] = queue.isEmpty ? nil : queue
+        next.resume()
+    }
+
+    private func presentPrompt(
         route: KwtSSHRouteSnapshot,
         prompt: KwtSSHLeasePrompt
     ) async throws -> String {
@@ -232,5 +366,58 @@ actor KwtSSHAcquisitionCoordinator {
                 )
             }
         }
+    }
+}
+
+/// Bridges an async lease into a blocking command thread for the session
+/// budget. A lease that arrives after the caller stopped waiting is released.
+enum KwtSSHOverflowWait {
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var connection: KwtSSHConnection?
+        var finished = false
+        var abandoned = false
+    }
+
+    static func lease(
+        until deadline: Date,
+        _ acquire: @escaping @Sendable () async throws -> KwtSSHConnection?
+    ) -> SSHSessionBudget.Overflow? {
+        let state = State()
+        let done = DispatchSemaphore(value: 0)
+        let task = Task {
+            let connection = try? await acquire()
+            let kept = state.lock.withLock {
+                guard !state.abandoned else { return false }
+                state.connection = connection
+                state.finished = true
+                return true
+            }
+            if !kept {
+                try? await connection?.release()
+            }
+            done.signal()
+        }
+        while done.wait(timeout: .now() + SSHSessionBudget.cancellationPollInterval)
+            == .timedOut {
+            let cancelled = withUnsafeCurrentTask { $0?.isCancelled == true }
+            guard cancelled || Date() >= deadline else { continue }
+            let finished = state.lock.withLock {
+                state.abandoned = !state.finished
+                return state.finished
+            }
+            if !finished {
+                task.cancel()
+                return nil
+            }
+            break
+        }
+        guard let connection = state.lock.withLock({ state.connection }) else {
+            return nil
+        }
+        return SSHSessionBudget.Overflow(
+            arguments: connection.arguments,
+            release: { Task { try? await connection.release() } }
+        )
     }
 }

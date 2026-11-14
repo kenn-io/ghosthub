@@ -595,9 +595,12 @@ struct KwtSSHLeaseClient: Sendable {
         self.inactivityTimeout = inactivityTimeout
     }
 
+    /// `connection` selects one of the route's kwt masters; 0 is the shared
+    /// master and each other index is a separate OpenSSH connection.
     func acquire(
         route: KwtSSHRouteSnapshot,
         hostKeyPolicy: KwtSSHHostKeyPolicy = .review,
+        connection: Int = 0,
         prompt: @escaping PromptHandler
     ) async throws -> KwtSSHLease {
         guard binaryPath != "" else {
@@ -611,6 +614,9 @@ struct KwtSSHLeaseClient: Sendable {
             "--projection-policy", route.projectionPolicy,
             "--host-key-policy", hostKeyPolicy.rawValue,
         ])
+        if connection > 0 {
+            arguments.append(contentsOf: ["--connection", String(connection)])
+        }
         if let compression = route.compression {
             arguments.append(contentsOf: ["--compression", compression ? "yes" : "no"])
         }

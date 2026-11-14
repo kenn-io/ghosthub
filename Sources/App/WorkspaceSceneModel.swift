@@ -1324,17 +1324,17 @@ final class WorkspaceSceneModel: ObservableObject {
         zellijSessionKillCoordinator: ZellijSessionKillCoordinator = .shared,
         herdrSessionRecordReader:
         @escaping HerdrSessionRecordReading = { name, host, arguments in
-            await Task.detached(priority: .userInitiated) {
+            await BlockingTask.runToCompletion(priority: .userInitiated) {
                 HerdrSessionLifecycleClient().record(
                     named: name,
                     on: host,
                     sshConnectionArguments: arguments
                 )
-            }.value
+            }
         },
         herdrSessionMutator:
         @escaping HerdrSessionMutating = { action, record, host, arguments in
-            await Task.detached(priority: .userInitiated) {
+            await BlockingTask.runToCompletion(priority: .userInitiated) {
                 let client = HerdrSessionLifecycleClient()
                 return switch action {
                 case .stop:
@@ -1350,7 +1350,7 @@ final class WorkspaceSceneModel: ObservableObject {
                         sshConnectionArguments: arguments
                     )
                 }
-            }.value
+            }
         },
         herdrSSHConnectionSnapshotProvider:
         @escaping SSHConnectionSnapshotProvider =
@@ -1450,27 +1450,22 @@ final class WorkspaceSceneModel: ObservableObject {
         },
         zellijSessionValidationDiscovery:
         @escaping ZellijSessionValidationDiscovery = { host, arguments in
-            let probe = Task.detached(priority: .utility) {
+            await BlockingTask.run(priority: .utility) {
                 ZellijInventoryClient().discover(
                     on: host,
                     sshConnectionArguments: arguments
                 )
             }
-            return await withTaskCancellationHandler {
-                await probe.value
-            } onCancel: {
-                probe.cancel()
-            }
         },
         zellijSessionKiller:
         @escaping ZellijSessionKilling = { name, host, arguments in
-            await Task.detached(priority: .userInitiated) {
+            await BlockingTask.runToCompletion(priority: .userInitiated) {
                 ZellijInventoryClient().kill(
                     sessionName: name,
                     on: host,
                     sshConnectionArguments: arguments
                 )
-            }.value
+            }
         },
         zellijSSHConnectionSnapshotProvider:
         @escaping SSHConnectionSnapshotProvider =
@@ -6772,9 +6767,13 @@ final class WorkspaceSceneModel: ObservableObject {
         )
     }
 
+    /// Leases a connection for a presentation. Terminals reserve a place on
+    /// a master; checks that only run commands, such as a reconnect probe,
+    /// use `.commands` so they never take a terminal's place.
     func acquirePresentationSSHConnection(
         hostID: UUID,
-        info: SSHHostInfo
+        info: SSHHostInfo,
+        purpose: KwtSSHConnectionPurpose = .terminal
     ) async throws -> KwtSSHConnection {
         let demoArguments = demoSSHIsolationArguments(
             environment: presentationSSHEnvironment
@@ -6795,6 +6794,7 @@ final class WorkspaceSceneModel: ObservableObject {
             host: info,
             destination: destination,
             coordinator: presentationSSHAcquisitionCoordinator,
+            purpose: purpose,
             onPresentationRequired: { [weak self] in
                 self?.presentationSSHSessionNeedsAttention(sessionID)
             }
@@ -9317,13 +9317,8 @@ final class WorkspaceSceneModel: ObservableObject {
         if case .available = result {
             guard !Task.isCancelled else { return nil }
             let resolver = zellijExecutableResolver
-            let probe = Task.detached(priority: .userInitiated) {
+            resolvedPath = await BlockingTask.run(priority: .userInitiated) {
                 resolver(host, connection.arguments)
-            }
-            resolvedPath = await withTaskCancellationHandler {
-                await probe.value
-            } onCancel: {
-                probe.cancel()
             }
             if case let .failure(error) = resolvedPath,
                SSHConnectionFailure.indicatesUnusableConnection(error) {
@@ -13235,13 +13230,8 @@ final class WorkspaceSceneModel: ObservableObject {
         if case .available = result {
             guard !Task.isCancelled else { return .retry }
             let resolver = zellijExecutableResolver
-            let probe = Task.detached(priority: .userInitiated) {
+            let resolution = await BlockingTask.run(priority: .userInitiated) {
                 resolver(context.host, connection.arguments)
-            }
-            let resolution = await withTaskCancellationHandler {
-                await probe.value
-            } onCancel: {
-                probe.cancel()
             }
             guard !Task.isCancelled else { return .retry }
             guard activeZellijReconnectContext == context,
@@ -13864,7 +13854,8 @@ final class WorkspaceSceneModel: ObservableObject {
             do {
                 connection = try await acquirePresentationSSHConnection(
                     hostID: context.selection.hostID,
-                    info: info
+                    info: info,
+                    purpose: .commands
                 )
             } catch {
                 guard !Task.isCancelled else { return .retry }
@@ -13929,7 +13920,8 @@ final class WorkspaceSceneModel: ObservableObject {
             do {
                 after = try await acquirePresentationSSHConnection(
                     hostID: context.selection.hostID,
-                    info: info
+                    info: info,
+                    purpose: .commands
                 )
             } catch {
                 guard !Task.isCancelled else { return .retry }

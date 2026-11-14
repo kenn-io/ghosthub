@@ -324,23 +324,31 @@ struct KwtWindowsInstaller: Sendable {
         remoteName: String,
         connectionArguments: [String]
     ) -> AccountCommandOutput {
-        let arguments = transferArguments(
-            host: host,
-            localPath: localPath,
-            remoteName: remoteName,
-            connectionArguments: connectionArguments
-        )
-        let output = AccountCommandRunner.runProcessInLoginShell(
-            executable: "/usr/bin/scp",
-            arguments: arguments,
+        // scp opens one session on the master, so it waits for one like any
+        // command. It is not repeated after a refusal.
+        SSHSessionBudget.shared.run(
+            arguments: connectionArguments,
             timeout: 120,
-            captureStandardError: true
-        )
-        return AccountCommandOutput(
-            status: output.status,
-            stdout: "",
-            stderr: output.stdout
-        )
+            retryRefusal: false
+        ) { connectionArguments in
+            let arguments = transferArguments(
+                host: host,
+                localPath: localPath,
+                remoteName: remoteName,
+                connectionArguments: connectionArguments
+            )
+            let output = AccountCommandRunner.runProcessInLoginShell(
+                executable: "/usr/bin/scp",
+                arguments: arguments,
+                timeout: 120,
+                captureStandardError: true
+            )
+            return AccountCommandOutput(
+                status: output.status,
+                stdout: "",
+                stderr: output.stdout
+            )
+        }
     }
 
     static func transferArguments(

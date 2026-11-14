@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubTransport
 
 public enum HerdrCommandError:
     Error, Equatable, LocalizedError, Sendable {
@@ -17,10 +18,11 @@ public enum HerdrCommandError:
         case let .cancelled(host):
             return "Stopped checking Herdr sessions on \(host)."
         case let .commandFailed(status, stderr):
-            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return detail.isEmpty
-                ? "Herdr exited with status \(status)."
-                : "Herdr exited with status \(status): \(detail)"
+            return SSHSessionRefusal.describeCommandFailure(
+                tool: "Herdr",
+                status: status,
+                detail: stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
         case .missingMarker:
             return "Herdr returned output without Ghosthub's JSON marker."
         case .malformedJSON:

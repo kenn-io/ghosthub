@@ -48,6 +48,7 @@ final class KwtSSHConnection: @unchecked Sendable {
     private let lock = NSLock()
     private var releaseTask: Task<Void, Error>?
     private var released = false
+    private var sessionReservation: SSHSessionReservation?
 
     fileprivate init(
         result: KwtSSHLeaseResult,
@@ -95,13 +96,48 @@ final class KwtSSHConnection: @unchecked Sendable {
     }
 
     deinit {
+        sessionReservation?.release()
         let shouldRelease = lock.withLock { !released && releaseTask == nil }
         guard shouldRelease else { return }
         let releaseAction = releaseAction
         Task { try? await releaseAction() }
     }
 
+    /// Ties a terminal's place on this master to this ownership, so the
+    /// place and its session return to the budget when the owner lets go.
+    func holdSessionReservation(_ reservation: SSHSessionReservation) {
+        lock.withLock { sessionReservation = reservation }
+    }
+
+    /// Takes the terminal's session just before it launches, after its
+    /// setup probes. Throws a retryable error when terminals already hold
+    /// every session on this master, so reconnect places it on another one.
+    func activateSessionReservation() async throws {
+        guard let reservation = lock.withLock({ sessionReservation }) else {
+            return
+        }
+        guard await reservation.activate() else {
+            try Task.checkCancellation()
+            throw KwtSSHLeaseError.operationFailed(
+                code: "ssh_session_capacity",
+                message: "Open terminals are using every session this "
+                    + "host's SSH connection allows.",
+                retryable: true
+            )
+        }
+    }
+
+    private func releaseSessionReservation() {
+        let reservation = lock.withLock {
+            let reservation = sessionReservation
+            sessionReservation = nil
+            return reservation
+        }
+        reservation?.release()
+    }
+
     func release() async throws {
+        releaseSessionReservation()
         let existing: Task<Void, Error>? = lock.withLock {
             if released {
                 return nil
@@ -139,6 +175,7 @@ final class KwtSSHConnection: @unchecked Sendable {
         timeout: Duration = .seconds(5),
         starting start: @MainActor () -> Void
     ) async {
+        releaseSessionReservation()
         guard let handoff = await beginHandoffAction() else {
             start()
             try? await release()
@@ -225,11 +262,14 @@ actor KwtSSHConnectionPool {
     private var completedFailures: [UUID: any Error] = [:]
     private var closed = false
 
-    init() {
+    /// A pool whose leases use one numbered kwt master per route; 0 is the
+    /// shared master.
+    init(connection: Int = 0) {
         acquireLease = { route, hostKeyPolicy, prompt in
             try await KwtSSHLeaseClient().acquire(
                 route: route,
                 hostKeyPolicy: hostKeyPolicy,
+                connection: connection,
                 prompt: prompt
             )
         }
