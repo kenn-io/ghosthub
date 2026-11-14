@@ -329,18 +329,20 @@ mod tests {
             matches(&preferences, "ctrl-shift-tab"),
             Some(ShortcutAction::PreviousSession)
         );
-        for value in ["ctrl+-", "alt+plus", "ctrl+f12", "ctrl+shift+left"] {
+        for (configured, event, different_event) in [
+            ("ctrl+-", "ctrl--", "ctrl-="),
+            ("alt+plus", "alt-+", "alt-="),
+            ("ctrl+f12", "ctrl-f12", "ctrl-f1"),
+            ("ctrl+shift+left", "ctrl-shift-left", "ctrl-left"),
+        ] {
             preferences
-                .set(ShortcutAction::ToggleSidebar, Some(value))
+                .set(ShortcutAction::ToggleSidebar, Some(configured))
                 .unwrap();
-            let value = preferences
-                .binding(ShortcutAction::ToggleSidebar)
-                .unwrap()
-                .gpui_value();
             assert_eq!(
-                matches(&preferences, &value),
+                matches(&preferences, event),
                 Some(ShortcutAction::ToggleSidebar)
             );
+            assert_eq!(matches(&preferences, different_event), None);
         }
     }
 
