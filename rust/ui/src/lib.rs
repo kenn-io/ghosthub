@@ -6718,7 +6718,9 @@ impl RootView {
                                         .min_w_0()
                                         .flex()
                                         .flex_col()
-                                        .child(pane_header)
+                                        .when(pane != SettingsPane::Keyboard, |element| {
+                                            element.child(pane_header)
+                                        })
                                         .child(detail),
                                 ),
                         )
