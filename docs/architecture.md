@@ -590,9 +590,10 @@ counts the sessions it opens on each master, keyed by control socket:
   free to run.
 
 A new master authenticates on its own, so a host that asks for a password or
-one-time code prompts again when Ghosthub opens a second master. Prompts from
-different masters of one route take turns, so a window never receives a second
-prompt while it shows one. Sessions opened by `kwt ssh exec` for worktree
+one-time code prompts again when Ghosthub opens a second master. A master's
+prompt goes only to a window waiting on that master. Prompts from different
+masters of one route take turns, so a window never receives a second prompt
+while it shows one. Sessions opened by `kwt ssh exec` for worktree
 mutations are not counted; a refusal they cause is handled by the same
 learning and backoff.
 

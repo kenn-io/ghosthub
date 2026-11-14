@@ -347,6 +347,32 @@ struct SSHSessionBudgetTests {
         #expect(budget.openSessions(forControlPath: Self.socket) == 0)
     }
 
+    @Test("a command cancelled just before its session frees up never runs")
+    func commandCancelledBeforeItsGrantStaysStopped() async {
+        let budget = SSHSessionBudget()
+        let releaseBusy = Self.holdSessions(SSHSessionBudget.defaultCapacity, on: budget)
+        let ran = LockedValue(false)
+
+        let queued = Task {
+            await BlockingTask.run {
+                budget.run(arguments: Self.arguments, timeout: 30, retryRefusal: false) { _ in
+                    ran.store(true)
+                    return Self.succeeded
+                }
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+        // The session frees up right after the cancel, well inside one
+        // cancellation poll, so the grant is what wakes the command.
+        queued.cancel()
+        releaseBusy()
+        let output = await queued.value
+
+        #expect(output == SSHSessionBudget.cancelledOutput)
+        #expect(ran.load() == false)
+        #expect(budget.openSessions(forControlPath: Self.socket) == 0)
+    }
+
     @Test("cancelling terminal launches never loses a session or a place")
     func cancelledActivationsReturnEverything() async throws {
         let budget = SSHSessionBudget()

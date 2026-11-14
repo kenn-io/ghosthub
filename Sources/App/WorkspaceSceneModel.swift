@@ -1434,15 +1434,10 @@ final class WorkspaceSceneModel: ObservableObject {
         },
         backendTerminalValidationDiscovery:
         @escaping BackendTerminalValidationDiscovery = { host, kind, arguments in
-            let probe = Task.detached(priority: .userInitiated) {
+            await BlockingTask.run(priority: .userInitiated) {
                 BackendTerminalInventoryClient().discover(
                     kind, on: host, sshConnectionArguments: arguments
                 )
-            }
-            return await withTaskCancellationHandler {
-                await probe.value
-            } onCancel: {
-                probe.cancel()
             }
         },
         zellijSessionDiscovery: @escaping ZellijSessionDiscovery = { host in

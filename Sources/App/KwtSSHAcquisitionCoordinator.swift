@@ -44,6 +44,14 @@ actor KwtSSHAcquisitionCoordinator {
         let prompt: PromptHandler
         let order: UInt64
         var routeIdentity: String?
+        /// The master this subscriber is waiting on. Each master
+        /// authenticates on its own, so only its waiters see its prompts.
+        var lane: Int?
+    }
+
+    private struct LaneKey: Hashable {
+        let routeIdentity: String
+        let lane: Int
     }
 
     private let resolve: Resolver
@@ -51,7 +59,7 @@ actor KwtSSHAcquisitionCoordinator {
     private let budget: SSHSessionBudget
     private var resolutions: [KwtSSHDestinationRequest: Resolution] = [:]
     private var subscribers: [UUID: Subscriber] = [:]
-    private var browserPrompts: [String: KwtSSHLeasePrompt] = [:]
+    private var browserPrompts: [LaneKey: KwtSSHLeasePrompt] = [:]
     private var nextOrder: UInt64 = 0
     /// Routes with a prompt on screen, and lease operations waiting to show
     /// theirs. Masters of one route authenticate separately, so their
@@ -101,28 +109,13 @@ actor KwtSSHAcquisitionCoordinator {
                 guard subscribers[subscriberID] != nil else {
                     throw CancellationError()
                 }
-                if canPresentPrompts, let notice = browserPrompts[route.routeIdentity] {
-                    _ = try await prompt(route, notice)
-                }
-                let leasePrompt: KwtSSHLeaseClient.PromptHandler = {
-                    [weak self] leasePrompt in
-                    guard let self else { throw CancellationError() }
-                    return try await answerPrompt(
-                        route: route,
-                        prompt: leasePrompt
-                    )
-                }
-                let hostKeyPolicy: KwtSSHHostKeyPolicy =
-                    canPresentPrompts ? .review : .strict
                 let connection = try await acquirePlaced(
                     purpose: purpose,
                     route: route,
                     subscriberID: subscriberID,
-                    hostKeyPolicy: hostKeyPolicy,
-                    prompt: leasePrompt
+                    canPresentPrompts: canPresentPrompts
                 )
                 subscribers.removeValue(forKey: subscriberID)
-                browserPrompts.removeValue(forKey: route.routeIdentity)
                 registerOverflow(for: connection, request: request)
                 return connection
             } catch {
@@ -159,8 +152,12 @@ actor KwtSSHAcquisitionCoordinator {
             }
         }
         if let routeIdentity {
-            if !subscribers.values.contains(where: { $0.routeIdentity == routeIdentity }) {
-                browserPrompts.removeValue(forKey: routeIdentity)
+            // Drop sign-in notices for masters nobody waits on any more.
+            browserPrompts = browserPrompts.filter { key, _ in
+                key.routeIdentity != routeIdentity
+                    || subscribers.values.contains {
+                        $0.routeIdentity == routeIdentity && $0.lane == key.lane
+                    }
             }
             for pool in lanes.activePools {
                 await pool.cancelAcquisition(
@@ -180,16 +177,32 @@ actor KwtSSHAcquisitionCoordinator {
         purpose: KwtSSHConnectionPurpose,
         route: KwtSSHRouteSnapshot,
         subscriberID: UUID,
-        hostKeyPolicy: KwtSSHHostKeyPolicy,
-        prompt: @escaping KwtSSHLeaseClient.PromptHandler
+        canPresentPrompts: Bool
     ) async throws -> KwtSSHConnection {
+        let hostKeyPolicy: KwtSSHHostKeyPolicy =
+            canPresentPrompts ? .review : .strict
         for index in 0 ..< KwtSSHConnectionLanes.maximumLanes {
+            let key = LaneKey(routeIdentity: route.routeIdentity, lane: index)
+            subscribers[subscriberID]?.lane = index
+            if canPresentPrompts, let notice = browserPrompts[key],
+               let subscriber = subscribers[subscriberID] {
+                _ = try await subscriber.prompt(route, notice)
+            }
             let connection = try await lanes.pool(index).acquire(
                 route: route,
                 subscriberID: subscriberID,
                 hostKeyPolicy: hostKeyPolicy,
-                prompt: prompt
+                prompt: { [weak self] leasePrompt in
+                    guard let self else { throw CancellationError() }
+                    return try await answerPrompt(
+                        route: route,
+                        lane: index,
+                        prompt: leasePrompt
+                    )
+                }
             )
+            // This master is connected, so its sign-in notice is done.
+            browserPrompts.removeValue(forKey: key)
             switch purpose {
             case .commands:
                 if budget.hasCommandRoom(arguments: connection.arguments) {
@@ -290,12 +303,13 @@ actor KwtSSHAcquisitionCoordinator {
 
     private func answerPrompt(
         route: KwtSSHRouteSnapshot,
+        lane: Int,
         prompt: KwtSSHLeasePrompt
     ) async throws -> String {
         await beginPrompt(routeIdentity: route.routeIdentity)
         defer { endPrompt(routeIdentity: route.routeIdentity) }
         try Task.checkCancellation()
-        return try await presentPrompt(route: route, prompt: prompt)
+        return try await presentPrompt(route: route, lane: lane, prompt: prompt)
     }
 
     private func beginPrompt(routeIdentity: String) async {
@@ -319,12 +333,20 @@ actor KwtSSHAcquisitionCoordinator {
         next.resume()
     }
 
+    /// Shows a master's prompt in the oldest window waiting on that master.
     private func presentPrompt(
         route: KwtSSHRouteSnapshot,
+        lane: Int,
         prompt: KwtSSHLeasePrompt
     ) async throws -> String {
         if prompt.kind == .browserAuthentication {
-            browserPrompts[route.routeIdentity] = prompt
+            browserPrompts[
+                LaneKey(routeIdentity: route.routeIdentity, lane: lane)
+            ] = prompt
+        }
+        func waits(_ subscriber: Subscriber?) -> Bool {
+            subscriber?.routeIdentity == route.routeIdentity
+                && subscriber?.lane == lane
         }
         var deliveredBrowserPrompt = false
         var attempted: Set<UUID> = []
@@ -333,7 +355,7 @@ actor KwtSSHAcquisitionCoordinator {
                 .filter({ id, subscriber in
                     !attempted.contains(id)
                         && subscriber.canPresentPrompts
-                        && subscriber.routeIdentity == route.routeIdentity
+                        && waits(subscriber)
                 })
                 .min(by: { $0.value.order < $1.value.order })
             else {
@@ -349,8 +371,7 @@ actor KwtSSHAcquisitionCoordinator {
             attempted.insert(candidate.key)
             do {
                 let response = try await candidate.value.prompt(route, prompt)
-                guard subscribers[candidate.key]?.routeIdentity
-                    == route.routeIdentity else { continue }
+                guard waits(subscribers[candidate.key]) else { continue }
                 if prompt.kind == .browserAuthentication {
                     deliveredBrowserPrompt = true
                 } else {

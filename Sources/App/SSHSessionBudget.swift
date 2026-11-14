@@ -279,26 +279,27 @@ final class SSHSessionBudget: @unchecked Sendable {
                 Self.cancellationPollInterval,
                 max(0, deadline.timeIntervalSinceNow)
             )
-            if semaphore.wait(timeout: .now() + slice) == .success {
-                return lock.withLock {
-                    // Turned away early only when terminals fill the master.
-                    waiter.granted ? .granted : .terminalsHoldEverySession
-                }
-            }
+            let signalled = semaphore.wait(timeout: .now() + slice) == .success
+            // A grant can arrive between polls, so check cancellation on
+            // every wake-up, including the one that brings the session.
             let cancelled = withUnsafeCurrentTask { $0?.isCancelled == true }
-            guard cancelled || Date() >= deadline else { continue }
+            guard signalled || cancelled || Date() >= deadline else { continue }
             return lock.withLock {
-                if waiter.settled {
-                    guard waiter.granted else { return .terminalsHoldEverySession }
-                    guard cancelled else { return .granted }
-                    // Granted just as the caller gave up: hand it back.
-                    releaseCommandLocked(path: path)
+                guard waiter.settled else {
+                    masters[path]?.waiters.removeAll { $0 === waiter }
+                    waiter.settle(granted: false)
+                    pruneLocked(path: path)
+                    return cancelled ? .cancelled : .timedOut
+                }
+                guard !cancelled else {
+                    // Granted as the caller gave up: hand it back unused.
+                    if waiter.granted {
+                        releaseCommandLocked(path: path)
+                    }
                     return .cancelled
                 }
-                masters[path]?.waiters.removeAll { $0 === waiter }
-                waiter.settle(granted: false)
-                pruneLocked(path: path)
-                return cancelled ? .cancelled : .timedOut
+                // Turned away early only when terminals fill the master.
+                return waiter.granted ? .granted : .terminalsHoldEverySession
             }
         }
     }

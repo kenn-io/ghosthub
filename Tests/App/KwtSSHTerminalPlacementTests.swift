@@ -404,6 +404,106 @@ struct KwtSSHTerminalPlacementTests {
         try await terminal.release()
     }
 
+    @Test("a master's prompt goes to a window waiting on that master")
+    func promptsReachWindowsWaitingOnTheirMaster() async throws {
+        let budget = SSHSessionBudget(sleep: { _ in })
+        let primaryLeases = LockedValue(0)
+        let laterRequestResolving = DispatchSemaphore(value: 0)
+        let resolveLaterRequest = DispatchSemaphore(value: 0)
+        let primaryReconnecting = DispatchSemaphore(value: 0)
+        let finishPrimaryReconnect = DispatchSemaphore(value: 0)
+        let secondMasterStarted = DispatchSemaphore(value: 0)
+        let promptSecondMaster = DispatchSemaphore(value: 0)
+        // The primary master's reconnect authenticates silently but slowly;
+        // the second master asks for a password.
+        let lanes = KwtSSHConnectionLanes(
+            primary: KwtSSHConnectionPool { route, _ in
+                primaryLeases.withLock { $0 += 1 }
+                if primaryLeases.load() > 1 {
+                    primaryReconnecting.signal()
+                    await PromptWindow.waitOffPool(finishPrimaryReconnect)
+                }
+                return KwtSSHTestLease(
+                    routeIdentity: route.routeIdentity,
+                    arguments: ["-F", "/dev/null", "-S", Self.socket(0)]
+                )
+            },
+            makePool: { lane in
+                KwtSSHConnectionPool { route, prompt in
+                    secondMasterStarted.signal()
+                    await PromptWindow.waitOffPool(promptSecondMaster)
+                    _ = try await prompt(Self.passwordPrompt("lane-\(lane)"))
+                    return KwtSSHTestLease(
+                        routeIdentity: route.routeIdentity,
+                        arguments: ["-F", "/dev/null", "-S", Self.socket(lane)]
+                    )
+                }
+            }
+        )
+        let laterRequest = KwtSSHDestinationRequest(
+            destination: "build-alias.example.test",
+            host: Self.request.host
+        )
+        let coordinator = KwtSSHAcquisitionCoordinator(
+            resolve: { request in
+                if request == laterRequest {
+                    laterRequestResolving.signal()
+                    await PromptWindow.waitOffPool(resolveLaterRequest)
+                }
+                return .fixture(routeIdentity: "sha256:placement")
+            },
+            lanes: lanes,
+            budget: budget
+        )
+        let shownIn = LockedValue<[String]>([])
+        func acquire(
+            _ request: KwtSSHDestinationRequest,
+            window: String,
+            purpose: KwtSSHConnectionPurpose
+        ) async throws -> KwtSSHConnection {
+            try await coordinator.acquire(
+                request: request,
+                subscriberID: UUID(),
+                canPresentPrompts: true,
+                purpose: purpose,
+                prompt: { _, _ in
+                    shownIn.withLock { $0.append(window) }
+                    return "secret"
+                }
+            )
+        }
+        // One terminal fills the primary master once its one-session limit
+        // is learned.
+        let terminal = try await Self.launchedTerminal(coordinator)
+        await Self.refuseNextSession(budget: budget, arguments: terminal.arguments)
+
+        // The older window is still resolving its route.
+        let older = Task {
+            try await acquire(laterRequest, window: "older", purpose: .commands)
+        }
+        await PromptWindow.waitOffPool(laterRequestResolving)
+        // The newer window needs the second master for its terminal.
+        let newer = Task {
+            try await acquire(Self.request, window: "newer", purpose: .terminal)
+        }
+        await PromptWindow.waitOffPool(secondMasterStarted)
+        // The primary master drops, so the older window waits for it to
+        // reconnect when its route resolves.
+        await terminal.invalidate()
+        resolveLaterRequest.signal()
+        await PromptWindow.waitOffPool(primaryReconnecting)
+        promptSecondMaster.signal()
+
+        let newerConnection = try await newer.value
+        finishPrimaryReconnect.signal()
+        let olderConnection = try await older.value
+        #expect(shownIn.load() == ["newer"])
+        #expect(Self.controlPath(newerConnection) == Self.socket(1))
+        try await newerConnection.release()
+        try await olderConnection.release()
+        try await terminal.release()
+    }
+
     @Test("more stranded commands than worker threads all reach another master")
     func strandedCommandsBeyondTheWorkerPoolOverflow() async throws {
         let leases = LockedValue<[Int: Int]>([:])
