@@ -36,6 +36,6 @@ jobs:
         working-directory: docs
         run: uv run --frozen ./zensical-docs.sh build
       - name: Check that pages paint with their stylesheets and fonts
-        uses: kenn-io/actions/first-paint@1791c94d02222ed022f31d41eab3118e4f4fcc15 # main
+        uses: kenn-io/actions/first-paint@33ced853fa88b70eb178ecd40ec74ef64420479d # main
         with:
           dist: docs/site
