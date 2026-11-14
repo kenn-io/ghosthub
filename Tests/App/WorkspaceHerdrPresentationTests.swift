@@ -146,11 +146,13 @@ struct WorkspaceHerdrPresentationTests {
         await waitUntilMainActor { probeStarted.withLock { $0 } }
         #expect(window.firstResponder !== input)
         #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(store.surface.isKeyboardInteractionSuspended)
         let requestsBeforeReturn = store.surface.keyboardFocusRequestCount
 
         model.selectFromUser(WorkspaceSelection(selectedHostID: environment.hostID))
         model.openBorrowedTmuxSession(tmux)
         #expect(store.surface.keyboardFocusRequestCount == requestsBeforeReturn + 1)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
 
         releaseProbe.open()
         await #expect(throws: CancellationError.self) {
@@ -158,6 +160,62 @@ struct WorkspaceHerdrPresentationTests {
         }
         #expect(model.activeBorrowedTmuxSelection == tmux)
         #expect(model.activeBorrowedHerdrSelection == nil)
+        await model.shutdown()
+    }
+
+    @Test("a tmux session held by a replaced Herdr check takes input again")
+    func replacedHerdrCheckReleasesEarlierTmux() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].tmuxSessions.append(
+            TmuxSessionSummary(name: "tmux-other", managed: false, windows: [])
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let sessions = try #require(
+            environment.snapshot.host(id: environment.hostID)?.herdrSessions
+        )
+        let gates = [AsyncGate(), AsyncGate()]
+        let probes = Mutex(0)
+        let model = try makeHerdrModel(
+            environment, store: store,
+            validationDiscovery: { _, _ in
+                let probe = probes.withLock { count in
+                    defer { count += 1 }
+                    return count
+                }
+                if probe < gates.count {
+                    await gates[probe].wait()
+                }
+                return .available(sessions)
+            }
+        )
+        let first = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-work")
+        let second = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-other")
+        let herdr = WorkspaceHerdrSessionSelection(hostID: environment.hostID, name: "worker")
+        for selection in [second, first] {
+            model.openBorrowedTmuxSession(selection)
+            await waitUntilMainActor {
+                model.prepareActiveBorrowedTmuxSurface()
+                return model.retainedBorrowedTmuxHandle(for: selection) != nil
+            }
+        }
+
+        let replaced = Task { try await model.openBorrowedHerdrSession(herdr) }
+        await waitUntilMainActor { probes.withLock { $0 } == 1 }
+        model.selectFromUser(WorkspaceSelection(selectedHostID: environment.hostID))
+        model.openBorrowedTmuxSession(second)
+        let replacing = Task { try await model.openBorrowedHerdrSession(herdr) }
+        await waitUntilMainActor { probes.withLock { $0 } == 2 }
+
+        gates[0].open()
+        await #expect(throws: CancellationError.self) { try await replaced.value }
+        gates[1].open()
+        try await replacing.value
+        #expect(model.activeBorrowedHerdrSelection == herdr)
+
+        model.openBorrowedTmuxSession(first)
+        model.prepareActiveBorrowedTmuxSurface()
+        #expect(model.activeBorrowedTmuxSelection == first)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
         await model.shutdown()
     }
 

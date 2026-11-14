@@ -800,6 +800,7 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var terminalOperationErrorMessage: String?
     var terminalFindController = TerminalFindController.unavailable
     var hasEffectiveKeyboardFocus = false
+    var isKeyboardInteractionSuspended = false
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     /// Mutable so a test can fail one attach and let the next succeed, which is
     /// how a transient surface failure behaves in practice.

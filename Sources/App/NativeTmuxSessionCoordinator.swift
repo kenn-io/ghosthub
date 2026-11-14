@@ -216,6 +216,7 @@ final class NativeTmuxSessionCoordinator {
     private var surfaceLaunchFailureIDs: [UUID: UUID] = [:]
     private var launchedAttachmentIDs: [UUID: UUID] = [:]
     private var closedLaunchedHandles: Set<UUID> = []
+    private var keyboardSuspendedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
     private let tmuxResolutionCache = NativeTmuxResolutionCache()
     private var provisioningHandles: Set<UUID> = []
@@ -722,6 +723,7 @@ final class NativeTmuxSessionCoordinator {
         surfaceLaunchFailureIDs.removeValue(forKey: handle.id)
         launchedAttachmentIDs.removeValue(forKey: handle.id)
         closedLaunchedHandles.remove(handle.id)
+        keyboardSuspendedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
         deferredPresentationStyleHandles.remove(handle.id)
         pendingSizingByHandle.removeValue(forKey: handle.id)
@@ -1075,6 +1077,21 @@ final class NativeTmuxSessionCoordinator {
         terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?.requestKeyboardFocus()
     }
 
+    /// Keeps a session on screen but stops it taking keystrokes, such as
+    /// while Ghosthub checks the session that will replace it.
+    func setKeyboardInteractionSuspended(
+        _ suspended: Bool,
+        handle: BorrowedTmuxSessionHandle
+    ) {
+        if suspended {
+            keyboardSuspendedHandles.insert(handle.id)
+        } else {
+            keyboardSuspendedHandles.remove(handle.id)
+        }
+        terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?
+            .isKeyboardInteractionSuspended = suspended
+    }
+
     func surface(handle: BorrowedTmuxSessionHandle) -> TerminalSurfaceView? {
         guard attachmentClosures[handle.id] == nil,
               let attachment = attachments[handle.id]
@@ -1159,6 +1176,8 @@ final class NativeTmuxSessionCoordinator {
         if didCreateSurface {
             surface.terminalFindController = .unavailable
         }
+        surface.isKeyboardInteractionSuspended =
+            keyboardSuspendedHandles.contains(handle.id)
         if isFirstLaunch, appliesPresentationStyle,
            presentationStyle == nil {
             deferredPresentationStyleHandles.insert(handle.id)

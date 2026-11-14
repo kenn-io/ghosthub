@@ -397,9 +397,8 @@ final class NativeHerdrSessionCoordinator {
         } else {
             keyboardSuspendedHandles.remove(handle.id)
         }
-        let view = terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))
-            as? TerminalSurfaceView
-        view?.isKeyboardInteractionSuspended = suspended
+        terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?
+            .isKeyboardInteractionSuspended = suspended
     }
 
     func requestKeyboardFocus(handle: BorrowedHerdrSessionHandle) {
@@ -443,7 +442,7 @@ final class NativeHerdrSessionCoordinator {
             return nil
         }
         surface.terminalFindController = .unavailable
-        (surface as? TerminalSurfaceView)?.isKeyboardInteractionSuspended =
+        surface.isKeyboardInteractionSuspended =
             keyboardSuspendedHandles.contains(handle.id)
         if let error = surface.launchError {
             failSurfaceLaunch(
