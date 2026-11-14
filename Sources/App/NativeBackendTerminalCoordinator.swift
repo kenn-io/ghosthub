@@ -130,13 +130,16 @@ final class NativeBackendTerminalCoordinator {
                     sshConnection = nil
                     connection = SSHConnectionArgumentsSnapshot(arguments: [])
                 }
-                let probe = Task.detached(priority: .userInitiated) {
+                let resolution = await BlockingTask.run(priority: .userInitiated) {
                     executableProvider(selection.kind, host, connection.arguments)
                 }
-                let resolution = await withTaskCancellationHandler {
-                    await probe.value
-                } onCancel: {
-                    probe.cancel()
+                // Setup probes ran beside the terminal's place; its own
+                // session counts from here, just before it launches.
+                do {
+                    try await sshConnection?.activateSessionReservation()
+                } catch {
+                    try? await sshConnection?.release()
+                    throw error
                 }
                 self?.finishAttach(
                     handle: handle,

@@ -37,9 +37,11 @@ public enum HerdrSessionLifecycleError:
         case .defaultSessionCannotBeDeleted:
             "Herdr's default session cannot be deleted."
         case let .commandFailed(status, _, message):
-            message.isEmpty
-                ? "Herdr exited with status \(status)."
-                : "Herdr exited with status \(status): \(message)"
+            SSHSessionRefusal.describeCommandFailure(
+                tool: "Herdr",
+                status: status,
+                detail: message
+            )
         case .missingMarker:
             "Herdr returned output without Ghosthub's lifecycle marker."
         case .malformedJSON:

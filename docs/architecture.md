@@ -556,6 +556,47 @@ to the lease's fail-closed proxy (a lost or refused control socket); it is
 released once its last owner lets go, and the next borrow acquires a fresh
 lease. Application shutdown releases every owned lease.
 
+Each multiplexed terminal or command is one SSH session on its master, and
+sshd limits sessions per connection (`MaxSessions`, 10 by default). Ghosthub
+counts the sessions it opens on each master, keyed by control socket:
+
+- A terminal claims a place on a master when its connection is acquired.
+  Terminals claim a master only up to their share, which leaves up to three
+  sessions for commands (7 of 10 at the default). Reconnect checks that only
+  run commands borrow a command connection and claim no place.
+- A terminal's session counts from just before it launches until it closes.
+  Its setup probes run first as ordinary commands, so they never wait on the
+  terminal's own session. A launch waits ahead of queued commands for a free
+  session. If launched terminals already hold every session, the launch fails
+  as retryable and reconnect places the terminal on another master.
+- A short-lived command, including a helper upload, waits in arrival order
+  for a free session instead of being refused by the server. Cancelling the
+  caller removes a queued command before it starts.
+- When the server refuses a session anyway, Ghosthub lowers that master's
+  capacity to the sessions it had open beside the refused one. A refusal with
+  nothing else counted means another client holds the sessions, so Ghosthub
+  backs off without lowering capacity.
+- A terminal that does not fit uses the route's next master. Kwt leases up to
+  16 masters per route with `kwt ssh lease --connection <n>`.
+- A command turned away because launched terminals hold every session on its
+  master never started, so it runs once on another master of the same route.
+  This covers inventory and an attachment's own pane, find, and paste
+  commands. The replacement master is leased without prompts and must report
+  the same route identity; otherwise the command reports that terminals fill
+  the connection.
+- Commands wait on dispatch threads (`BlockingTask`), not on Swift's shared
+  worker pool, which has one thread per core. Leasing the replacement master
+  is async work on that pool, so any number of waiting commands leaves it
+  free to run.
+
+A new master authenticates on its own, so a host that asks for a password or
+one-time code prompts again when Ghosthub opens a second master. A master's
+prompt goes only to a window waiting on that master. Prompts from different
+masters of one route take turns, so a window never receives a second prompt
+while it shows one. Sessions opened by `kwt ssh exec` for worktree
+mutations are not counted; a refusal they cause is handled by the same
+learning and backoff.
+
 Acquisition is shared across windows in two stages: one resolution per
 normalized destination, then one route-scoped lease operation after kwt returns
 the route identity. Every new ownership boundary resolves again, so edits to

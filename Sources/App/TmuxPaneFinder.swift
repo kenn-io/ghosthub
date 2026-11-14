@@ -66,7 +66,7 @@ struct TmuxPaneFinder: Sendable {
             hookIndex: hookIndex
         )
         let runner = runner
-        let task = Task.detached(priority: .userInitiated) {
+        let result = await BlockingTask.run(priority: .userInitiated) {
             guard !Task.isCancelled else {
                 return (status: Int32(0), diagnostic: "")
             }
@@ -76,20 +76,15 @@ struct TmuxPaneFinder: Sendable {
                 rendered
             )
         }
-        let result = await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
-        }
         if Task.isCancelled {
             let cleanup = TmuxAttachedClientGuard.cleanupCommand(
                 tmuxPath: target.tmuxPath,
                 socketName: target.socketName,
                 hookIndex: hookIndex
             )
-            _ = await Task.detached(priority: .userInitiated) {
+            _ = await BlockingTask.runToCompletion(priority: .userInitiated) {
                 runner(target.host, target.sshConnectionArguments, cleanup)
-            }.value
+            }
             return .success(nil)
         }
 
@@ -255,30 +250,43 @@ struct TmuxPaneFinder: Sendable {
             )
             return (result.status, result.stdout)
         case let .ssh(info):
-            var arguments = [
-                "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            ]
-            arguments += sshConnectionArguments
-            if let port = info.port {
-                arguments += ["-p", String(port)]
-            }
-            let destination = info.user.map { "\($0)@\(info.hostname)" }
-                ?? info.hostname
-            arguments += [
-                "--",
-                destination,
-                AccountCommandRunner.remoteLoginCommand(
-                    host: info,
-                    command: command
-                ),
-            ]
-            let result = AccountCommandRunner.runProcessInLoginShell(
-                executable: "/usr/bin/ssh",
-                arguments: arguments,
+            // Standard error is merged into the diagnostic, which is where
+            // a refused session reports itself.
+            let output = SSHSessionBudget.shared.run(
+                arguments: sshConnectionArguments,
                 timeout: 15,
-                captureStandardError: true
-            )
-            return (result.status, result.stdout)
+                retryRefusal: true
+            ) { sshConnectionArguments in
+                var arguments = [
+                    "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                ]
+                arguments += sshConnectionArguments
+                if let port = info.port {
+                    arguments += ["-p", String(port)]
+                }
+                let destination = info.user.map { "\($0)@\(info.hostname)" }
+                    ?? info.hostname
+                arguments += [
+                    "--",
+                    destination,
+                    AccountCommandRunner.remoteLoginCommand(
+                        host: info,
+                        command: command
+                    ),
+                ]
+                let result = AccountCommandRunner.runProcessInLoginShell(
+                    executable: "/usr/bin/ssh",
+                    arguments: arguments,
+                    timeout: 15,
+                    captureStandardError: true
+                )
+                return AccountCommandOutput(
+                    status: result.status,
+                    stdout: result.stdout,
+                    stderr: result.stdout
+                )
+            }
+            return (output.status, output.stdout)
         }
     }
 }
