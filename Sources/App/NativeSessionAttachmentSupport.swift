@@ -15,6 +15,8 @@ protocol NativeSessionPaneSurfacing: AnyObject {
     var terminalOperationErrorMessage: String? { get set }
     var terminalFindController: TerminalFindController { get set }
     var hasEffectiveKeyboardFocus: Bool { get }
+    /// Keeps the surface on screen but stops it taking keystrokes or focus.
+    var isKeyboardInteractionSuspended: Bool { get set }
     var launchError: Error? { get }
     /// True when `launchError` describes a transient condition that a later
     /// attach can recover from, rather than a rejected launch.
@@ -54,6 +56,11 @@ extension NativeSessionPaneSurfacing {
     }
 
     var hasEffectiveKeyboardFocus: Bool { false }
+
+    var isKeyboardInteractionSuspended: Bool {
+        get { false }
+        set {}
+    }
 
     var launchFailureIsRetryable: Bool { false }
 

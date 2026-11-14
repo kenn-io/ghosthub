@@ -146,11 +146,13 @@ struct WorkspaceHerdrPresentationTests {
         await waitUntilMainActor { probeStarted.withLock { $0 } }
         #expect(window.firstResponder !== input)
         #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(store.surface.isKeyboardInteractionSuspended)
         let requestsBeforeReturn = store.surface.keyboardFocusRequestCount
 
         model.selectFromUser(WorkspaceSelection(selectedHostID: environment.hostID))
         model.openBorrowedTmuxSession(tmux)
         #expect(store.surface.keyboardFocusRequestCount == requestsBeforeReturn + 1)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
 
         releaseProbe.open()
         await #expect(throws: CancellationError.self) {

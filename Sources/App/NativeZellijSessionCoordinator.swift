@@ -47,6 +47,7 @@ final class NativeZellijSessionCoordinator {
         UUID: BorrowedSessionAttachmentClosure
     ] = [:]
     private var launchedHandles: Set<UUID> = []
+    private var keyboardSuspendedHandles: Set<UUID> = []
     private var reportedConnectedAttachmentIDs: [UUID: UUID] = [:]
     private var provisioningTasks: [UUID: Task<Void, Never>] = [:]
     private var isShuttingDown = false
@@ -286,6 +287,7 @@ final class NativeZellijSessionCoordinator {
         attachmentClosures.removeValue(forKey: handle.id)
         launchedHandles.remove(handle.id)
         reportedConnectedAttachmentIDs.removeValue(forKey: handle.id)
+        keyboardSuspendedHandles.remove(handle.id)
         terminalCoordinator.removeSurface(for: surfaceKey(handle))
     }
 
@@ -307,6 +309,21 @@ final class NativeZellijSessionCoordinator {
 
     func requestKeyboardFocus(handle: BorrowedZellijSessionHandle) {
         terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?.requestKeyboardFocus()
+    }
+
+    /// Keeps a session on screen but stops it taking keystrokes, such as
+    /// while Ghosthub checks the session that will replace it.
+    func setKeyboardInteractionSuspended(
+        _ suspended: Bool,
+        handle: BorrowedZellijSessionHandle
+    ) {
+        if suspended {
+            keyboardSuspendedHandles.insert(handle.id)
+        } else {
+            keyboardSuspendedHandles.remove(handle.id)
+        }
+        terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?
+            .isKeyboardInteractionSuspended = suspended
     }
 
     func surface(handle: BorrowedZellijSessionHandle) -> TerminalSurfaceView? {
@@ -344,6 +361,8 @@ final class NativeZellijSessionCoordinator {
             return nil
         }
         surface.terminalFindController = .unavailable
+        surface.isKeyboardInteractionSuspended =
+            keyboardSuspendedHandles.contains(handle.id)
         if let error = surface.launchError {
             failSurfaceLaunch(
                 handle,

@@ -473,6 +473,7 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBorrowedZellijRecoveryState:
         NativeSessionRecoveryState?
     private var zellijPresentationTask: Task<Void, Never>?
+    private var zellijSessionCheckHold: SessionCheckHold?
     private struct ZellijPresentationIntent {
         var id: UUID
         var selection: WorkspaceZellijSessionSelection
@@ -2313,11 +2314,18 @@ final class WorkspaceSceneModel: ObservableObject {
         invalidateZellijPresentationIntent()
     }
 
+    private func releaseZellijSessionCheckHold() {
+        guard let hold = zellijSessionCheckHold else { return }
+        zellijSessionCheckHold = nil
+        releaseSessionsAfterSessionCheck(hold)
+    }
+
     private func invalidateZellijPresentationIntent() {
         zellijPresentationRevision &+= 1
         zellijPresentationTask?.cancel()
         zellijPresentationTask = nil
         zellijPresentationIntent = nil
+        releaseZellijSessionCheckHold()
     }
 
     private func applyRestoredSelection(_ restored: WorkspaceSelection) {
@@ -8964,8 +8972,11 @@ final class WorkspaceSceneModel: ObservableObject {
            let handle = activeBorrowedZellijHandle,
            nativeZellijSessionCoordinator.attachmentClosure(handle) == nil {
             // The surface stays on screen, so its appear-time focus does not
-            // rerun. A Herdr open superseded by this return may have cleared
-            // the window's first responder while it validated.
+            // rerun. A session open superseded by this return may have held
+            // its input and cleared the window's first responder.
+            nativeZellijSessionCoordinator.setKeyboardInteractionSuspended(
+                false, handle: handle
+            )
             nativeZellijSessionCoordinator.requestKeyboardFocus(handle: handle)
             return
         }
@@ -9212,12 +9223,18 @@ final class WorkspaceSceneModel: ObservableObject {
         zellijPresentationIntent = intent
         guard !zellijSessionKillCoordinator.isPending(killKey) else { return }
         let killRevision = zellijSessionKillCoordinator.revision(for: killKey)
+        // The current view stays while the session is checked, but it must
+        // not take the keystrokes meant for the Zellij session.
+        if activeBorrowedZellijSelection != selection {
+            zellijSessionCheckHold = holdSessionsForSessionCheck()
+        }
         zellijPresentationTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 if zellijPresentationIntent?.id == intent.id {
                     zellijPresentationTask = nil
                     zellijPresentationIntent = nil
+                    releaseZellijSessionCheckHold()
                 }
             }
             let validation = await validatedZellijSession(on: host)
@@ -9589,21 +9606,15 @@ final class WorkspaceSceneModel: ObservableObject {
         let validationID = UUID()
         herdrPresentationValidationID = validationID
         let previousHandle = activeBorrowedHerdrHandle
-        var previousBackendHandle: BorrowedBackendTerminalHandle?
-        if activeBorrowedHerdrSelection != selection {
-            if let previousHandle {
-                nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(
-                    true, handle: previousHandle
-                )
-            }
-            previousBackendHandle = holdBackendTerminalForSessionCheck()
-            workspaceWindow?.makeFirstResponder(nil)
-        }
+        // Reselecting the shown session holds nothing, but still gives it
+        // input back if an earlier check left it held.
+        let hold = activeBorrowedHerdrSelection != selection
+            ? holdSessionsForSessionCheck()
+            : SessionCheckHold(herdr: previousHandle)
         defer {
             if herdrPresentationValidationID == validationID {
                 herdrPresentationValidationID = nil
-                releaseHerdrSessionAfterSessionCheck(previousHandle)
-                releaseBackendTerminalAfterSessionCheck(previousBackendHandle)
+                releaseSessionsAfterSessionCheck(hold)
             }
         }
         let validation = try await revalidatedHerdrSession(selection)
@@ -10582,10 +10593,14 @@ final class WorkspaceSceneModel: ObservableObject {
                         && activeBorrowedTmuxHandle == retained.handle
                     activateTmuxPresentation(retained)
                     // A shown terminal stays mounted, so its appear-time
-                    // focus does not rerun. A Herdr open superseded by this
-                    // return may have cleared the window's first responder.
+                    // focus does not rerun. A session open superseded by
+                    // this return may have held the terminal's input and
+                    // cleared the window's first responder.
                     if returnsToShownTerminal,
                        activeBorrowedTmuxHandle == retained.handle {
+                        nativeTmuxSessionCoordinator.setKeyboardInteractionSuspended(
+                            false, handle: retained.handle
+                        )
                         nativeTmuxSessionCoordinator.requestKeyboardFocus(
                             handle: retained.handle
                         )
@@ -15527,7 +15542,7 @@ extension WorkspaceSceneModel {
                 false, handle: handle
             )
             nativeBackendTerminalCoordinator.requestKeyboardFocus(handle: handle)
-            releaseBackendTerminalAfterSessionCheck(nil)
+            releaseSessionsAfterSessionCheck(SessionCheckHold())
             return
         }
         cancelPendingTmuxPreviewActivations()
@@ -15535,14 +15550,11 @@ extension WorkspaceSceneModel {
         // but it must not take the keystrokes meant for the new one.
         let validationID = UUID()
         backendTerminalPresentationValidationID = validationID
-        let previousHandle = holdBackendTerminalForSessionCheck()
-        let previousHerdrHandle = holdHerdrSessionForSessionCheck()
-        workspaceWindow?.makeFirstResponder(nil)
+        let hold = holdSessionsForSessionCheck()
         defer {
             if backendTerminalPresentationValidationID == validationID {
                 backendTerminalPresentationValidationID = nil
-                releaseBackendTerminalAfterSessionCheck(previousHandle)
-                releaseHerdrSessionAfterSessionCheck(previousHerdrHandle)
+                releaseSessionsAfterSessionCheck(hold)
             }
         }
         let validated = try await validatedBackendTerminal(
@@ -15738,48 +15750,74 @@ extension WorkspaceSceneModel {
         invalidateZellijPresentationIntent()
     }
 
-    /// A Herdr session or backend terminal open is checking its target
-    /// before it replaces the view on screen.
+    /// A Herdr session, Zellij session, or backend terminal open is
+    /// checking its target before it replaces the view on screen.
     var isCheckingSessionPresentation: Bool {
-        herdrPresentationValidationID != nil || backendTerminalPresentationValidationID != nil
+        herdrPresentationValidationID != nil
+            || backendTerminalPresentationValidationID != nil
+            || zellijPresentationTask != nil
     }
 
-    /// Keeps the backend terminal on screen during another session's check,
-    /// but stops it taking keystrokes and holds its reconnect, which would
-    /// otherwise replace it with a view that takes input.
-    func holdBackendTerminalForSessionCheck() -> BorrowedBackendTerminalHandle? {
+    /// The views a session check stopped taking keystrokes, so the check
+    /// gives input back to the same views when it ends.
+    struct SessionCheckHold {
+        var tmux: BorrowedTmuxSessionHandle?
+        var herdr: BorrowedHerdrSessionHandle?
+        var zellij: BorrowedZellijSessionHandle?
+        var backendTerminal: BorrowedBackendTerminalHandle?
+    }
+
+    /// Keeps the current view on screen during another session's check, but
+    /// stops it taking keystrokes and holds the backend terminal reconnect,
+    /// which would otherwise replace it with a view that takes input.
+    func holdSessionsForSessionCheck() -> SessionCheckHold {
         if backendTerminalReconnectSupervisor.isRunning,
            let active = activeBackendTerminalSelection {
             backendTerminalReconnectSupervisor.cancel()
             pausedBackendTerminalReconnect = active
         }
-        guard let handle = activeBackendTerminalHandle else { return nil }
-        nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(true, handle: handle)
-        return handle
+        let hold = SessionCheckHold(
+            tmux: activeBorrowedTmuxHandle,
+            herdr: activeBorrowedHerdrHandle,
+            zellij: activeBorrowedZellijHandle,
+            backendTerminal: activeBackendTerminalHandle
+        )
+        setKeyboardInteractionSuspended(true, for: hold)
+        workspaceWindow?.makeFirstResponder(nil)
+        return hold
     }
 
     /// Gives input and the reconnect back once no session check remains.
-    func releaseBackendTerminalAfterSessionCheck(_ handle: BorrowedBackendTerminalHandle?) {
+    func releaseSessionsAfterSessionCheck(_ hold: SessionCheckHold) {
         guard !isCheckingSessionPresentation else { return }
-        if let handle {
-            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
-                false, handle: handle
-            )
-        }
+        setKeyboardInteractionSuspended(false, for: hold)
         resumePausedBackendTerminalReconnect()
     }
 
-    /// Keeps the Herdr session on screen during another session's check,
-    /// but stops it taking keystrokes.
-    func holdHerdrSessionForSessionCheck() -> BorrowedHerdrSessionHandle? {
-        guard let handle = activeBorrowedHerdrHandle else { return nil }
-        nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(true, handle: handle)
-        return handle
-    }
-
-    func releaseHerdrSessionAfterSessionCheck(_ handle: BorrowedHerdrSessionHandle?) {
-        guard !isCheckingSessionPresentation, let handle else { return }
-        nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(false, handle: handle)
+    private func setKeyboardInteractionSuspended(
+        _ suspended: Bool,
+        for hold: SessionCheckHold
+    ) {
+        if let handle = hold.tmux {
+            nativeTmuxSessionCoordinator.setKeyboardInteractionSuspended(
+                suspended, handle: handle
+            )
+        }
+        if let handle = hold.herdr {
+            nativeHerdrSessionCoordinator.setKeyboardInteractionSuspended(
+                suspended, handle: handle
+            )
+        }
+        if let handle = hold.zellij {
+            nativeZellijSessionCoordinator.setKeyboardInteractionSuspended(
+                suspended, handle: handle
+            )
+        }
+        if let handle = hold.backendTerminal {
+            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
+                suspended, handle: handle
+            )
+        }
     }
 
     /// Withdraws this terminal's approval request so it cannot block a
