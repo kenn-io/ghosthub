@@ -5,8 +5,8 @@ icon: lucide/keyboard
 
 # Keyboard shortcuts
 
-Move between sessions, search terminal history, and open windows with the
-shortcuts below. Open **Settings → Keyboard** to record, clear, or restore a
+On macOS, move between sessions, search terminal history, and open windows
+with the shortcuts below. For the Rust app, see [Windows and Linux](#windows-and-linux). Open **Settings → Keyboard** to record, clear, or restore a
 Ghosthub shortcut. Tmux, Herdr, Zellij, and programs inside the terminal keep
 their own shortcuts.
 
@@ -116,6 +116,48 @@ Keyboard pane and application log report the error without rewriting the
 invalid file. Unknown action names are preserved for forward compatibility.
 
 Choose **Ghosthub → Reload Configuration** after editing the file manually.
+
+## Windows and Linux
+
+The Rust app has three configurable shortcuts:
+
+| Action | Default |
+| --- | --- |
+| Toggle Sidebar | **Ctrl+Shift+B** |
+| Next Session | **Ctrl+Tab** |
+| Previous Session | **Ctrl+Shift+Tab** |
+
+Open the gear button, then **Keyboard**. Click a shortcut and press its new
+combination. **Escape** cancels recording. **Clear** disables the action, and
+**Restore Default** restores its original binding. Changes save immediately
+and apply to every open window. Recording stops if you leave the window or
+choose another Settings pane.
+
+![Custom sidebar and session-navigation shortcuts in the Rust app](/docs/assets/guide-rust-keyboard.png)
+
+Include **Ctrl** or **Alt** in each binding. The recorder keeps the previous
+binding when it reports a conflict with another action, Paste, or an operating
+system shortcut. **Ctrl+Shift+V** remains reserved for Paste.
+
+Next and Previous Session follow the available session rows on the active
+session's host, including the chosen sort and visibility settings. Stopped
+Herdr sessions are skipped. From a project worktree hidden from those rows,
+they select the first or last available session. When there is no destination,
+the shortcut reaches the terminal.
+
+Configuration tools can edit the same overrides in `config.toml`:
+
+```toml
+[keyboard.shortcuts]
+toggle-sidebar = "alt+b"
+next-session = "alt+right"
+previous-session = "none"
+```
+
+Remove an entry to use its default. Restart Ghosthub after editing the file
+outside Settings. Invalid or conflicting shortcuts produce a startup diagnostic;
+fix the file before opening the app. The Rust app currently exposes only these
+three actions; other macOS application shortcuts remain parity work.
 
 ## Multiplexer ownership
 

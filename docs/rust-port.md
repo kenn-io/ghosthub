@@ -1788,6 +1788,17 @@ custom session name is unmanaged. Submission checks ownership again.
 Missing bundled tooling leaves ownership unknown and keeps cached workspace
 records. Developer builds need the bundled helper to enable Rename.
 
+Settings → **Keyboard** records, clears, and restores shortcuts for Toggle
+Sidebar and next/previous session navigation. Changes use the existing atomic
+config writer and preserve other windows' latest settings. Ctrl or Alt is
+required; action conflicts, Paste, and reserved system chords are rejected.
+The focused view handles each key before application shortcut dispatch, so
+recording can reject a configured chord and retained terminal key sequences
+keep their repeat/release events. Unavailable navigation remains terminal input.
+Keyboard edits leave host inventory and active clients in place. Recording ends
+on Escape, pane changes, or window deactivation. The runtime API exposes the
+same preferences and validated per-action edits to other consumers.
+
 Settings → **Worktrees** edits hidden tmux session patterns, one per line.
 Patterns match whole names on every host: `*` matches zero or more characters,
 and `?` matches one Unicode character. Edits persist immediately under
@@ -1836,7 +1847,7 @@ The parity inventory is:
 | Appearance | Built-in themes, Custom colors, installed-font and size pickers, live preview, and atomic persistence |
 | Sidebar | Shared session list; Manual, Name, Backend, and Needs Attention sorting; saved drag order; Chip, Text, or Dot labels; Regular or Compact rows; worktree-session and root-checkout visibility; live preview |
 | Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, remote clipboard writes, and atomic persistence |
-| Keyboard | Runtime shortcuts exist; pane not yet implemented |
+| Keyboard | Record, clear, and restore Toggle Sidebar and next/previous session shortcuts; validate conflicts; save immediately across windows; remaining actions follow their feature work |
 | Worktrees | Saved wildcard patterns hide tmux rows from the sidebar and sibling navigation; project worktrees and terminals stay available |
 | Agents | Live approval, input, and working badges; per-host hook status and explicit installation in Hosts; completion acknowledgement and the dedicated Agents pane remain unimplemented |
 | Privacy | Anonymous usage-reporting preference not yet implemented |
@@ -1884,6 +1895,12 @@ hide-root-checkout = false
 session-order = [] # Saved by dragging rows in Manual mode.
 hidden-session-patterns = [] # Case-sensitive whole-name wildcards: * and ?.
 
+[keyboard.shortcuts]
+# Overrides only; omitted actions keep their defaults. "none" disables one.
+toggle-sidebar = "alt+b"
+next-session = "alt+right"
+previous-session = "none"
+
 [[ssh-host]]
 name = "Studio"
 hostname = "studio.example"
@@ -1894,7 +1911,7 @@ tmux-binary = "/opt/homebrew/bin/tmux"
 socket-directory = "/run/user/1000/tmux"
 ~~~
 
-Every WSL, terminal, and sidebar field is optional. SSH host name and hostname are
+Every WSL, terminal, sidebar, and keyboard field is optional. SSH host name and hostname are
 required, while user, port, tmux path override, and socket directory are
 optional. Ghosthub resolves tmux, Herdr, and Zellij through the remote login
 environment by default; an explicit tmux path remains available for unusual

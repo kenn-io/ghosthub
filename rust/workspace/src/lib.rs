@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use config::{ApplicationConfig, Roots, SshHostSettings, TerminalAppearance};
-pub use config::{CursorStyle, TerminalTheme};
+pub use config::{CursorStyle, KeyChord, KeyboardPreferences, ShortcutAction, TerminalTheme};
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
     HostSnapshot, KwtInventory, KwtPullRequestImportRequest, KwtSshExecutable, LiveSessionTarget,
@@ -33,6 +33,7 @@ use terminal::{
 };
 
 mod agent_hooks;
+mod keyboard;
 mod pump;
 mod remote_attention;
 mod remote_herdr;

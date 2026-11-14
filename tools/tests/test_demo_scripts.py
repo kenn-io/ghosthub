@@ -38,6 +38,7 @@ WEBSITE_ASSET_NAMES = (
     "guide-rust-session-patterns.png",
     "guide-rust-agent-attention.png",
     "guide-rust-agent-hooks.png",
+    "guide-rust-keyboard.png",
     "guide-rust-collapsed-host.png",
     "guide-rust-sidebar-settings.png",
     "guide-rust-session-actions.png",

@@ -12,11 +12,9 @@ use workspace::{
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[test]
-fn sidebar_edits_merge_across_windows_and_survive_restart_without_changing_hosts() {
-    use workspace::{BackendLabel, SidebarRowHeight, SidebarSort};
+fn settings_fixture() -> (std::path::PathBuf, Roots, Workspace) {
     let root = std::env::temp_dir().join(format!(
-        "ghosthub-sidebar-{}-{}",
+        "ghosthub-settings-{}-{}",
         std::process::id(),
         TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
@@ -41,6 +39,103 @@ fn sidebar_edits_merge_across_windows_and_survive_restart_without_changing_hosts
         None,
         Vec::new(),
     );
+    (root, roots, workspace)
+}
+
+#[test]
+fn keyboard_edits_merge_persist_and_reject_failed_writes_without_changing_hosts() {
+    use workspace::ShortcutAction;
+    let (root, roots, workspace) = settings_fixture();
+    let other = workspace.open_scene();
+    let hosts = workspace.snapshot().hosts().to_vec();
+    workspace
+        .set_shortcut(ShortcutAction::ToggleSidebar, Some("alt+b"))
+        .unwrap();
+    other
+        .set_shortcut(ShortcutAction::NextSession, Some("alt+right"))
+        .unwrap();
+    let saved = ApplicationConfig::load(&roots).unwrap();
+    assert_eq!(
+        workspace
+            .configured_keyboard()
+            .binding(ShortcutAction::NextSession)
+            .unwrap()
+            .config_value(),
+        "alt+right"
+    );
+    assert_eq!(
+        saved
+            .keyboard()
+            .binding(ShortcutAction::ToggleSidebar)
+            .unwrap()
+            .config_value(),
+        "alt+b"
+    );
+    assert_eq!(saved.terminal().font_size(), 18);
+    assert_eq!(saved.ssh_hosts()[0].hostname(), "studio.example");
+    assert_eq!(workspace.snapshot().hosts(), hosts);
+    let before = other.configured_keyboard();
+    assert!(
+        other
+            .set_shortcut(ShortcutAction::PreviousSession, Some("alt+b"))
+            .is_err()
+    );
+    assert_eq!(other.configured_keyboard(), before);
+    assert_eq!(ApplicationConfig::load(&roots).unwrap().keyboard(), &before);
+    let path = root.join("config.toml");
+    let original = fs::read(&path).unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(
+        other
+            .set_shortcut(ShortcutAction::PreviousSession, Some("none"))
+            .is_err()
+    );
+    assert_eq!(
+        other.configured_keyboard(),
+        before,
+        "failed save must not activate the new binding"
+    );
+    fs::remove_dir(&path).unwrap();
+    fs::write(&path, original).unwrap();
+    workspace.close();
+    assert!(
+        workspace
+            .set_shortcut(ShortcutAction::ToggleSidebar, None)
+            .is_err()
+    );
+    assert_eq!(other.configured_keyboard(), before);
+    other.close();
+    let restarted = Workspace::application_with_remote_hosts(
+        TerminalAppearance::default(),
+        None,
+        Vec::new(),
+        saved,
+        roots,
+        None,
+        None,
+        Vec::new(),
+    );
+    assert_eq!(restarted.configured_keyboard(), before);
+    restarted
+        .set_shortcut(ShortcutAction::ToggleSidebar, None)
+        .unwrap();
+    assert_eq!(
+        restarted
+            .configured_keyboard()
+            .binding(ShortcutAction::ToggleSidebar)
+            .unwrap()
+            .config_value(),
+        "ctrl+shift+b"
+    );
+    restarted.close();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn sidebar_edits_merge_across_windows_and_survive_restart_without_changing_hosts() {
+    use workspace::{BackendLabel, SidebarRowHeight, SidebarSort};
+    let (root, roots, workspace) = settings_fixture();
     let other = workspace.open_scene();
     let before = other.snapshot().revision();
     workspace

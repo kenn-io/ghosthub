@@ -5,6 +5,7 @@
 mod windows_key;
 
 mod agent_hooks_settings;
+mod keyboard_settings;
 mod session_rename;
 mod sidebar;
 mod worktrees_settings;
@@ -16,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, Application, Bounds, ClipboardItem, Context, FocusHandle, Focusable, FontWeight,
-    IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton as GpuiMouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent,
-    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
-    WindowDecorations, WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
+    IntoElement, KeyDownEvent, KeyUpEvent, MouseButton as GpuiMouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent, TitlebarOptions,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowDecorations,
+    WindowOptions, actions, div, font, prelude::*, px, rgb, rgba, size,
 };
 use model::PortStatus;
 use surface::{CellStyle, CursorShape, Damage, GridSize, Rgb, SurfaceFrame, SurfaceStore};
@@ -361,6 +362,8 @@ pub struct RootView {
     create_focus: FocusHandle,
     project_focus: FocusHandle,
     settings_focus: FocusHandle,
+    observed_keyboard: Option<workspace::KeyboardPreferences>,
+    keyboard_bindings: Vec<(workspace::ShortcutAction, gpui::KeybindingKeystroke)>,
     hooks_focus: FocusHandle,
     host_settings_scroll: gpui::ScrollHandle,
     ssh_prompt_focus: FocusHandle,
@@ -483,15 +486,17 @@ enum SettingsPane {
     Appearance,
     Sidebar,
     Terminal,
+    Keyboard,
     Worktrees,
     Hosts,
 }
 
 impl SettingsPane {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Appearance,
         Self::Sidebar,
         Self::Terminal,
+        Self::Keyboard,
         Self::Worktrees,
         Self::Hosts,
     ];
@@ -501,6 +506,7 @@ impl SettingsPane {
             Self::Appearance => "Appearance",
             Self::Sidebar => "Sidebar",
             Self::Terminal => "Terminal",
+            Self::Keyboard => "Keyboard",
             Self::Worktrees => "Worktrees",
             Self::Hosts => "Hosts",
         }
@@ -509,16 +515,17 @@ impl SettingsPane {
     const fn subtitle(self) -> &'static str {
         match self {
             Self::Appearance => "Choose a terminal theme and installed monospace font.",
-            Self::Sidebar | Self::Worktrees | Self::Hosts => "",
+            Self::Sidebar | Self::Keyboard | Self::Worktrees | Self::Hosts => "",
             Self::Terminal => "Control cursor, pointer, and remote clipboard behavior.",
         }
     }
 
     const fn adjacent(self, reverse: bool) -> Option<Self> {
         match (self, reverse) {
-            (Self::Sidebar, false) | (Self::Worktrees, true) => Some(Self::Terminal),
+            (Self::Sidebar, false) | (Self::Keyboard, true) => Some(Self::Terminal),
             (Self::Appearance, false) | (Self::Terminal, true) => Some(Self::Sidebar),
-            (Self::Terminal, false) | (Self::Hosts, true) => Some(Self::Worktrees),
+            (Self::Keyboard, false) | (Self::Hosts, true) => Some(Self::Worktrees),
+            (Self::Terminal, false) | (Self::Worktrees, true) => Some(Self::Keyboard),
             (Self::Worktrees, false) => Some(Self::Hosts),
             (Self::Hosts, false) | (Self::Appearance, true) => None,
             (Self::Sidebar, true) => Some(Self::Appearance),
@@ -672,6 +679,7 @@ struct SettingsDialog {
     appearance_editor: AppearanceEditor,
     terminal_editor: TerminalEditor,
     worktrees_editor: worktrees_settings::Editor,
+    keyboard_editor: keyboard_settings::Editor,
     hook_panels: HashMap<String, agent_hooks_settings::Panel>,
     selected_host_id: Option<String>,
     host_editor: Option<SshHostEditor>,
@@ -694,6 +702,7 @@ impl SettingsDialog {
             appearance_editor: AppearanceEditor::new(appearance, font_families),
             terminal_editor: TerminalEditor::new(terminal),
             worktrees_editor: worktrees_settings::Editor::default(),
+            keyboard_editor: keyboard_settings::Editor::default(),
             hook_panels: HashMap::new(),
             selected_host_id: selected.map(|host| host.id().to_owned()),
             host_editor: selected.map(|host| SshHostEditor::new(Some(host))),
@@ -705,6 +714,14 @@ impl SettingsDialog {
 
 fn focus_settings_detail(dialog: &mut SettingsDialog, reverse: bool) -> bool {
     match dialog.pane {
+        SettingsPane::Keyboard => {
+            dialog.keyboard_editor.focus = if reverse {
+                keyboard_settings::FIELD_COUNT - 1
+            } else {
+                0
+            };
+            true
+        }
         SettingsPane::Worktrees => {
             dialog.worktrees_editor.clear_focused = reverse;
             true
@@ -768,6 +785,19 @@ fn advance_settings_focus(dialog: &mut SettingsDialog, reverse: bool) {
     }
 
     match dialog.pane {
+        SettingsPane::Keyboard => {
+            let focus = &mut dialog.keyboard_editor.focus;
+            if (reverse && *focus == 0)
+                || (!reverse && *focus == keyboard_settings::FIELD_COUNT - 1)
+            {
+                dialog.sidebar_focus = edge;
+            } else if reverse {
+                *focus -= 1;
+            } else {
+                *focus += 1;
+            }
+            dialog.keyboard_editor.cancel();
+        }
         SettingsPane::Worktrees => {
             if dialog.worktrees_editor.advance_focus(reverse) {
                 dialog.sidebar_focus = edge;
@@ -844,6 +874,7 @@ fn activate_settings_sidebar_pane(dialog: &mut SettingsDialog) -> bool {
         return false;
     };
     dialog.pane = pane;
+    dialog.keyboard_editor.cancel();
     dialog.error = None;
     true
 }
@@ -1790,35 +1821,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.spawn(async move |view, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await;
-                if view
-                    .update(cx, |view, cx| {
-                        let scope_changed = view.sync_terminal_scope();
-                        let handled = view.handle_events(cx);
-                        let hooks = view.poll_agent_hooks();
-                        let flushed = view.flush_pending_input();
-                        let notice_expired = view.terminal_notice.expire(Instant::now());
-                        if scope_changed
-                            || handled
-                            || hooks
-                            || flushed
-                            || notice_expired
-                            || view.poll_changed()
-                        {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
+        Self::start_ui_polling(cx);
 
         cx.observe_window_bounds(window, |view, window, cx| {
             view.resize_for_window(window);
@@ -1853,6 +1856,8 @@ impl RootView {
             create_focus: cx.focus_handle(),
             project_focus: cx.focus_handle(),
             settings_focus: cx.focus_handle(),
+            observed_keyboard: None,
+            keyboard_bindings: Vec::new(),
             hooks_focus: cx.focus_handle(),
             host_settings_scroll: gpui::ScrollHandle::new(),
             ssh_prompt_focus: cx.focus_handle(),
@@ -1888,8 +1893,41 @@ impl RootView {
             session_action_menu: None,
             restore_focus: false,
         };
+        Self::observe_shortcut_recording(window, cx);
         view.resize_for_window(window);
         view
+    }
+
+    fn start_ui_polling(cx: &mut Context<Self>) {
+        cx.spawn(async move |view, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
+                if view
+                    .update(cx, |view, cx| {
+                        let scope_changed = view.sync_terminal_scope();
+                        let handled = view.handle_events(cx);
+                        let hooks = view.poll_agent_hooks();
+                        let flushed = view.flush_pending_input();
+                        let notice_expired = view.terminal_notice.expire(Instant::now());
+                        if scope_changed
+                            || handled
+                            || hooks
+                            || flushed
+                            || notice_expired
+                            || view.poll_changed()
+                        {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     #[must_use]
@@ -2416,6 +2454,10 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.record_shortcut(event, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let key = event.keystroke.key.to_ascii_lowercase();
         let pane = self
             .settings_dialog
@@ -2451,6 +2493,10 @@ impl RootView {
         {
             cx.notify();
             cx.stop_propagation();
+            return;
+        }
+        if detail_pane == Some(SettingsPane::Keyboard) && key != "tab" {
+            self.edit_keyboard_setting(event, cx);
             return;
         }
         if detail_pane == Some(SettingsPane::Worktrees) && key != "tab" {
@@ -3808,6 +3854,7 @@ impl RootView {
         if !self.presentation_accepts_input(presentation_id) {
             return;
         }
+        self.sync_keyboard_bindings();
         let keystroke = &event.keystroke;
         if event.is_held
             && let Some((canonical, input)) =
@@ -3823,13 +3870,17 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        if is_toggle_sidebar_shortcut(keystroke)
-            || (is_session_navigation_shortcut(keystroke)
-                && self.session_navigation_target(false).is_some())
+        let action = self.application_shortcut(keystroke);
+        if action == Some(workspace::ShortcutAction::ToggleSidebar)
+            || (action.is_some()
+                && self
+                    .session_navigation_target(
+                        action == Some(workspace::ShortcutAction::PreviousSession),
+                    )
+                    .is_some())
         {
-            // The application key binding owns this chord. Leave propagation
-            // intact so GPUI dispatches the action, but never enqueue it as
-            // terminal input.
+            // Bubble to the application's handler after retained key events,
+            // without also sending the shortcut to the terminal.
             if event.is_held {
                 cx.stop_propagation();
             }
@@ -3886,8 +3937,7 @@ impl RootView {
             return;
         }
         if is_paste_shortcut(&event.keystroke)
-            || is_toggle_sidebar_shortcut(&event.keystroke)
-            || is_session_navigation_shortcut(&event.keystroke)
+            || self.application_shortcut(&event.keystroke).is_some()
         {
             cx.stop_propagation();
         }
@@ -4560,11 +4610,15 @@ impl RootView {
     }
 
     fn title_bar(&self, title: String, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let toggle_label = if self.sidebar_visible {
-            "Hide sidebar (Ctrl+Shift+B)"
-        } else {
-            "Show sidebar (Ctrl+Shift+B)"
-        };
+        let verb = if self.sidebar_visible { "Hide" } else { "Show" };
+        let toggle_label = self
+            .workspace
+            .configured_keyboard()
+            .binding(workspace::ShortcutAction::ToggleSidebar)
+            .map_or_else(
+                || format!("{verb} sidebar"),
+                |binding| format!("{verb} sidebar ({})", binding.display()),
+            );
 
         div()
             .h(px(APP_TITLEBAR_HEIGHT))
@@ -6152,6 +6206,7 @@ impl RootView {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(dialog) = &mut this.settings_dialog {
                             dialog.pane = pane;
+                            dialog.keyboard_editor.cancel();
                             dialog.sidebar_focus = Some(pane);
                             dialog.error = None;
                         }
@@ -6551,6 +6606,7 @@ impl RootView {
             SettingsPane::Appearance => self.settings_appearance_editor(cx),
             SettingsPane::Terminal => self.settings_terminal_editor(cx),
             SettingsPane::Sidebar => self.settings_sidebar_editor(cx),
+            SettingsPane::Keyboard => self.settings_keyboard_editor(window, cx),
             SettingsPane::Worktrees => self.settings_worktrees_editor(cx),
             SettingsPane::Hosts => div()
                 .flex_1()
@@ -8745,6 +8801,7 @@ impl Focusable for RootView {
 impl Render for RootView {
     #[allow(clippy::too_many_lines)] // Root composition keeps overlay ordering explicit.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_keyboard_bindings();
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
         let snapshot = self.workspace.snapshot();
@@ -8772,9 +8829,6 @@ impl Render for RootView {
             chrome_palette_for_terminal_theme(snapshot.appearance().theme());
         let mut root = div()
             .id("application-shell")
-            .when(self.session_navigation_target(false).is_some(), |root| {
-                root.key_context("SessionNavigation")
-            })
             .when(
                 terminal_presentation_id(snapshot.content()).is_none(),
                 |root| root.track_focus(&self.focus),
@@ -8785,6 +8839,7 @@ impl Render for RootView {
             .bg(rgb(chrome_background))
             .text_color(rgb(chrome_foreground))
             .when(cfg!(target_os = "linux"), |root| root.font_family("Inter"))
+            .on_key_down(cx.listener(Self::on_application_key_down))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
                 this.toggle_sidebar(window, cx);
             }))
@@ -9118,9 +9173,6 @@ fn terminal_key_input_with_canonical(
     event: InputKeyEvent,
     canonical: &CanonicalTerminalKey,
 ) -> Option<KeyInput> {
-    if is_toggle_sidebar_shortcut(keystroke) {
-        return None;
-    }
     terminal_owned_key_input(keystroke, event, canonical)
 }
 
@@ -9325,20 +9377,6 @@ fn is_paste_shortcut(keystroke: &gpui::Keystroke) -> bool {
         && keystroke.key.eq_ignore_ascii_case("v")
 }
 
-fn is_session_navigation_shortcut(keystroke: &gpui::Keystroke) -> bool {
-    keystroke.modifiers.control
-        && !keystroke.modifiers.alt
-        && !keystroke.modifiers.platform
-        && keystroke.key.eq_ignore_ascii_case("tab")
-}
-
-fn is_toggle_sidebar_shortcut(keystroke: &gpui::Keystroke) -> bool {
-    keystroke.modifiers.control
-        && keystroke.modifiers.shift
-        && !keystroke.modifiers.alt
-        && keystroke.key.eq_ignore_ascii_case("b")
-}
-
 const fn input_modifiers(modifiers: gpui::Modifiers) -> InputModifiers {
     InputModifiers {
         shift: modifiers.shift,
@@ -9492,12 +9530,6 @@ pub fn run(status: PortStatus, workspace: Workspace) {
         load_linux_fonts(cx.text_system());
         let bounds = Bounds::centered(None, size(px(1100.0), px(720.0)), cx);
 
-        cx.bind_keys([
-            KeyBinding::new("ctrl-shift-b", ToggleSidebar, None),
-            KeyBinding::new("ctrl-tab", NextSession, Some("SessionNavigation")),
-            KeyBinding::new("ctrl-shift-tab", PreviousSession, Some("SessionNavigation")),
-        ]);
-
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -9649,17 +9681,16 @@ mod tests {
         clears_when_input_queue_is_empty, coalesce_last_resize, coalesce_last_wheel,
         focused_settings_detail, has_ambiguous_worktree_source, herdr_row_actions,
         herdr_session_menu_actions, host_header_action, host_landing_text,
-        input_queue_has_capacity, is_toggle_sidebar_shortcut, kill_confirmation_description,
-        kill_confirmation_title, kwt_operation_failure_owns_dialog,
-        kwt_selection_matches_presentation, named_key, new_session_validation,
-        normalize_cell_width, owns_created_worktree_navigation, pull_request_import_selector,
-        queued_input_matches_presentation, retained_key_event_with, session_action_menu_position,
-        session_creation_available, ssh_host_subtitle, ssh_prompt_input_text,
-        terminal_cell_at_with_offset, terminal_font_changed, terminal_key_input,
-        terminal_key_input_with_canonical, terminal_line_height, terminal_wheel_steps,
-        tmux_row_actions, transitioned_presentation, tree_herdr_sessions, tree_sessions,
-        tree_zellij_sessions, visible_kwt_branch_candidates, visible_kwt_pull_requests,
-        workspace_window_title, worktree_open_mode,
+        input_queue_has_capacity, kill_confirmation_description, kill_confirmation_title,
+        kwt_operation_failure_owns_dialog, kwt_selection_matches_presentation, named_key,
+        new_session_validation, normalize_cell_width, owns_created_worktree_navigation,
+        pull_request_import_selector, queued_input_matches_presentation, retained_key_event_with,
+        session_action_menu_position, session_creation_available, ssh_host_subtitle,
+        ssh_prompt_input_text, terminal_cell_at_with_offset, terminal_font_changed,
+        terminal_key_input, terminal_key_input_with_canonical, terminal_line_height,
+        terminal_wheel_steps, tmux_row_actions, transitioned_presentation, tree_herdr_sessions,
+        tree_sessions, tree_zellij_sessions, visible_kwt_branch_candidates,
+        visible_kwt_pull_requests, workspace_window_title, worktree_open_mode,
     };
     use model::DiagnosticKind;
     use std::sync::Arc;
@@ -9745,6 +9776,7 @@ mod tests {
                 SettingsPane::Appearance,
                 SettingsPane::Sidebar,
                 SettingsPane::Terminal,
+                SettingsPane::Keyboard,
                 SettingsPane::Worktrees,
                 SettingsPane::Hosts,
             ]
@@ -9784,6 +9816,8 @@ mod tests {
         assert_eq!(focused_settings_detail(&dialog), None);
 
         advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Keyboard));
+        advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Worktrees));
         advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Hosts));
@@ -9806,6 +9840,24 @@ mod tests {
         assert_eq!(
             dialog.terminal_editor.field,
             TerminalField::RemoteClipboardWrite
+        );
+        dialog.pane = SettingsPane::Keyboard;
+        dialog.sidebar_focus = Some(SettingsPane::Hosts);
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.keyboard_editor.focus, 0);
+        assert_eq!(
+            focused_settings_detail(&dialog),
+            Some(SettingsPane::Keyboard)
+        );
+        for _ in 0..9 {
+            advance_settings_focus(&mut dialog, false);
+        }
+        assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
+        advance_settings_focus(&mut dialog, true);
+        assert_eq!(dialog.keyboard_editor.focus, 8);
+        assert_eq!(
+            focused_settings_detail(&dialog),
+            Some(SettingsPane::Keyboard)
         );
     }
 
@@ -11701,24 +11753,6 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_shortcut_is_owned_by_the_application() {
-        let keystroke = gpui::Keystroke {
-            modifiers: gpui::Modifiers {
-                control: true,
-                shift: true,
-                ..gpui::Modifiers::default()
-            },
-            key: "b".to_owned(),
-            key_char: None,
-        };
-
-        assert!(is_toggle_sidebar_shortcut(&keystroke));
-        assert_eq!(terminal_key_input(&keystroke, KeyEvent::Press), None);
-        assert_eq!(terminal_key_input(&keystroke, KeyEvent::Repeat), None);
-        assert_eq!(terminal_key_input(&keystroke, KeyEvent::Release), None);
-    }
-
-    #[test]
     fn retained_ctrl_key_events_precede_sidebar_shortcut_classification() {
         let layout = LayoutKey {
             virtual_key: 0x42,
@@ -11740,7 +11774,6 @@ mod tests {
             key: "b".to_owned(),
             key_char: None,
         };
-        assert!(is_toggle_sidebar_shortcut(&shortcut_shaped_event));
 
         let press_key = canonical_terminal_key_with(&press, |_| Some(layout));
         let press_input = terminal_key_input_with_canonical(&press, KeyEvent::Press, &press_key)
