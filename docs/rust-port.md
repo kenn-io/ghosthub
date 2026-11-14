@@ -1756,6 +1756,26 @@ is enabled. Hosts owns only
 `[[ssh-host]]` records. The shell's stable navigation, page header, list, and
 detail regions are the permanent container for the remaining Swift settings
 domains.
+
+Terminal drag selection uses libghostty's tracked grid references and active
+selection. The renderer receives owned `Cell.selected` flags; it does not
+reconstruct text from paint runs. The library formatter copies selected Unicode
+and joins soft-wrapped lines. Selection covers the visible screen; history
+stays in the multiplexer. Typing, a new left click, or resizing clears the
+selection. A drag cannot cross primary/alternate-screen boundaries.
+
+Normal mouse reports still reach mouse-aware applications. Shift-left-drag
+selects locally, and that route lasts until release even if Shift is released
+first. Ctrl+Shift+C copies the current selection. The default
+`[terminal].copy-on-select = true` also copies on left-button release; Settings
+→ Terminal can disable automatic copying without disabling explicit copies.
+The preference persists atomically and applies across scenes. Mouse events and
+copy requests use the same bounded input queue and presentation checks.
+Copies arrive as scene clipboard events and keep the worker's visibility
+generation, so a hidden or replaced client's pending copy is discarded.
+Explicit selection copies are independent of remote OSC 52 permission.
+Workspace consumers can use `send_mouse`, `copy_terminal_selection`, and the
+surface selection flags through the same path as GPUI.
 Sidebar preferences apply immediately to every open window and persist under
 `[sidebar]` in `config.toml`. The default is Manual order with Chip labels and
 Regular rows. Manual order supports dragging across backends on the same host;
@@ -1846,7 +1866,7 @@ The parity inventory is:
 | Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
 | Appearance | Built-in themes, Custom colors, installed-font and size pickers, live preview, and atomic persistence |
 | Sidebar | Shared session list; Manual, Name, Backend, and Needs Attention sorting; saved drag order; Chip, Text, or Dot labels; Regular or Compact rows; worktree-session and root-checkout visibility; live preview |
-| Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, remote clipboard writes, and atomic persistence |
+| Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, drag selection, explicit/automatic selection copying, remote clipboard writes, and atomic persistence |
 | Keyboard | Record, clear, and restore Toggle Sidebar and next/previous session shortcuts; validate conflicts; save immediately across windows; remaining actions follow their feature work |
 | Worktrees | Saved wildcard patterns hide tmux rows from the sidebar and sibling navigation; project worktrees and terminals stay available |
 | Agents | Live approval, input, and working badges; per-host hook status and explicit installation in Hosts; completion acknowledgement and the dedicated Agents pane remain unimplemented |
@@ -1884,6 +1904,7 @@ foreground = "#d8dee9"
 cursor-style = "block"
 shell-integration-cursor = false
 mouse-hide-while-typing = true
+copy-on-select = true
 clipboard-write = true
 
 [sidebar]

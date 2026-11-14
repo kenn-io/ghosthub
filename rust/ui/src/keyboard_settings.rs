@@ -288,6 +288,15 @@ impl RootView {
                     .child("Paste")
                     .child("Ctrl+Shift+V"),
             )
+            .child(
+                div()
+                    .mt_3()
+                    .flex()
+                    .justify_between()
+                    .text_sm()
+                    .child("Copy selection")
+                    .child("Ctrl+Shift+C"),
+            )
             .child(div().mt_8().text_sm().text_color(rgb(0x8f_96a3)).child(
                 "Pane, window, and split shortcuts are configured in tmux, Herdr, or Zellij.",
             ))

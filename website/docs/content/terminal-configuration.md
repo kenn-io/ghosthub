@@ -126,6 +126,23 @@ also removes cached images older than seven days.
 Image paste is not available for Herdr, Zellij, or native Windows/psmux
 sessions. See [Sessions](sessions.md#attach-and-detach) for terminal controls.
 
+### Windows and Linux
+
+In the Rust app, drag across visible terminal text to select it. Hold **Shift**
+while dragging when tmux or another terminal application uses the mouse.
+The selection stays highlighted, and **Ctrl+Shift+C** copies it.
+Use your multiplexer's copy mode for text outside the visible screen.
+
+Selections copy to the clipboard automatically by default. Open the gear
+button, choose **Terminal**, and turn off **Copy selections directly to the
+clipboard** to copy only with **Ctrl+Shift+C**. This setting saves immediately
+and applies to all windows. Your explicit copies work even when **Allow remote
+clipboard writes** is off.
+
+![Selecting terminal text in the Rust app](/docs/assets/guide-rust-selection.png)
+
+![Rust Terminal settings with automatic selection copying](/docs/assets/guide-rust-terminal-settings.png)
+
 ## Quit behavior
 
 **Confirm before quitting Ghosthub** is enabled by default under

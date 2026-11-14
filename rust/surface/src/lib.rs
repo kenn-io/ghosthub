@@ -75,6 +75,7 @@ pub struct Cell {
     pub foreground: Rgb,
     pub background: Rgb,
     pub style: CellStyle,
+    pub selected: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -122,6 +123,7 @@ impl Default for Cell {
             foreground: Rgb::WHITE,
             background: Rgb::BLACK,
             style: CellStyle::default(),
+            selected: false,
         }
     }
 }
