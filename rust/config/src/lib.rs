@@ -1,5 +1,8 @@
 //! Configuration and path resolution for the Rust Ghosthub application.
 
+mod keyboard;
+pub use keyboard::{KeyChord, KeyboardPreferences, ShortcutAction};
+
 mod sidebar;
 pub use sidebar::{BackendLabel, SidebarPreferences, SidebarRowHeight, SidebarSort};
 
@@ -85,6 +88,7 @@ pub struct ApplicationConfig {
     wsl: WslSettings,
     terminal: TerminalAppearance,
     sidebar: SidebarPreferences,
+    keyboard: KeyboardPreferences,
     ssh_hosts: Vec<SshHostSettings>,
 }
 
@@ -243,6 +247,28 @@ impl ApplicationConfig {
         &self.sidebar
     }
 
+    #[must_use]
+    pub const fn keyboard(&self) -> &KeyboardPreferences {
+        &self.keyboard
+    }
+
+    /// Save keyboard shortcuts alongside the latest host and terminal settings.
+    ///
+    /// # Errors
+    /// Returns an error for conflicting bindings or a failed configuration write.
+    pub fn replace_keyboard(
+        &mut self,
+        roots: &Roots,
+        keyboard: KeyboardPreferences,
+    ) -> Result<(), ConfigError> {
+        keyboard.validate()?;
+        let mut candidate = self.clone();
+        candidate.keyboard = keyboard;
+        candidate.save(roots)?;
+        *self = candidate;
+        Ok(())
+    }
+
     /// Save sidebar preferences without changing hosts or terminal settings.
     ///
     /// # Errors
@@ -369,6 +395,7 @@ struct ConfigFile {
     wsl: WslFile,
     terminal: TerminalFile,
     sidebar: SidebarPreferences,
+    keyboard: KeyboardPreferences,
     #[serde(rename = "ssh-host")]
     ssh_hosts: Vec<SshHostFile>,
 }
@@ -436,6 +463,7 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
 
     fn try_from(file: ConfigFile) -> Result<Self, Self::Error> {
         let defaults = Self::default();
+        file.keyboard.validate()?;
         let local = LocalSettings::try_from(file.local)?;
         let tmux_binary = file
             .wsl
@@ -535,6 +563,7 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
                     .unwrap_or(defaults.terminal.allow_remote_clipboard_write),
             },
             sidebar: file.sidebar,
+            keyboard: file.keyboard,
             ssh_hosts,
         })
     }
@@ -544,6 +573,7 @@ impl From<&ApplicationConfig> for ConfigFile {
     fn from(config: &ApplicationConfig) -> Self {
         Self {
             sidebar: config.sidebar.clone(),
+            keyboard: config.keyboard.clone(),
             local: LocalFile {
                 tmux_binary: Some(config.local.tmux_binary.clone()),
                 socket_directory: config.local.socket_directory.clone(),
