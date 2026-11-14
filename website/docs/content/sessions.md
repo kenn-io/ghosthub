@@ -564,18 +564,35 @@ and sibling shortcuts follow the displayed order.
 
 ![The Rust sidebar with live agent requests and Needs Attention sorting](/docs/assets/guide-rust-agent-attention.png)
 
-Install hooks explicitly on each host where agents run:
+Set up hooks on each host where agents run:
+
+1. Open **Settings → Hosts** and select **Local** or a saved SSH host. On
+   Windows, select the WSL host for local agents, or the SSH host where they run.
+2. Connect an SSH host if needed. **Agent Hooks** lists detected agents and
+   shows **Not installed**, **Update available**, or **Installed**.
+3. Choose **Install Hooks** to edit those agents' user settings on that host.
+   Ghosthub uses its pinned KWT helper and keeps hooks owned by other tools.
+4. In Codex, open `/hooks` once to trust the new hooks. Choose **Reload** to
+   read the status again after changing settings outside Ghosthub.
+
+![Agent hook status and Install Hooks in the Rust app's host settings](/docs/assets/guide-rust-agent-hooks.png)
+
+Setup errors stay in this panel. Correct the agent settings or SSH connection
+and choose **Reload** before trying again. Closing the window or reconnecting
+an SSH host cancels a pending setup request. Hooks already installed stay in the
+agent's settings.
+
+Agents can use the same setup from a shell on that host with KWT installed:
 
 ```sh
-kwt agent-hook install
+kwt agent-hook status --json
+kwt agent-hook install --json
 ```
 
-Run this with KWT installed on that host, then follow its instructions for your
-agent. In Codex, open `/hooks` to trust the hooks. Ghosthub reads the pane state;
-it does not install hooks or read terminal text. Badges refresh about every
-ten seconds while Ghosthub is in front, or when you choose **Refresh** from
-the host menu. An agent that does not send hooks has no
-badge. A failed hook read does not prevent opening sessions.
+Ghosthub reads the pane state without reading terminal text. Badges refresh
+about every ten seconds while Ghosthub is in front, or when you choose
+**Refresh** from the host menu. An agent that does not send hooks has no badge.
+A failed hook read does not prevent opening sessions.
 
 Completed-turn acknowledgements and **Done** badges are not yet available in
 the Rust app. Protected worktree servers, Herdr, and Zellij do not yet show

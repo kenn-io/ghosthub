@@ -883,6 +883,7 @@ extension WorkspaceTmuxDiscoveryTests {
         let hostID = environment.remoteHost.id
         let names = LockedValue(["release-work": "$2", "notes": "$3"])
         let store = SceneTmuxSurfaceStoreStub()
+        let clients = RenameTmuxClients()
         let model = try makeModel(
             database: environment.database,
             localHostID: environment.localHostID,
@@ -890,7 +891,8 @@ extension WorkspaceTmuxDiscoveryTests {
             nativeTmuxSurfaceStore: store,
             nativeTmuxPaneSplitter: renameClientSplitter(
                 names,
-                launches: store.launchCommands
+                launches: store.launchCommands,
+                clients: clients
             ),
             remoteTmuxPathProvider: { _, _ in
                 successfulTmuxResolution("/usr/bin/tmux")
@@ -919,6 +921,12 @@ extension WorkspaceTmuxDiscoveryTests {
         let releaseHandle = try #require(
             model.retainedBorrowedTmuxHandle(for: releaseWork)
         )
+
+        // Surface connection precedes the first tmux identity probe. Bind
+        // both fake clients before names are reassigned.
+        await waitUntilMainActor {
+            clients.attached.load().values.sorted() == ["$2", "$3"]
+        }
 
         // While release-work's SSH client is down, tmux renames it to
         // shipping and gives its old name to the notes session.

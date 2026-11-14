@@ -4,6 +4,7 @@
 #[allow(unsafe_code)]
 mod windows_key;
 
+mod agent_hooks_settings;
 mod session_rename;
 mod sidebar;
 mod worktrees_settings;
@@ -360,6 +361,8 @@ pub struct RootView {
     create_focus: FocusHandle,
     project_focus: FocusHandle,
     settings_focus: FocusHandle,
+    hooks_focus: FocusHandle,
+    host_settings_scroll: gpui::ScrollHandle,
     ssh_prompt_focus: FocusHandle,
     kill_focus: FocusHandle,
     diagnostic: Option<String>,
@@ -506,9 +509,8 @@ impl SettingsPane {
     const fn subtitle(self) -> &'static str {
         match self {
             Self::Appearance => "Choose a terminal theme and installed monospace font.",
-            Self::Sidebar | Self::Worktrees => "",
+            Self::Sidebar | Self::Worktrees | Self::Hosts => "",
             Self::Terminal => "Control cursor, pointer, and remote clipboard behavior.",
-            Self::Hosts => "Connect the machines and tmux sessions in your SSH network.",
         }
     }
 
@@ -670,6 +672,7 @@ struct SettingsDialog {
     appearance_editor: AppearanceEditor,
     terminal_editor: TerminalEditor,
     worktrees_editor: worktrees_settings::Editor,
+    hook_panels: HashMap<String, agent_hooks_settings::Panel>,
     selected_host_id: Option<String>,
     host_editor: Option<SshHostEditor>,
     pending_remove: Option<ConfiguredSshHost>,
@@ -691,6 +694,7 @@ impl SettingsDialog {
             appearance_editor: AppearanceEditor::new(appearance, font_families),
             terminal_editor: TerminalEditor::new(terminal),
             worktrees_editor: worktrees_settings::Editor::default(),
+            hook_panels: HashMap::new(),
             selected_host_id: selected.map(|host| host.id().to_owned()),
             host_editor: selected.map(|host| SshHostEditor::new(Some(host))),
             pending_remove: None,
@@ -1795,10 +1799,12 @@ impl RootView {
                     .update(cx, |view, cx| {
                         let scope_changed = view.sync_terminal_scope();
                         let handled = view.handle_events(cx);
+                        let hooks = view.poll_agent_hooks();
                         let flushed = view.flush_pending_input();
                         let notice_expired = view.terminal_notice.expire(Instant::now());
                         if scope_changed
                             || handled
+                            || hooks
                             || flushed
                             || notice_expired
                             || view.poll_changed()
@@ -1847,6 +1853,8 @@ impl RootView {
             create_focus: cx.focus_handle(),
             project_focus: cx.focus_handle(),
             settings_focus: cx.focus_handle(),
+            hooks_focus: cx.focus_handle(),
+            host_settings_scroll: gpui::ScrollHandle::new(),
             ssh_prompt_focus: cx.focus_handle(),
             kill_focus: cx.focus_handle(),
             diagnostic: None,
@@ -2033,6 +2041,16 @@ impl RootView {
             font_families,
         ));
         if let Some(dialog) = &mut self.settings_dialog {
+            if let Some(local) = self
+                .workspace
+                .snapshot()
+                .hosts()
+                .iter()
+                .find(|host| !host.is_ssh())
+            {
+                dialog.selected_host_id = Some(local.id().to_owned());
+                dialog.host_editor = None;
+            }
             dialog.worktrees_editor = worktrees_settings::Editor::new(
                 &self.workspace.configured_sidebar().hidden_session_patterns,
             );
@@ -2055,6 +2073,8 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.host_settings_scroll
+            .set_offset(gpui::point(px(0.0), px(0.0)));
         if let Some(dialog) = &mut self.settings_dialog {
             dialog.sidebar_focus = None;
             dialog.selected_host_id = Some(host.id().to_owned());
@@ -2380,7 +2400,11 @@ impl RootView {
 
     fn focus_after_ssh_prompt(&self, window: &mut Window) {
         if self.ssh_prompts.is_empty() {
-            window.focus(&self.focus);
+            window.focus(if self.settings_dialog.is_some() {
+                &self.settings_focus
+            } else {
+                &self.focus
+            });
         } else {
             window.focus(&self.ssh_prompt_focus);
         }
@@ -2463,10 +2487,7 @@ impl RootView {
             return;
         }
         if key == "tab" {
-            if let Some(dialog) = &mut self.settings_dialog {
-                advance_settings_focus(dialog, event.keystroke.modifiers.shift);
-                cx.notify();
-            }
+            self.advance_settings_tab(event.keystroke.modifiers.shift, window, cx);
             cx.stop_propagation();
             return;
         }
@@ -3442,6 +3463,20 @@ impl RootView {
         for event in events {
             handled = true;
             match event {
+                WorkspaceEvent::AgentHooksFinished {
+                    host_id,
+                    operation_id,
+                    result,
+                    ..
+                } => {
+                    if let Some(panel) = self
+                        .settings_dialog
+                        .as_mut()
+                        .and_then(|dialog| dialog.hook_panels.get_mut(&host_id))
+                    {
+                        panel.finish(operation_id, result);
+                    }
+                }
                 WorkspaceEvent::ClipboardWrite { text, .. } => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
@@ -6162,6 +6197,38 @@ impl RootView {
             .min_h_0()
             .overflow_y_scroll()
             .py_1();
+        if let Some(host) = self
+            .workspace
+            .snapshot()
+            .hosts()
+            .iter()
+            .find(|host| !host.is_ssh())
+        {
+            let id = host.id().to_owned();
+            rows = rows.child(
+                div()
+                    .id("settings-local-host")
+                    .px_3()
+                    .py_3()
+                    .cursor_pointer()
+                    .bg(rgb(if selected == Some(host.id()) {
+                        0x24_3040
+                    } else {
+                        0x14_171d
+                    }))
+                    .hover(|style| style.bg(rgb(0x20_2630)))
+                    .child(host.name().to_owned())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(dialog) = &mut this.settings_dialog {
+                            dialog.selected_host_id = Some(id.clone());
+                            dialog.host_editor = None;
+                            dialog.pending_remove = None;
+                            dialog.error = None;
+                        }
+                        this.focus_agent_hooks(false, window, cx);
+                    })),
+            );
+        }
         if hosts.is_empty() {
             rows = rows.child(
                 div()
@@ -6266,25 +6333,12 @@ impl RootView {
             .border_r_1()
             .border_color(rgb(0x2a_2f39))
             .bg(rgb(0x14_171d))
-            .child(
-                div()
-                    .h(px(42.0))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(rgb(0x2a_2f39))
-                    .text_xs()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x8f_96_a3))
-                    .child("SSH HOSTS"),
-            )
             .child(rows)
             .child(footer)
             .into_any_element()
     }
 
-    fn settings_host_editor(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn settings_host_editor(&self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let Some(editor) = self
             .settings_dialog
             .as_ref()
@@ -6373,8 +6427,13 @@ impl RootView {
             ),
         );
 
+        if let Some(id) = &editor.original_id {
+            form = form.child(self.agent_hooks_section(id, window, cx));
+        }
+
         div()
             .id("settings-host-editor")
+            .track_scroll(&self.host_settings_scroll)
             .flex_1()
             .min_w_0()
             .h_full()
@@ -6483,7 +6542,7 @@ impl RootView {
     #[allow(clippy::too_many_lines)] // Declarative GPUI settings-shell hierarchy.
     fn settings_overlay(
         &self,
-        _window: &Window,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let dialog = self.settings_dialog.as_ref()?;
@@ -6498,7 +6557,12 @@ impl RootView {
                 .min_h_0()
                 .flex()
                 .child(self.settings_host_list(cx))
-                .child(self.settings_host_editor(cx))
+                .child(
+                    match (&dialog.host_editor, dialog.selected_host_id.as_deref()) {
+                        (None, Some(id)) => self.local_hook_settings(id, window, cx),
+                        _ => self.settings_host_editor(window, cx),
+                    },
+                )
                 .into_any_element(),
         };
         let pane_header = div()
@@ -8666,6 +8730,12 @@ fn clear_terminal_input_state(
     *input_refusal = InputRefusal::default();
 }
 
+impl Drop for RootView {
+    fn drop(&mut self) {
+        self.workspace.close();
+    }
+}
+
 impl Focusable for RootView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus.clone()
@@ -9440,7 +9510,14 @@ pub fn run(status: PortStatus, workspace: Workspace) {
                 window_decorations: Some(WindowDecorations::Client),
                 ..Default::default()
             },
-            move |window, cx| cx.new(|cx| RootView::new(status, workspace.clone(), window, cx)),
+            move |window, cx| {
+                let closing_workspace = workspace.clone();
+                window.on_window_should_close(cx, move |_, _| {
+                    closing_workspace.close();
+                    true
+                });
+                cx.new(|cx| RootView::new(status, workspace.clone(), window, cx))
+            },
         )
         .expect("failed to open the Ghosthub window");
 

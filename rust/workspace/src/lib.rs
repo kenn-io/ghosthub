@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use config::{ApplicationConfig, Roots, SshHostSettings, TerminalAppearance};
 pub use config::{CursorStyle, TerminalTheme};
-pub use host::KwtTmuxAttachMode;
 use host::{
     AdmissionAttacher, AttachTerm, CancellationToken, CommandRunner, HerdrInventory, HostError,
     HostSnapshot, KwtInventory, KwtPullRequestImportRequest, KwtSshExecutable, LiveSessionTarget,
@@ -19,6 +18,7 @@ use host::{
     RemoteTmuxHost, RemoteTmuxSnapshot, SshExecutable, SshLeasePrompt, SshPromptKind, SshTarget,
     StdCommandRunner, WslExecutable, ZellijInventory,
 };
+pub use host::{AgentHookAction, AgentHookStatus, KwtTmuxAttachMode};
 pub use input::{KeyEvent, KeyInput, Modifiers, MouseAction, MouseButton, MouseInput, NamedKey};
 use model::DiagnosticKind;
 use session::HerdrLaunchTarget;
@@ -32,6 +32,7 @@ use terminal::{
     TerminalEvent, TerminalStartup, TerminalWorker, WorkerError,
 };
 
+mod agent_hooks;
 mod pump;
 mod remote_attention;
 mod remote_herdr;
@@ -1430,6 +1431,12 @@ impl Drop for KwtWorktreeOpening {
 }
 
 pub enum WorkspaceEvent {
+    AgentHooksFinished {
+        host_id: String,
+        operation_id: u64,
+        action: AgentHookAction,
+        result: Result<Vec<AgentHookStatus>, String>,
+    },
     SessionRenamed {
         operation_id: u64,
         selection: SessionSelection,
@@ -4214,6 +4221,7 @@ impl Workspace {
                     refresh_publication: Mutex::new(()),
                     inventory_cadence_started: AtomicBool::new(false),
                     attention_polls: Mutex::new(remote_attention::Polls::default()),
+                    agent_hooks: Mutex::new(agent_hooks::State::default()),
                     kwt_cadence_started: AtomicBool::new(false),
                     kwt_refresh_generation: AtomicU64::new(0),
                     kwt_discovery_cancel: Mutex::new(None),
@@ -4409,6 +4417,7 @@ impl Workspace {
                 refresh_publication: Mutex::new(()),
                 inventory_cadence_started: AtomicBool::new(false),
                 attention_polls: Mutex::new(remote_attention::Polls::default()),
+                agent_hooks: Mutex::new(agent_hooks::State::default()),
                 kwt_cadence_started: AtomicBool::new(false),
                 kwt_refresh_generation: AtomicU64::new(0),
                 kwt_discovery_cancel: Mutex::new(None),
@@ -4470,6 +4479,7 @@ impl Workspace {
                     refresh_publication: Mutex::new(()),
                     inventory_cadence_started: AtomicBool::new(false),
                     attention_polls: Mutex::new(remote_attention::Polls::default()),
+                    agent_hooks: Mutex::new(agent_hooks::State::default()),
                     kwt_cadence_started: AtomicBool::new(false),
                     kwt_refresh_generation: AtomicU64::new(0),
                     kwt_discovery_cancel: Mutex::new(None),
@@ -4954,6 +4964,7 @@ impl Workspace {
                             .renames
                             .iter()
                             .any(|operation| !operation.cancellation.is_cancelled())
+                        || agent_hooks::install_active(&self.scene.runtime, id)
                         || entry.kwt.blocks_reconnect()
                         || !entry.reconnect.start(now)
                     {
@@ -4964,6 +4975,7 @@ impl Workspace {
                 }
                 cancel_remote_constructive(entry);
                 cancel_remote_attachment(entry);
+                agent_hooks::cancel_host(&self.scene.runtime, id);
                 remote_kwt::cancel_for_reconnect(entry);
                 if let Some(previous) = entry.cancellation.replace(cancellation.clone()) {
                     previous.cancel();
@@ -5304,6 +5316,7 @@ impl Workspace {
             "the fence must belong to the initiating scene"
         );
         let _snapshot_write = begin_snapshot_write(&self.scene.runtime);
+        agent_hooks::cancel_host(&self.scene.runtime, id);
         let removed = {
             let mut entries = self
                 .scene

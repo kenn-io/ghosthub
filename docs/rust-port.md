@@ -1803,8 +1803,14 @@ approval outranks input, then working, with the newest timestamp breaking a
 tie. Missing, malformed, or failed optional pane reads leave sessions usable.
 No terminal text is read. Rows expose the state and agent label to UI and
 workspace API consumers. Needs Attention sorting preserves manual order within
-waiting and working groups; stopped Herdr sessions remain last. Existing hooks
-must be installed explicitly with `kwt agent-hook install` on the agent host.
+waiting and working groups; stopped Herdr sessions remain last. Hooks are
+installed explicitly in Settings → Hosts or with
+`kwt agent-hook install` on the agent host. The settings panel reads per-agent
+status and offers Install Hooks only for detected agents needing setup or an
+update. Local Linux/WSL uses the bundled helper; SSH uses the matching managed
+helper through the current lease. Results and errors belong to the requesting
+window's settings panel. Removing or reconnecting an SSH host, or closing the
+window, cancels its request. Active installations defer automatic reconnect.
 Local inventory reads and separate read-only SSH hook polling update badges
 about every ten seconds while a window is active. SSH reads reuse the current
 lease and publish only while the connection and inventory generations match;
@@ -1818,9 +1824,9 @@ and pending lifecycle state.
 Completed-turn acknowledgement requires observing the actual session shown by
 the attached tmux client, including switches made inside tmux. That observation
 is not yet implemented, so completed turns have no badge. Protected worktree
-servers, Herdr, and Zellij also have no agent attention yet. The Agents settings
-pane and hook installation UI remain separate parity work, alongside Herdr
-desktop terminals, worktree diff/PR/check status, and hidden-worktree metadata.
+servers, Herdr, and Zellij also have no agent attention yet. The dedicated
+Agents settings pane remains separate parity work, alongside Herdr desktop
+terminals, worktree diff/PR/check status, and hidden-worktree metadata.
 
 The parity inventory is:
 
@@ -1832,7 +1838,7 @@ The parity inventory is:
 | Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, remote clipboard writes, and atomic persistence |
 | Keyboard | Runtime shortcuts exist; pane not yet implemented |
 | Worktrees | Saved wildcard patterns hide tmux rows from the sidebar and sibling navigation; project worktrees and terminals stay available |
-| Agents | Live approval, input, and working badges from explicit KWT hooks; completion acknowledgement and hook setup UI remain unimplemented |
+| Agents | Live approval, input, and working badges; per-host hook status and explicit installation in Hosts; completion acknowledgement and the dedicated Agents pane remain unimplemented |
 | Privacy | Anonymous usage-reporting preference not yet implemented |
 | Integrations | Not yet implemented |
 
