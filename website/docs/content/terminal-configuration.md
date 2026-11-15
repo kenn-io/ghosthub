@@ -128,9 +128,12 @@ sessions. See [Sessions](sessions.md#attach-and-detach) for terminal controls.
 
 ### Windows and Linux
 
-In the Rust app, drag across visible terminal text to select it. Hold **Shift**
-while dragging when tmux or another terminal application uses the mouse.
-The selection stays highlighted, and **Ctrl+Shift+C** copies it.
+In the Rust app, drag across visible terminal text to select it. Double-click
+to select a word, or triple-click to select a whole line, even when it wraps
+onto another screen row. Drag after a double- or triple-click to extend by
+words or lines.
+Hold **Shift** with these gestures when tmux or another terminal application
+uses the mouse. The selection stays highlighted, and **Ctrl+Shift+C** copies it.
 Use your multiplexer's copy mode for text outside the visible screen.
 
 Selections copy to the clipboard automatically by default. Open the gear

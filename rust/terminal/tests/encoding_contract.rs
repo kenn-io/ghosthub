@@ -618,6 +618,7 @@ fn legacy_modified_keys_preserve_terminal_modifiers() {
 #[test]
 fn sgr_mouse_encodes_coordinates_beyond_the_legacy_limit() {
     let input = MouseInput {
+        click_count: 0,
         action: MouseAction::Press(MouseButton::Left),
         column: 119,
         row: 39,
@@ -648,6 +649,7 @@ fn sgr_mouse_preserves_modifiers_motion_and_release() {
     assert_eq!(
         encode_mouse(
             MouseInput {
+                click_count: 0,
                 action: MouseAction::Move(Some(MouseButton::Right)),
                 column: 4,
                 row: 2,
@@ -660,6 +662,7 @@ fn sgr_mouse_preserves_modifiers_motion_and_release() {
     assert_eq!(
         encode_mouse(
             MouseInput {
+                click_count: 0,
                 action: MouseAction::Release(MouseButton::Right),
                 column: 4,
                 row: 2,
@@ -674,6 +677,7 @@ fn sgr_mouse_preserves_modifiers_motion_and_release() {
 #[test]
 fn mouse_input_is_silent_when_the_application_did_not_enable_tracking() {
     let input = MouseInput {
+        click_count: 0,
         action: MouseAction::WheelUp,
         column: 1,
         row: 1,

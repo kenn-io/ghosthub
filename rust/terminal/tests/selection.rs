@@ -10,6 +10,7 @@ fn mouse(
     shift: bool,
 ) -> Vec<u8> {
     engine.mouse_input(MouseInput {
+        click_count: 0,
         action,
         column,
         row,
@@ -376,6 +377,7 @@ fn explicit_copy_reaches_the_worker_even_with_remote_clipboard_writes_disabled()
     ] {
         worker
             .send_mouse(MouseInput {
+                click_count: 0,
                 action,
                 column: match action {
                     MouseAction::Press(_) => 0,

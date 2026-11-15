@@ -1683,6 +1683,7 @@ mod tests {
         let (sender, receiver) = bounded(COMMAND_CAPACITY);
         let ingress = Mutex::new(IngressState {
             mouse_motion: Some(MouseInput {
+                click_count: 0,
                 action: MouseAction::Move(None),
                 column: 4,
                 row: 2,
@@ -1695,6 +1696,7 @@ mod tests {
             &sender,
             &ingress,
             Command::Mouse(MouseInput {
+                click_count: 0,
                 action: MouseAction::Press(MouseButton::Left),
                 column: 4,
                 row: 2,
@@ -1866,6 +1868,7 @@ mod tests {
                 pixel_size: PixelSize::new(1_320, 860),
             }),
             mouse_motion: Some(MouseInput {
+                click_count: 0,
                 action: MouseAction::Move(None),
                 column: 3,
                 row: 2,
@@ -1980,6 +1983,7 @@ mod tests {
             &sender,
             &ingress,
             Command::Mouse(MouseInput {
+                click_count: 0,
                 action: MouseAction::Press(MouseButton::Left),
                 column: 3,
                 row: 2,
@@ -1992,6 +1996,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .mouse_motion = Some(MouseInput {
+            click_count: 0,
             action: MouseAction::Move(Some(MouseButton::Left)),
             column: 4,
             row: 2,
@@ -2033,6 +2038,7 @@ mod tests {
                 pixel_size: PixelSize::default(),
             }),
             mouse_motion: Some(MouseInput {
+                click_count: 0,
                 action: MouseAction::Move(None),
                 column: 79,
                 row: 23,

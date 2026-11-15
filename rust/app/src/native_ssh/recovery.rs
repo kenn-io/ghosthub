@@ -73,6 +73,74 @@ impl Fixture {
 }
 
 #[test]
+#[ignore = "requires pinned helpers and isolated OpenSSH; run make rust-test-ssh-live"]
+fn cancelled_attachment_receipt_leaves_the_shared_terminal_usable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::recovery::cancelled_attachment_receipt_leaves_the_shared_terminal_usable",
+    ) else {
+        return;
+    };
+    fixture.connect();
+    fixture.attach("review", "before-cancellation");
+    fixture.wait(|_| {
+        !fixture
+            .workspace
+            .remote_attachment_pending(&fixture.host_id)
+    });
+    // Pause only the receipt rename, after its staging file has been written.
+    let directory = fixture.root.join("receipt-gate");
+    std::fs::create_dir(&directory).unwrap();
+    let script = directory.join("mv");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$2\" > '{root}/staging'\n: > '{root}/started'\nwhile [ ! -f '{root}/release' ]; do sleep 0.01; done\nexec /bin/mv \"$@\"\n",
+            root = directory.display(),
+        ),
+    ).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    fixture.tmux(&[
+        "set-environment",
+        "-g",
+        "PATH",
+        &format!("{}:/usr/bin:/bin", directory.display()),
+    ]);
+    let other = fixture.open_scene();
+    other
+        .workspace
+        .switch_session(&SessionSelection::new(
+            &fixture.host_id,
+            &fixture.endpoint,
+            "review",
+        ))
+        .unwrap();
+    fixture.wait(|_| directory.join("started").exists());
+    let staging = PathBuf::from(std::fs::read_to_string(directory.join("staging")).unwrap());
+    assert!(staging.exists());
+    other.workspace.close();
+    fixture.wait(|_| !staging.exists());
+    assert!(
+        fixture
+            .tmux(&["show-messages", "-J"])
+            .contains(staging.to_str().unwrap())
+    );
+    std::fs::write(directory.join("release"), "").unwrap();
+    fixture.wait(|_| {
+        !fixture
+            .tmux(&["show-messages", "-J"])
+            .contains(staging.to_str().unwrap())
+    });
+    assert_eq!(
+        fixture.tmux(&["display-message", "-p", "-t", "=review:", "#{pane_in_mode}"]),
+        "0"
+    );
+    fixture.tmux_shell("review", "after-cancellation");
+    fixture.workspace.close();
+}
+
+#[test]
 #[ignore = "requires the isolated SSH fixture; run make rust-test-ssh-live"]
 fn transport_loss_automatically_restores_the_selected_tmux_session() {
     let Some(fixture) = Fixture::isolated(

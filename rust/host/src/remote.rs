@@ -945,8 +945,10 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         let receipt = crate::local::creation_identity_receipt()
             .map_err(|error| RemoteTmuxError::from_host(&error))?;
         // Only an attached client can acknowledge startup; screen modes are optional.
+        // Cancellation can remove the staging file mid-write. A failed receipt
+        // must not make run-shell cover a shared pane with its error output.
         let report = format!(
-            "/bin/sh -c 'test \"$6\" = 1 || exit; umask 077; set -C; printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && mv -f \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}' '#{{!=:#{{client_session}},}}'",
+            "/bin/sh -c 'test \"$6\" = 1 || exit; umask 077; set -C; printf \"%s|%s|%s|!\" \"$1\" \"$2\" \"$3\" > \"$4\" && mv -f \"$4\" \"$5\"' ghosthub-receipt '#{{pid}}' '#{{session_id}}' '#{{session_created}}' '{}' '{}' '#{{!=:#{{client_session}},}}' || :",
             receipt.staging_path, receipt.path
         );
         let identity = session.identity();

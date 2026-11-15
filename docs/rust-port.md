@@ -1760,9 +1760,18 @@ domains.
 Terminal drag selection uses libghostty's tracked grid references and active
 selection. The renderer receives owned `Cell.selected` flags; it does not
 reconstruct text from paint runs. The library formatter copies selected Unicode
-and joins soft-wrapped lines. Selection covers the visible screen; history
-stays in the multiplexer. Typing, a new left click, or resizing clears the
+and joins soft-wrapped lines. Selection starts in the visible screen; history
+stays in the multiplexer. Typing, a new single left click, or resizing clears the
 selection. A drag cannot cross primary/alternate-screen boundaries.
+
+Native left presses carry GPUI's click count through `MouseInput.click_count`.
+Zero or one starts cell selection, two selects a word, and three or more
+selects a logical line. The terminal worker keeps that unit for the whole
+gesture, including the final release position. libghostty's gesture API extends
+whole words and lines in either direction, including blank lines, and honors
+OSC 133 prompt boundaries and soft wraps. Repeated
+clicks show a selection before any mouse motion. Application mouse reports
+keep their original protocol; Shift overrides them for all selection units.
 
 Normal mouse reports still reach mouse-aware applications. Shift-left-drag
 selects locally, and that route lasts until release even if Shift is released
