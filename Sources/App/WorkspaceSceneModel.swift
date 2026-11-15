@@ -725,7 +725,11 @@ final class WorkspaceSceneModel: ObservableObject {
     private var pendingRemovalPresentationRestorations:
         [WorktreeMutationCoordinator.Scope:
             [TmuxPresentationKey: PendingRemovalPresentation]] = [:]
-    private var userNavigationRevision: UInt64 = 0
+    /// Every session check gives up once this changes, so their holds on
+    /// the views behind them end with the navigation, not with the check.
+    private var userNavigationRevision: UInt64 = 0 {
+        didSet { endSessionChecksSupersededByNavigation() }
+    }
     private var isShutDown = false
     private var sceneActivityGeneration: UInt64 = 0
     var suppressesSelectedWorktreeSessionOpen: Bool {
@@ -10589,13 +10593,10 @@ final class WorkspaceSceneModel: ObservableObject {
                     activateTmuxPresentation(retained)
                     // A shown terminal stays mounted, so its appear-time
                     // focus does not rerun. A session open superseded by
-                    // this return may have held the terminal's input and
-                    // cleared the window's first responder.
+                    // this return may have cleared the window's first
+                    // responder.
                     if returnsToShownTerminal,
                        activeBorrowedTmuxHandle == retained.handle {
-                        nativeTmuxSessionCoordinator.setKeyboardInteractionSuspended(
-                            false, handle: retained.handle
-                        )
                         nativeTmuxSessionCoordinator.requestKeyboardFocus(
                             handle: retained.handle
                         )
@@ -15751,6 +15752,13 @@ extension WorkspaceSceneModel {
         herdrPresentationValidationID != nil
             || backendTerminalPresentationValidationID != nil
             || zellijPresentationTask != nil
+    }
+
+    private func endSessionChecksSupersededByNavigation() {
+        guard !isShutDown else { return }
+        herdrPresentationValidationID = nil
+        backendTerminalPresentationValidationID = nil
+        invalidateZellijPresentationIntent()
     }
 
     struct SessionCheckHold {

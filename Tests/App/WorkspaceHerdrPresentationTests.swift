@@ -219,6 +219,58 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
+    @Test("switching tmux sessions during a Herdr check gives typing back at once")
+    func tmuxSwitchDuringHerdrCheckReleasesHold() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].tmuxSessions.append(
+            TmuxSessionSummary(name: "tmux-other", managed: false, windows: [])
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let sessions = try #require(
+            environment.snapshot.host(id: environment.hostID)?.herdrSessions
+        )
+        let gate = AsyncGate()
+        let probes = Mutex(0)
+        let model = try makeHerdrModel(
+            environment, store: store,
+            validationDiscovery: { _, _ in
+                probes.withLock { $0 += 1 }
+                await gate.wait()
+                return .available(sessions)
+            }
+        )
+        let first = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-work")
+        let second = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-other")
+        for selection in [second, first] {
+            let requested = store.requestedKeys.count
+            model.openBorrowedTmuxSession(selection)
+            // The terminal exists only once the session is the shown one.
+            await waitUntilMainActor {
+                model.prepareActiveBorrowedTmuxSurface()
+                return store.requestedKeys.count > requested
+            }
+        }
+
+        let check = Task {
+            try await model.openBorrowedHerdrSession(
+                WorkspaceHerdrSessionSelection(hostID: environment.hostID, name: "worker")
+            )
+        }
+        await waitUntilMainActor { probes.withLock { $0 } == 1 }
+        #expect(store.surface.isKeyboardInteractionSuspended)
+        model.openBorrowedTmuxSession(second)
+        model.openBorrowedTmuxSession(first)
+        model.prepareActiveBorrowedTmuxSurface()
+        #expect(model.activeBorrowedTmuxSelection == first)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
+
+        gate.open()
+        await #expect(throws: CancellationError.self) { try await check.value }
+        #expect(model.activeBorrowedTmuxSelection == first)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
+        await model.shutdown()
+    }
+
     @Test("active capable Herdr presentation routes pane splits")
     func activeHerdrPaneSplitRouting() async throws {
         let environment = try environment()
