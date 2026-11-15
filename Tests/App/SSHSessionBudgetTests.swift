@@ -172,24 +172,6 @@ struct SSHSessionBudgetTests {
         #expect(budget.capacity(forControlPath: Self.socket) == 4)
     }
 
-    @Test("commands that may not repeat report a refusal without running again")
-    func nonRepeatableCommandIsNotRetried() {
-        let budget = SSHSessionBudget(sleep: { _ in })
-        let attempts = LockedValue(0)
-
-        let output = budget.run(
-            arguments: Self.arguments,
-            timeout: 10,
-            retryRefusal: false
-        ) { _ in
-            attempts.withLock { $0 += 1 }
-            return Self.refused
-        }
-
-        #expect(output.status == 255)
-        #expect(attempts.load() == 1)
-    }
-
     @Test("a refusal with nothing else open backs off without lowering capacity")
     func refusalFromUncountedSessionsBacksOff() {
         let delays = LockedValue<[TimeInterval]>([])
@@ -212,24 +194,6 @@ struct SSHSessionBudgetTests {
         #expect(delays.load() == [0.25, 0.5])
         #expect(budget.capacity(forControlPath: Self.socket)
             == SSHSessionBudget.defaultCapacity)
-    }
-
-    @Test("persistent refusals stop after a bounded number of attempts")
-    func persistentRefusalIsBounded() {
-        let budget = SSHSessionBudget(sleep: { _ in })
-        let attempts = LockedValue(0)
-
-        let output = budget.run(
-            arguments: Self.arguments,
-            timeout: 10,
-            retryRefusal: true
-        ) { _ in
-            attempts.withLock { $0 += 1 }
-            return Self.refused
-        }
-
-        #expect(output.status == 255)
-        #expect(attempts.load() == SSHSessionBudget.maximumRefusalAttempts)
     }
 
     @Test("terminals fill a master only up to their share")

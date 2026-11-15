@@ -650,20 +650,23 @@ struct KwtInventoryClient: Sendable {
         sshConnectionArguments: [String]?,
         command: String
     ) async throws -> AccountCommandOutput {
-        var result = runOnce(
-            host: host,
-            sshConnectionArguments: sshConnectionArguments,
-            command: command
-        )
+        // A remote command can wait for a free SSH session, so it waits on
+        // a dispatch thread rather than Swift's shared worker pool.
+        let attempt = { @Sendable in
+            await BlockingTask.run {
+                runOnce(
+                    host: host,
+                    sshConnectionArguments: sshConnectionArguments,
+                    command: command
+                )
+            }
+        }
+        var result = await attempt()
         for delay in retryDelays {
             guard Self.isRetryableFailure(result) else { break }
             try await Task.sleep(for: delay)
             try Task.checkCancellation()
-            result = runOnce(
-                host: host,
-                sshConnectionArguments: sshConnectionArguments,
-                command: command
-            )
+            result = await attempt()
         }
         return result
     }
