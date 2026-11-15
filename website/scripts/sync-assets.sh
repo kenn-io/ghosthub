@@ -32,6 +32,8 @@ assets=(
   guide-rust-agent-attention.png
   guide-rust-agent-hooks.png
   guide-rust-keyboard.png
+  guide-rust-selection.png
+  guide-rust-terminal-settings.png
   guide-rust-collapsed-host.png
   guide-rust-sidebar-settings.png
   guide-rust-session-actions.png

@@ -420,6 +420,7 @@ fn saved_terminal_settings_are_persisted_and_published_without_rebuilding_hosts(
         cursor_style: workspace::CursorStyle::Underline,
         allow_shell_integration_cursor: true,
         hide_mouse_while_typing: false,
+        copy_on_select: false,
         allow_remote_clipboard_write: false,
     };
     assert!(workspace.hide_mouse_while_typing());
@@ -433,12 +434,25 @@ fn saved_terminal_settings_are_persisted_and_published_without_rebuilding_hosts(
     assert_eq!(snapshot.appearance().cursor_style(), draft.cursor_style);
     assert!(snapshot.appearance().allow_shell_integration_cursor());
     assert!(!snapshot.appearance().hide_mouse_while_typing());
+    assert!(!snapshot.appearance().copy_on_select());
     assert!(!snapshot.appearance().allow_remote_clipboard_write());
     assert!(snapshot.hosts().is_empty());
     let loaded = ApplicationConfig::load(&roots).expect("reload application config");
     assert_eq!(loaded.terminal().cursor_style(), draft.cursor_style);
     assert!(loaded.terminal().allow_shell_integration_cursor());
     assert!(!loaded.terminal().hide_mouse_while_typing());
+    assert!(!loaded.terminal().copy_on_select());
+    let mut appearance = workspace.configured_appearance();
+    appearance.font_size = "18".into();
+    workspace
+        .save_appearance(&appearance)
+        .expect("save appearance");
+    assert!(
+        !ApplicationConfig::load(&roots)
+            .unwrap()
+            .terminal()
+            .copy_on_select()
+    );
     assert!(!loaded.terminal().allow_remote_clipboard_write());
     fs::remove_dir_all(root).expect("remove temporary config root");
 }

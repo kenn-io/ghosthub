@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, never, select};
-use input::{EncodedInput, KeyInput, MouseAction, MouseInput, encode_mouse};
+use input::{EncodedInput, KeyInput, MouseAction, MouseInput};
 use session::{
     AdmissionPlan, AttachPlan, CreateOnce, HerdrAttachPlan, HerdrLaunchOnce, RepairOrOpenPlan,
     ZellijAttachPlan, ZellijLaunchOnce,
@@ -54,6 +54,7 @@ enum Command {
     Input(Vec<u8>),
     Key(KeyInput),
     Mouse(MouseInput),
+    CopySelection { visibility: u64 },
 }
 
 struct QueuedCommand {
@@ -629,6 +630,21 @@ impl TerminalWorker {
         }
     }
 
+    /// Queue an explicit copy of the active libghostty selection.
+    ///
+    /// # Errors
+    /// Returns an error when the input queue is full or the worker has stopped.
+    pub fn copy_selection(&self) -> Result<(), WorkerError> {
+        try_send_ordered(
+            &self.commands,
+            &self.ingress,
+            Command::CopySelection {
+                visibility: self.clipboard_visibility.load(Ordering::Acquire),
+            },
+            "copy terminal selection",
+        )
+    }
+
     /// Approve and queue a paste previously reported for confirmation.
     ///
     /// # Errors
@@ -1184,10 +1200,23 @@ fn process_ready_command(
             }
         }
         Command::Mouse(input) => {
-            let encoded = encode_mouse(input, engine.modes());
+            let encoded = engine.mouse_input(input);
             encoded.is_empty()
                 || queue_write(pending_writes, WriteSource::Ui, shutdown, events, encoded)
         }
+        Command::CopySelection { visibility } => engine.copy_selection().is_none_or(|text| {
+            emit_event(
+                events,
+                shutdown,
+                TerminalEvent::ClipboardWrite {
+                    write: ClipboardWrite {
+                        target: crate::ClipboardTarget::Clipboard,
+                        text,
+                    },
+                    visibility,
+                },
+            )
+        }),
     }
 }
 
@@ -1447,7 +1476,9 @@ const fn command_bytes(command: &Command) -> usize {
     match command {
         Command::Input(bytes) => bytes.len(),
         Command::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
-        Command::Key(KeyInput::Named { .. }) | Command::Mouse(_) => 0,
+        Command::Key(KeyInput::Named { .. })
+        | Command::Mouse(_)
+        | Command::CopySelection { .. } => 0,
     }
 }
 

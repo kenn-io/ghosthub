@@ -444,6 +444,7 @@ struct TerminalFile {
     cursor_style: Option<CursorStyle>,
     shell_integration_cursor: Option<bool>,
     mouse_hide_while_typing: Option<bool>,
+    copy_on_select: Option<bool>,
     clipboard_write: Option<bool>,
 }
 
@@ -501,13 +502,32 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
             .collect::<Result<Vec<_>, ConfigError>>()?;
         validate_unique_ssh_hosts(&ssh_hosts)?;
 
-        let terminal = file.terminal;
+        Ok(Self {
+            local,
+            wsl: WslSettings {
+                distro: file.wsl.distro,
+                tmux_binary,
+                socket_directory: file.wsl.socket_directory,
+            },
+            terminal: TerminalAppearance::try_from(file.terminal)?,
+            sidebar: file.sidebar,
+            keyboard: file.keyboard,
+            ssh_hosts,
+        })
+    }
+}
+
+impl TryFrom<TerminalFile> for TerminalAppearance {
+    type Error = ConfigError;
+
+    fn try_from(terminal: TerminalFile) -> Result<Self, Self::Error> {
+        let defaults = Self::default();
         let has_configured_colors = terminal.background.is_some() || terminal.foreground.is_some();
         let font_family = terminal
             .font_family
-            .unwrap_or_else(|| defaults.terminal.font_family.clone());
+            .unwrap_or_else(|| defaults.font_family.clone());
         require_nonempty("terminal.font-family", &font_family)?;
-        let font_size = terminal.font_size.unwrap_or(defaults.terminal.font_size);
+        let font_size = terminal.font_size.unwrap_or(defaults.font_size);
         if font_size == 0 {
             return Err(ConfigError::new(
                 "terminal.font-size must be greater than zero",
@@ -515,12 +535,12 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
         }
         let configured_background = terminal
             .background
-            .map_or(Ok(defaults.terminal.background), |value| {
+            .map_or(Ok(defaults.background), |value| {
                 parse_rgb("terminal.background", &value)
             })?;
         let configured_foreground = terminal
             .foreground
-            .map_or(Ok(defaults.terminal.foreground), |value| {
+            .map_or(Ok(defaults.foreground), |value| {
                 parse_rgb("terminal.foreground", &value)
             })?;
 
@@ -529,7 +549,7 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
                 TerminalTheme::from_colors(configured_background, configured_foreground)
                     .unwrap_or(TerminalTheme::Custom)
             } else {
-                defaults.terminal.theme
+                defaults.theme
             }
         });
         let (background, foreground) = theme
@@ -537,34 +557,22 @@ impl TryFrom<ConfigFile> for ApplicationConfig {
             .unwrap_or((configured_background, configured_foreground));
 
         Ok(Self {
-            local,
-            wsl: WslSettings {
-                distro: file.wsl.distro,
-                tmux_binary,
-                socket_directory: file.wsl.socket_directory,
-            },
-            terminal: TerminalAppearance {
-                theme,
-                font_family,
-                font_size,
-                background,
-                foreground,
-                cursor_style: terminal
-                    .cursor_style
-                    .unwrap_or(defaults.terminal.cursor_style),
-                allow_shell_integration_cursor: terminal
-                    .shell_integration_cursor
-                    .unwrap_or(defaults.terminal.allow_shell_integration_cursor),
-                hide_mouse_while_typing: terminal
-                    .mouse_hide_while_typing
-                    .unwrap_or(defaults.terminal.hide_mouse_while_typing),
-                allow_remote_clipboard_write: terminal
-                    .clipboard_write
-                    .unwrap_or(defaults.terminal.allow_remote_clipboard_write),
-            },
-            sidebar: file.sidebar,
-            keyboard: file.keyboard,
-            ssh_hosts,
+            theme,
+            font_family,
+            font_size,
+            background,
+            foreground,
+            cursor_style: terminal.cursor_style.unwrap_or(defaults.cursor_style),
+            allow_shell_integration_cursor: terminal
+                .shell_integration_cursor
+                .unwrap_or(defaults.allow_shell_integration_cursor),
+            hide_mouse_while_typing: terminal
+                .mouse_hide_while_typing
+                .unwrap_or(defaults.hide_mouse_while_typing),
+            copy_on_select: terminal.copy_on_select.unwrap_or(defaults.copy_on_select),
+            allow_remote_clipboard_write: terminal
+                .clipboard_write
+                .unwrap_or(defaults.allow_remote_clipboard_write),
         })
     }
 }
@@ -594,6 +602,7 @@ impl From<&ApplicationConfig> for ConfigFile {
                 cursor_style: Some(config.terminal.cursor_style),
                 shell_integration_cursor: Some(config.terminal.allow_shell_integration_cursor),
                 mouse_hide_while_typing: Some(config.terminal.hide_mouse_while_typing),
+                copy_on_select: Some(config.terminal.copy_on_select),
                 clipboard_write: Some(config.terminal.allow_remote_clipboard_write),
             },
             ssh_hosts: config
@@ -801,6 +810,7 @@ impl TerminalTheme {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // Independent terminal preferences.
 pub struct TerminalAppearance {
     theme: TerminalTheme,
     font_family: String,
@@ -810,6 +820,7 @@ pub struct TerminalAppearance {
     cursor_style: CursorStyle,
     allow_shell_integration_cursor: bool,
     hide_mouse_while_typing: bool,
+    copy_on_select: bool,
     allow_remote_clipboard_write: bool,
 }
 
@@ -843,6 +854,7 @@ impl TerminalAppearance {
             cursor_style: CursorStyle::Block,
             allow_shell_integration_cursor: false,
             hide_mouse_while_typing: true,
+            copy_on_select: true,
             allow_remote_clipboard_write,
         })
     }
@@ -883,6 +895,7 @@ impl TerminalAppearance {
             cursor_style: CursorStyle::Block,
             allow_shell_integration_cursor: false,
             hide_mouse_while_typing: true,
+            copy_on_select: true,
             allow_remote_clipboard_write,
         })
     }
@@ -928,6 +941,17 @@ impl TerminalAppearance {
     }
 
     #[must_use]
+    pub const fn copy_on_select(&self) -> bool {
+        self.copy_on_select
+    }
+
+    #[must_use]
+    pub fn with_copy_on_select(mut self, enabled: bool) -> Self {
+        self.copy_on_select = enabled;
+        self
+    }
+
+    #[must_use]
     pub const fn allow_remote_clipboard_write(&self) -> bool {
         self.allow_remote_clipboard_write
     }
@@ -968,6 +992,7 @@ impl Default for TerminalAppearance {
             cursor_style: CursorStyle::Block,
             allow_shell_integration_cursor: false,
             hide_mouse_while_typing: true,
+            copy_on_select: true,
             allow_remote_clipboard_write: true,
         }
     }

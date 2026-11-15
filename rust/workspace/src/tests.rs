@@ -2038,6 +2038,7 @@ fn appearance_projects_terminal_default_colors() {
         cursor_style: CursorStyle::Block,
         allow_shell_integration_cursor: false,
         hide_mouse_while_typing: true,
+        copy_on_select: false,
         allow_remote_clipboard_write: true,
     };
 
@@ -15787,6 +15788,7 @@ fn light_themes_render_every_ansi_color_with_readable_contrast() {
             cursor_style: CursorStyle::Block,
             allow_shell_integration_cursor: false,
             hide_mouse_while_typing: true,
+            copy_on_select: false,
             allow_remote_clipboard_write: true,
         };
         let colors = default_colors(&appearance);

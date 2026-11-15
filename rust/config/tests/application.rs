@@ -49,6 +49,7 @@ fn missing_application_config_uses_documented_defaults() {
     assert_eq!(loaded.terminal().cursor_style(), CursorStyle::Block);
     assert!(!loaded.terminal().allow_shell_integration_cursor());
     assert!(loaded.terminal().hide_mouse_while_typing());
+    assert!(loaded.terminal().copy_on_select());
     assert!(loaded.terminal().allow_remote_clipboard_write());
 }
 
@@ -69,6 +70,7 @@ fn application_config_projects_all_read_only_settings() {
             cursor-style = "underline"
             shell-integration-cursor = true
             mouse-hide-while-typing = false
+            copy-on-select = false
             clipboard-write = false
         "##,
     )
@@ -84,6 +86,7 @@ fn application_config_projects_all_read_only_settings() {
     assert_eq!(parsed.terminal().cursor_style(), CursorStyle::Underline);
     assert!(parsed.terminal().allow_shell_integration_cursor());
     assert!(!parsed.terminal().hide_mouse_while_typing());
+    assert!(!parsed.terminal().copy_on_select());
     assert!(!parsed.terminal().allow_remote_clipboard_write());
 }
 
@@ -295,7 +298,8 @@ fn terminal_appearance_round_trips_without_changing_other_settings() {
         .expect("valid starting configuration");
     let appearance = TerminalAppearance::new("Berkeley Mono", 15, "#111820", "#e4e8ef", false)
         .expect("valid appearance")
-        .with_terminal_preferences(CursorStyle::Bar, true, false);
+        .with_terminal_preferences(CursorStyle::Bar, true, false)
+        .with_copy_on_select(false);
 
     config
         .replace_terminal_appearance(&roots, appearance)
@@ -311,6 +315,7 @@ fn terminal_appearance_round_trips_without_changing_other_settings() {
     assert_eq!(loaded.terminal().cursor_style(), CursorStyle::Bar);
     assert!(loaded.terminal().allow_shell_integration_cursor());
     assert!(!loaded.terminal().hide_mouse_while_typing());
+    assert!(!loaded.terminal().copy_on_select());
     fs::remove_dir_all(root).expect("remove temporary config root");
 }
 

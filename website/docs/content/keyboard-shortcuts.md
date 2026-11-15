@@ -136,8 +136,9 @@ choose another Settings pane.
 ![Custom sidebar and session-navigation shortcuts in the Rust app](/docs/assets/guide-rust-keyboard.png)
 
 Include **Ctrl** or **Alt** in each binding. The recorder keeps the previous
-binding when it reports a conflict with another action, Paste, or an operating
-system shortcut. **Ctrl+Shift+V** remains reserved for Paste.
+binding when it reports a conflict with another action, Copy, Paste, or an
+operating system shortcut. **Ctrl+Shift+V** remains reserved for Paste and
+**Ctrl+Shift+C** for Copy selection.
 
 Next and Previous Session follow the available session rows on the active
 session's host, including the chosen sort and visibility settings. Stopped

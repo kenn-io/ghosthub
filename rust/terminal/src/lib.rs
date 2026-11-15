@@ -155,6 +155,7 @@ impl EngineOutput {
 
 pub struct TerminalEngine {
     vt: vt::Vt,
+    selecting: bool,
     entered_alternate_screen: bool,
     surface: Arc<SurfaceStore>,
     rows: GridObservation,
@@ -243,6 +244,7 @@ impl TerminalEngine {
         vt.cursor(default_cursor_shape);
         let mut engine = Self {
             vt,
+            selecting: false,
             entered_alternate_screen: false,
             surface: Arc::new(SurfaceStore::new(SurfaceFrame::blank(0, size))),
             rows: GridObservation {
@@ -314,10 +316,56 @@ impl TerminalEngine {
 
     #[must_use]
     pub fn encode_input(&mut self, key: &input::KeyInput) -> input::EncodedInput {
+        self.clear_selection();
         if let input::KeyInput::Paste(text) = key {
             input::encode_paste(text, self.modes().bracketed_paste)
         } else {
             input::EncodedInput::ready(self.vt.key(key))
+        }
+    }
+
+    /// Select visible terminal text, or preserve the application's mouse protocol.
+    #[must_use]
+    pub fn mouse_input(&mut self, input: input::MouseInput) -> Vec<u8> {
+        use input::{MouseAction, MouseButton};
+        if input.column >= self.size.columns() || input.row >= self.size.rows() {
+            return Vec::new();
+        }
+        match input.action {
+            MouseAction::Press(MouseButton::Left) => {
+                self.selecting = false;
+                self.clear_selection();
+                if input.modifiers.shift || self.modes().mouse_tracking == MouseTracking::None {
+                    self.selecting = true;
+                    self.vt.select(0, input.column, input.row);
+                    self.publish(false);
+                    return Vec::new();
+                }
+            }
+            MouseAction::Move(Some(MouseButton::Left)) if self.selecting => {
+                self.vt.select(1, input.column, input.row);
+                self.publish(false);
+                return Vec::new();
+            }
+            MouseAction::Release(MouseButton::Left) if self.selecting => {
+                self.vt.select(2, input.column, input.row);
+                self.selecting = false;
+                self.publish(false);
+                return Vec::new();
+            }
+            _ => {}
+        }
+        input::encode_mouse(input, self.modes())
+    }
+
+    #[must_use]
+    pub fn copy_selection(&mut self) -> Option<String> {
+        self.vt.copy_selection()
+    }
+
+    pub fn clear_selection(&mut self) {
+        if self.vt.clear_selection() {
+            self.publish(false);
         }
     }
 
@@ -337,6 +385,7 @@ impl TerminalEngine {
         resize_sequence: u64,
         pixel_size: PixelSize,
     ) {
+        self.clear_selection();
         let width =
             u32::from(pixel_size.width) / u32::try_from(size.columns()).expect("columns fit u32");
         let height =

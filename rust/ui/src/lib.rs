@@ -176,7 +176,7 @@ fn surface_paint_row(
             .map(|cursor| cursor_override.unwrap_or(cursor.shape));
         let inverted = cell.style.contains(CellStyle::INVERSE)
             ^ matches!(cell_cursor, Some(CursorShape::Block));
-        let (mut foreground, background) = if inverted {
+        let (mut foreground, mut background) = if inverted {
             (cell.background, cell.foreground)
         } else {
             (cell.foreground, cell.background)
@@ -187,6 +187,10 @@ fn surface_paint_row(
                 foreground.green / 2,
                 foreground.blue / 2,
             );
+        }
+        if cell.selected {
+            foreground = Rgb::new(0xf1, 0xf4, 0xf8);
+            background = Rgb::new(0x24, 0x52, 0x7c);
         }
         if cell.style.contains(CellStyle::HIDDEN) {
             foreground = background;
@@ -538,6 +542,7 @@ enum TerminalField {
     CursorStyle,
     ShellIntegrationCursor,
     HideMouseWhileTyping,
+    CopyOnSelect,
     RemoteClipboardWrite,
 }
 
@@ -547,12 +552,13 @@ impl TerminalField {
             (Self::CursorStyle, false) | (Self::HideMouseWhileTyping, true) => {
                 Self::ShellIntegrationCursor
             }
-            (Self::ShellIntegrationCursor, false) | (Self::RemoteClipboardWrite, true) => {
+            (Self::ShellIntegrationCursor, false) | (Self::CopyOnSelect, true) => {
                 Self::HideMouseWhileTyping
             }
-            (Self::HideMouseWhileTyping, false) | (Self::CursorStyle, true) => {
-                Self::RemoteClipboardWrite
+            (Self::HideMouseWhileTyping, false) | (Self::RemoteClipboardWrite, true) => {
+                Self::CopyOnSelect
             }
+            (Self::CopyOnSelect, false) | (Self::CursorStyle, true) => Self::RemoteClipboardWrite,
             (Self::RemoteClipboardWrite, false) | (Self::ShellIntegrationCursor, true) => {
                 Self::CursorStyle
             }
@@ -1703,6 +1709,7 @@ impl TerminalPointer {
 enum PendingUiInput {
     Key(KeyInput),
     Mouse(MouseInput),
+    CopySelection,
     Wheel(WheelBatch),
     ClipboardResponse(u64, Vec<u8>),
     Resize(TerminalResize),
@@ -1763,6 +1770,7 @@ impl PendingUiInput {
             Self::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
             Self::ClipboardResponse(_, bytes) => bytes.len(),
             Self::Key(KeyInput::Named { .. })
+            | Self::CopySelection
             | Self::Mouse(_)
             | Self::Wheel(_)
             | Self::Resize(_) => 0,
@@ -2373,6 +2381,10 @@ impl RootView {
             TerminalField::RemoteClipboardWrite if activate => {
                 editor.draft.allow_remote_clipboard_write =
                     !editor.draft.allow_remote_clipboard_write;
+                true
+            }
+            TerminalField::CopyOnSelect if activate => {
+                editor.draft.copy_on_select = !editor.draft.copy_on_select;
                 true
             }
             _ => false,
@@ -3886,6 +3898,13 @@ impl RootView {
             }
             return;
         }
+        if is_copy_shortcut(keystroke) {
+            if !event.is_held {
+                self.enqueue_input(presentation_id, PendingUiInput::CopySelection);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if is_paste_shortcut(keystroke) {
             if !event.is_held
                 && let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
@@ -3937,6 +3956,7 @@ impl RootView {
             return;
         }
         if is_paste_shortcut(&event.keystroke)
+            || is_copy_shortcut(&event.keystroke)
             || self.application_shortcut(&event.keystroke).is_some()
         {
             cx.stop_propagation();
@@ -3990,6 +4010,11 @@ impl RootView {
                     event.modifiers,
                 ) {
                     self.pointer.finish_release(button);
+                    if button == MouseButton::Left
+                        && self.workspace.snapshot().appearance().copy_on_select()
+                    {
+                        self.enqueue_input(presentation_id, PendingUiInput::CopySelection);
+                    }
                 }
                 cx.stop_propagation();
             }
@@ -4250,6 +4275,7 @@ impl RootView {
             let result = match &input.input {
                 PendingUiInput::Key(input) => self.workspace.send_key(input.clone()),
                 PendingUiInput::Mouse(input) => self.workspace.send_mouse(*input),
+                PendingUiInput::CopySelection => self.workspace.copy_terminal_selection(),
                 PendingUiInput::Wheel(batch) => self.workspace.send_mouse(batch.input),
                 PendingUiInput::ClipboardResponse(generation, bytes) => self
                     .workspace
@@ -6055,6 +6081,10 @@ impl RootView {
                             dialog.terminal_editor.draft.allow_remote_clipboard_write =
                                 !dialog.terminal_editor.draft.allow_remote_clipboard_write;
                         }
+                        TerminalField::CopyOnSelect => {
+                            dialog.terminal_editor.draft.copy_on_select =
+                                !dialog.terminal_editor.draft.copy_on_select;
+                        }
                         TerminalField::CursorStyle => {}
                     }
                 }
@@ -6145,14 +6175,27 @@ impl RootView {
             ))
             .child(Self::terminal_settings_section(
                 "Clipboard",
-                self.terminal_toggle_row(
-                    "terminal-remote-clipboard-write",
-                    "Allow remote clipboard writes",
-                    "Let terminal applications copy text to your clipboard with OSC 52.",
-                    TerminalField::RemoteClipboardWrite,
-                    editor.draft.allow_remote_clipboard_write,
-                    cx,
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(self.terminal_toggle_row(
+                        "terminal-copy-on-select",
+                        "Copy selections directly to the clipboard",
+                        "Replace clipboard contents when a selection finishes.",
+                        TerminalField::CopyOnSelect,
+                        editor.draft.copy_on_select,
+                        cx,
+                    ))
+                    .child(self.terminal_toggle_row(
+                        "terminal-remote-clipboard-write",
+                        "Allow remote clipboard writes",
+                        "Let terminal applications copy text to your clipboard with OSC 52.",
+                        TerminalField::RemoteClipboardWrite,
+                        editor.draft.allow_remote_clipboard_write,
+                        cx,
+                    ))
+                    .into_any_element(),
             ));
         if let Some(error) = &editor.error {
             form = form.child(
@@ -9379,6 +9422,15 @@ fn is_paste_shortcut(keystroke: &gpui::Keystroke) -> bool {
         && keystroke.key.eq_ignore_ascii_case("v")
 }
 
+fn is_copy_shortcut(keystroke: &gpui::Keystroke) -> bool {
+    keystroke.modifiers.control
+        && keystroke.modifiers.shift
+        && keystroke.key.eq_ignore_ascii_case("c")
+        && !keystroke.modifiers.alt
+        && !keystroke.modifiers.platform
+        && !keystroke.modifiers.function
+}
+
 const fn input_modifiers(modifiers: gpui::Modifiers) -> InputModifiers {
     InputModifiers {
         shift: modifiers.shift,
@@ -9763,6 +9815,7 @@ mod tests {
             cursor_style: CursorStyle::Block,
             allow_shell_integration_cursor: false,
             hide_mouse_while_typing: true,
+            copy_on_select: false,
             allow_remote_clipboard_write: true,
         };
         let dialog = SettingsDialog::new(
@@ -9804,6 +9857,7 @@ mod tests {
             cursor_style: CursorStyle::Bar,
             allow_shell_integration_cursor: false,
             hide_mouse_while_typing: true,
+            copy_on_select: false,
             allow_remote_clipboard_write: true,
         };
         let mut dialog =
@@ -9833,6 +9887,8 @@ mod tests {
 
         advance_settings_focus(&mut dialog, false);
         advance_settings_focus(&mut dialog, false);
+        advance_settings_focus(&mut dialog, false);
+        assert_eq!(dialog.terminal_editor.field, TerminalField::CopyOnSelect);
         advance_settings_focus(&mut dialog, false);
         advance_settings_focus(&mut dialog, false);
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
@@ -9878,6 +9934,7 @@ mod tests {
                 cursor_style: CursorStyle::Bar,
                 allow_shell_integration_cursor: false,
                 hide_mouse_while_typing: true,
+                copy_on_select: false,
                 allow_remote_clipboard_write: true,
             },
             Vec::new(),

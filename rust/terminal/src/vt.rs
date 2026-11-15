@@ -24,6 +24,7 @@ struct RawCell {
     foreground: [u8; 3],
     background: [u8; 3],
     style: u8,
+    selected: bool,
 }
 
 type EffectCallback = unsafe extern "C" fn(*mut c_void, u32, *const u8, usize);
@@ -44,6 +45,9 @@ unsafe extern "C" {
     fn vt_row(vt: *mut c_void, identity: *mut u64, dirty: *mut bool) -> bool;
     fn vt_cell(vt: *mut c_void, cell: *mut RawCell) -> bool;
     fn vt_clean(vt: *mut c_void);
+    fn vt_clear_selection(vt: *mut c_void) -> bool;
+    fn vt_select(vt: *mut c_void, action: u8, x: u16, y: u16);
+    fn vt_copy_selection(vt: *mut c_void, text: *mut *const u8, len: *mut usize) -> bool;
     fn vt_key(
         vt: *mut c_void,
         named: u32,
@@ -89,6 +93,34 @@ unsafe extern "C" fn effect(userdata: *mut c_void, kind: u32, bytes: *const u8, 
 }
 
 impl Vt {
+    pub fn select(&mut self, action: u8, column: usize, row: usize) {
+        // SAFETY: the engine checks the coordinates against its current grid.
+        unsafe {
+            vt_select(
+                self.handle.as_ptr(),
+                action,
+                dimension(column),
+                dimension(row),
+            );
+        };
+    }
+
+    pub fn clear_selection(&mut self) -> bool {
+        // SAFETY: the handle is live and exclusively borrowed.
+        unsafe { vt_clear_selection(self.handle.as_ptr()) }
+    }
+
+    pub fn copy_selection(&mut self) -> Option<String> {
+        let mut text = std::ptr::null();
+        let mut len = 0;
+        // SAFETY: the bridge owns the returned bytes until its next copy call.
+        if !unsafe { vt_copy_selection(self.handle.as_ptr(), &raw mut text, &raw mut len) } {
+            return None;
+        }
+        // SAFETY: successful copies return a nonempty allocation of len bytes.
+        Some(String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(text, len) }).into_owned())
+    }
+
     pub fn key(&mut self, input: &input::KeyInput) -> Vec<u8> {
         use input::{KeyEvent, KeyInput, NamedKey};
         let (named, codepoint, text, modifiers, event) = match input {
@@ -255,6 +287,7 @@ impl Vt {
 
     pub fn cell(&mut self) -> Option<Cell> {
         let mut cell = RawCell {
+            selected: false,
             text: std::ptr::null(),
             len: 0,
             foreground: [0; 3],
@@ -275,6 +308,7 @@ impl Vt {
                 .into_owned()
         };
         let mut converted = Cell::plain(text);
+        converted.selected = cell.selected;
         converted.foreground = Rgb::new(cell.foreground[0], cell.foreground[1], cell.foreground[2]);
         converted.background = Rgb::new(cell.background[0], cell.background[1], cell.background[2]);
         for (bit, style) in [

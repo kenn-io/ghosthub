@@ -45,6 +45,7 @@ fn invalid_or_conflicting_shortcuts_reject_the_configuration() {
         "shift+b",
         "ctrl+ctrl+b",
         "ctrl+shift+v",
+        "ctrl+shift+c",
         "alt+f4",
         "ctrl+alt+delete",
         "ctrl+unknown",
