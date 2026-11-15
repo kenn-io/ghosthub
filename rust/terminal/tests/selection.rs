@@ -21,6 +21,57 @@ fn mouse(
 }
 
 #[test]
+fn release_finishes_the_drag_at_its_own_position() {
+    for (start, moved, released, expected) in [
+        (0, 4, 10, "hello world"),
+        (0, 10, 4, "hello"),
+        (10, 6, 0, "hello world"),
+    ] {
+        let mut engine = TerminalEngine::new(GridSize::new(12, 4).unwrap());
+        let _ = engine.process(b"hello world");
+        for (action, column) in [
+            (MouseAction::Press(MouseButton::Left), start),
+            (MouseAction::Move(Some(MouseButton::Left)), moved),
+            (MouseAction::Release(MouseButton::Left), released),
+        ] {
+            let _ = mouse(&mut engine, action, column, 0, false);
+        }
+        assert_eq!(engine.copy_selection().as_deref(), Some(expected));
+        assert!(engine.surface().load().row(0)[released].selected);
+    }
+}
+
+#[test]
+fn a_plain_click_clears_selection_without_starting_a_drag_on_release() {
+    let mut engine = TerminalEngine::new(GridSize::new(12, 4).unwrap());
+    let _ = engine.process(b"hello world");
+    for (action, column) in [
+        (MouseAction::Press(MouseButton::Left), 0),
+        (MouseAction::Move(Some(MouseButton::Left)), 4),
+        (MouseAction::Release(MouseButton::Left), 10),
+    ] {
+        let _ = mouse(&mut engine, action, column, 0, false);
+    }
+    assert!(engine.copy_selection().is_some());
+    let _ = mouse(
+        &mut engine,
+        MouseAction::Press(MouseButton::Left),
+        2,
+        0,
+        false,
+    );
+    let _ = mouse(
+        &mut engine,
+        MouseAction::Release(MouseButton::Left),
+        4,
+        0,
+        false,
+    );
+    assert!(engine.copy_selection().is_none());
+    assert!(engine.surface().load().cells().all(|cell| !cell.selected));
+}
+
+#[test]
 fn drag_selection_copies_library_text_and_publishes_highlights() {
     let mut engine = TerminalEngine::new(GridSize::new(12, 4).unwrap());
     let _ = engine.process("hello world\r\ncafé 界e\u{301}".as_bytes());
@@ -189,6 +240,14 @@ fn a_screen_switch_during_drag_does_not_select_the_other_screen() {
         0,
         false,
     );
+    let _ = mouse(
+        &mut engine,
+        MouseAction::Move(Some(MouseButton::Left)),
+        4,
+        0,
+        false,
+    );
+    assert_eq!(engine.copy_selection().as_deref(), Some("hello"));
     let _ = engine.process(b"\x1b[?1049halternate");
     let _ = mouse(
         &mut engine,
@@ -205,6 +264,38 @@ fn a_screen_switch_during_drag_does_not_select_the_other_screen() {
         false,
     );
     assert!(engine.copy_selection().is_none());
+}
+
+#[test]
+fn release_after_the_anchor_scrolls_away_does_not_select_new_output() {
+    let mut engine = TerminalEngine::new(GridSize::new(12, 2).unwrap());
+    let _ = engine.process(b"hello world");
+    let _ = mouse(
+        &mut engine,
+        MouseAction::Press(MouseButton::Left),
+        0,
+        0,
+        false,
+    );
+    let _ = mouse(
+        &mut engine,
+        MouseAction::Move(Some(MouseButton::Left)),
+        4,
+        0,
+        false,
+    );
+    assert_eq!(engine.copy_selection().as_deref(), Some("hello"));
+    let _ = engine.process(b"\r\nnext\r\nnew output\r\nlast");
+    assert_eq!(engine.copy_selection().as_deref(), Some("hello"));
+    let _ = mouse(
+        &mut engine,
+        MouseAction::Release(MouseButton::Left),
+        10,
+        0,
+        false,
+    );
+    assert_eq!(engine.copy_selection().as_deref(), Some("hello"));
+    assert!(engine.surface().load().cells().all(|cell| !cell.selected));
 }
 
 #[test]
@@ -286,10 +377,10 @@ fn explicit_copy_reaches_the_worker_even_with_remote_clipboard_writes_disabled()
         worker
             .send_mouse(MouseInput {
                 action,
-                column: if matches!(action, MouseAction::Press(_)) {
-                    0
-                } else {
-                    10
+                column: match action {
+                    MouseAction::Press(_) => 0,
+                    MouseAction::Move(_) => 3,
+                    _ => 10,
                 },
                 row: 0,
                 modifiers: Modifiers::default(),
@@ -315,7 +406,13 @@ fn explicit_copy_reaches_the_worker_even_with_remote_clipboard_writes_disabled()
     worker.copy_selection().unwrap();
     worker.set_clipboard_writes_enabled(false);
     worker.set_clipboard_writes_enabled(true);
-    worker.send_bytes(b"\n".to_vec()).unwrap();
+    worker
+        .send_key(input::KeyInput::Named {
+            key: input::NamedKey::Enter,
+            modifiers: Modifiers::default(),
+            event: input::KeyEvent::Press,
+        })
+        .unwrap();
     loop {
         match worker.try_event().unwrap() {
             Some(TerminalEvent::ClipboardWrite { .. }) => {

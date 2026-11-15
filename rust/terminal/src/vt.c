@@ -14,6 +14,7 @@ typedef struct {
     GhosttyKeyEvent key;
     GhosttyTrackedGridRef selection_anchor;
     GhosttyTerminalScreen selection_screen;
+    bool selection_dragged;
     uint8_t *selection_text;
     size_t selection_len;
     GhosttyBuffer text;
@@ -142,6 +143,7 @@ void vt_colors(Vt *vt, const uint8_t *rgb) {
 bool vt_clear_selection(Vt *vt) {
     ghostty_tracked_grid_ref_free(vt->selection_anchor);
     vt->selection_anchor = NULL;
+    vt->selection_dragged = false;
     GhosttySelection selection;
     GhosttyResult result = ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection);
     if (result == GHOSTTY_NO_VALUE) return false;
@@ -150,13 +152,8 @@ bool vt_clear_selection(Vt *vt) {
     return true;
 }
 
-void vt_select(Vt *vt, uint8_t action, uint16_t x, uint16_t y) {
-    GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
-        .value = {.coordinate = {.x = x, .y = y}}};
-    if (action == 0) {
-        check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &vt->selection_screen));
-        check(ghostty_terminal_grid_ref_track(vt->terminal, point, &vt->selection_anchor));
-    } else if (action == 1 && vt->selection_anchor) {
+static void extend_selection(Vt *vt, GhosttyPoint point) {
+    if (vt->selection_anchor) {
         GhosttyTerminalScreen screen;
         check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen));
         if (screen != vt->selection_screen) return;
@@ -172,9 +169,24 @@ void vt_select(Vt *vt, uint8_t action, uint16_t x, uint16_t y) {
         check(result);
         check(ghostty_terminal_grid_ref(vt->terminal, point, &selection.end));
         check(ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection));
+        vt->selection_dragged = true;
+    }
+}
+
+void vt_select(Vt *vt, uint8_t action, uint16_t x, uint16_t y) {
+    GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
+        .value = {.coordinate = {.x = x, .y = y}}};
+    if (action == 0) {
+        vt->selection_dragged = false;
+        check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &vt->selection_screen));
+        check(ghostty_terminal_grid_ref_track(vt->terminal, point, &vt->selection_anchor));
+    } else if (action == 1) {
+        extend_selection(vt, point);
     } else if (action == 2) {
+        if (vt->selection_dragged) extend_selection(vt, point);
         ghostty_tracked_grid_ref_free(vt->selection_anchor);
         vt->selection_anchor = NULL;
+        vt->selection_dragged = false;
     }
 }
 
