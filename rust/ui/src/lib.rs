@@ -381,6 +381,7 @@ pub struct RootView {
     observed_surface_identity: Option<usize>,
     paint_cache: SurfacePaintCache,
     terminal_metrics: TerminalMetrics,
+    measured_font: (String, u16),
     pending_input: VecDeque<QueuedUiInput>,
     pending_input_bytes: usize,
     input_refusal: InputRefusal,
@@ -1879,6 +1880,7 @@ impl RootView {
             observed_surface_identity: None,
             paint_cache: SurfacePaintCache::default(),
             terminal_metrics,
+            measured_font: (appearance.font_family().to_owned(), appearance.font_size()),
             pending_input: VecDeque::new(),
             pending_input_bytes: 0,
             input_refusal: InputRefusal::default(),
@@ -2207,22 +2209,13 @@ impl RootView {
             cx.notify();
             return;
         }
-        let previous = self.workspace.snapshot().appearance().clone();
         match self.workspace.save_appearance(draft) {
             Ok(()) => {
                 if let Some(dialog) = &mut self.settings_dialog {
                     dialog.appearance_editor.error = None;
                 }
                 let appearance = self.workspace.snapshot().appearance().clone();
-                if terminal_font_changed(
-                    previous.font_family(),
-                    previous.font_size(),
-                    appearance.font_family(),
-                    appearance.font_size(),
-                ) {
-                    self.terminal_metrics = measure_terminal_metrics(window, &appearance);
-                    self.resize_for_window(window);
-                }
+                self.sync_terminal_font(window, &appearance);
             }
             Err(error) => {
                 if let Some(dialog) = &mut self.settings_dialog {
@@ -3883,17 +3876,24 @@ impl RootView {
             return;
         }
         let action = self.application_shortcut(keystroke);
+        let is_zoom = action.and_then(keyboard_settings::font_zoom).is_some();
         if action == Some(workspace::ShortcutAction::ToggleSidebar)
-            || (action.is_some()
-                && self
-                    .session_navigation_target(
-                        action == Some(workspace::ShortcutAction::PreviousSession),
-                    )
-                    .is_some())
+            || is_zoom
+            || (matches!(
+                action,
+                Some(
+                    workspace::ShortcutAction::NextSession
+                        | workspace::ShortcutAction::PreviousSession
+                )
+            ) && self
+                .session_navigation_target(
+                    action == Some(workspace::ShortcutAction::PreviousSession),
+                )
+                .is_some())
         {
             // Bubble to the application's handler after retained key events,
             // without also sending the shortcut to the terminal.
-            if event.is_held {
+            if event.is_held && !is_zoom {
                 cx.stop_propagation();
             }
             return;
@@ -4355,6 +4355,35 @@ impl RootView {
                     return true;
                 }
             }
+        }
+    }
+
+    fn apply_font_zoom(
+        &mut self,
+        command: workspace::TerminalFontZoom,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.workspace.zoom_terminal_font(command) {
+            Ok(()) => {
+                let appearance = self.workspace.snapshot().appearance().clone();
+                self.sync_terminal_font(window, &appearance);
+            }
+            Err(error) => self.diagnostic = Some(error.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn sync_terminal_font(&mut self, window: &Window, appearance: &workspace::Appearance) {
+        if terminal_font_changed(
+            &self.measured_font.0,
+            self.measured_font.1,
+            appearance.font_family(),
+            appearance.font_size(),
+        ) {
+            self.measured_font = (appearance.font_family().to_owned(), appearance.font_size());
+            self.terminal_metrics = measure_terminal_metrics(window, appearance);
+            self.resize_for_window(window);
         }
     }
 
@@ -8856,6 +8885,7 @@ impl Render for RootView {
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
         let snapshot = self.workspace.snapshot();
+        self.sync_terminal_font(window, snapshot.appearance());
         if self.restore_focus {
             window.focus(&self.focus);
             self.restore_focus = false;
@@ -9913,12 +9943,12 @@ mod tests {
             focused_settings_detail(&dialog),
             Some(SettingsPane::Keyboard)
         );
-        for _ in 0..9 {
+        for _ in 0..18 {
             advance_settings_focus(&mut dialog, false);
         }
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
         advance_settings_focus(&mut dialog, true);
-        assert_eq!(dialog.keyboard_editor.focus, 8);
+        assert_eq!(dialog.keyboard_editor.focus, 17);
         assert_eq!(
             focused_settings_detail(&dialog),
             Some(SettingsPane::Keyboard)

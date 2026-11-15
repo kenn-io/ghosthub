@@ -10,13 +10,19 @@ pub enum ShortcutAction {
     ToggleSidebar,
     NextSession,
     PreviousSession,
+    IncreaseFontSize,
+    DecreaseFontSize,
+    ResetFontSize,
 }
 
 impl ShortcutAction {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 6] = [
         Self::ToggleSidebar,
         Self::NextSession,
         Self::PreviousSession,
+        Self::IncreaseFontSize,
+        Self::DecreaseFontSize,
+        Self::ResetFontSize,
     ];
 
     #[must_use]
@@ -25,20 +31,26 @@ impl ShortcutAction {
             Self::ToggleSidebar => "Toggle Sidebar",
             Self::NextSession => "Next Session",
             Self::PreviousSession => "Previous Session",
+            Self::IncreaseFontSize => "Increase Font Size",
+            Self::DecreaseFontSize => "Decrease Font Size",
+            Self::ResetFontSize => "Reset Font Size",
         }
     }
 
     fn default_binding(self) -> KeyChord {
+        let (shift, key) = match self {
+            Self::ToggleSidebar => (true, "b"),
+            Self::NextSession => (false, "tab"),
+            Self::PreviousSession => (true, "tab"),
+            Self::IncreaseFontSize => (false, "="),
+            Self::DecreaseFontSize => (false, "-"),
+            Self::ResetFontSize => (false, "0"),
+        };
         KeyChord {
             control: true,
             alt: false,
-            shift: self != Self::NextSession,
-            key: if self == Self::ToggleSidebar {
-                "b"
-            } else {
-                "tab"
-            }
-            .to_owned(),
+            shift,
+            key: key.to_owned(),
         }
     }
 }

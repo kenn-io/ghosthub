@@ -119,13 +119,16 @@ Choose **Ghosthub → Reload Configuration** after editing the file manually.
 
 ## Windows and Linux
 
-The Rust app has three configurable shortcuts:
+The Rust app has these configurable shortcuts:
 
 | Action | Default |
 | --- | --- |
 | Toggle Sidebar | **Ctrl+Shift+B** |
 | Next Session | **Ctrl+Tab** |
 | Previous Session | **Ctrl+Shift+Tab** |
+| Increase Font Size | **Ctrl+=** or **Ctrl+Plus** |
+| Decrease Font Size | **Ctrl+-** |
+| Reset Font Size | **Ctrl+0** |
 
 Open the gear button, then **Keyboard**. Click a shortcut and press its new
 combination. **Escape** cancels recording. **Clear** disables the action, and
@@ -133,7 +136,7 @@ combination. **Escape** cancels recording. **Clear** disables the action, and
 and apply to every open window. Recording stops if you leave the window or
 choose another Settings pane.
 
-![Custom sidebar and session-navigation shortcuts in the Rust app](/docs/assets/guide-rust-keyboard.png)
+![Session navigation and terminal font shortcuts in the Rust app](/docs/assets/guide-rust-keyboard.png)
 
 Include **Ctrl** or **Alt** in each binding. The recorder keeps the previous
 binding when it reports a conflict with another action, Copy, Paste, or an
@@ -146,6 +149,13 @@ Herdr sessions are skipped. From a project worktree hidden from those rows,
 they select the first or last available session. When there is no destination,
 the shortcut reaches the terminal.
 
+Font zoom changes every terminal opened in the current window, including
+retained sessions when you return to them. Other windows keep their own size.
+**Reset Font Size** returns to the latest saved **Appearance** size. Zoom
+does not change that saved default, and new windows start at the default.
+The shifted Plus key also increases the size while its default binding is
+active; an explicit assignment to that key takes priority.
+
 Configuration tools can edit the same overrides in `config.toml`:
 
 ```toml
@@ -153,12 +163,15 @@ Configuration tools can edit the same overrides in `config.toml`:
 toggle-sidebar = "alt+b"
 next-session = "alt+right"
 previous-session = "none"
+increase-font-size = "alt+up"
+decrease-font-size = "alt+down"
+reset-font-size = "ctrl+0"
 ```
 
 Remove an entry to use its default. Restart Ghosthub after editing the file
 outside Settings. Invalid or conflicting shortcuts produce a startup diagnostic;
-fix the file before opening the app. The Rust app currently exposes only these
-three actions; other macOS application shortcuts remain parity work.
+fix the file before opening the app. Other macOS application shortcuts remain
+parity work.
 
 ## Multiplexer ownership
 

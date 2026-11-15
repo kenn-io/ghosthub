@@ -21,6 +21,10 @@ Existing font preferences are preserved; select **JetBrains Mono** to switch
 to the bundled face. Windows keeps its native UI font and Cascadia Mono
 terminal default. The macOS instructions below describe the Swift app.
 
+For temporary font zoom in the current window, use **Ctrl+=**, **Ctrl+-**,
+and **Ctrl+0**. Zoom leaves the saved Appearance size unchanged. Customize
+these shortcuts in [Settings → Keyboard](keyboard-shortcuts.md#windows-and-linux).
+
 ![Rust Linux Appearance settings with the bundled terminal font](/docs/assets/guide-rust-appearance.png)
 
 ## Configuration file

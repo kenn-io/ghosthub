@@ -33,7 +33,9 @@ use terminal::{
 };
 
 mod agent_hooks;
+mod font_zoom;
 mod keyboard;
+pub use font_zoom::TerminalFontZoom;
 mod pump;
 mod remote_attention;
 mod remote_herdr;
@@ -6219,13 +6221,7 @@ impl Workspace {
             };
             WorkspaceSnapshot {
                 revision,
-                appearance: self
-                    .scene
-                    .runtime
-                    .appearance
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
+                appearance: self.effective_appearance(),
                 content,
                 hosts,
                 selected_host,
