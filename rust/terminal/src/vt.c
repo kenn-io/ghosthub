@@ -13,8 +13,10 @@ typedef struct {
     GhosttyKeyEncoder encoder;
     GhosttyKeyEvent key;
     GhosttyTrackedGridRef selection_anchor;
+    GhosttySelectionGesture selection_gesture;
     GhosttyTerminalScreen selection_screen;
     bool selection_dragged;
+    uint8_t selection_clicks;
     uint8_t *selection_text;
     size_t selection_len;
     GhosttyBuffer text;
@@ -82,6 +84,7 @@ static void clipboard_read(GhosttyTerminal terminal, void *userdata,
 void vt_free(Vt *vt) {
     if (!vt) return;
     ghostty_tracked_grid_ref_free(vt->selection_anchor);
+    ghostty_selection_gesture_free(vt->selection_gesture, vt->terminal);
     ghostty_free(NULL, vt->selection_text, vt->selection_len);
     ghostty_key_event_free(vt->key);
     ghostty_key_encoder_free(vt->encoder);
@@ -102,7 +105,8 @@ Vt *vt_new(uint16_t columns, uint16_t rows, void *userdata, Effect effect) {
         ghostty_render_state_row_iterator_new(NULL, &vt->rows) != GHOSTTY_SUCCESS ||
         ghostty_render_state_row_cells_new(NULL, &vt->cells) != GHOSTTY_SUCCESS ||
         ghostty_key_encoder_new(NULL, &vt->encoder) != GHOSTTY_SUCCESS ||
-        ghostty_key_event_new(NULL, &vt->key) != GHOSTTY_SUCCESS) {
+        ghostty_key_event_new(NULL, &vt->key) != GHOSTTY_SUCCESS ||
+        ghostty_selection_gesture_new(NULL, &vt->selection_gesture) != GHOSTTY_SUCCESS) {
         vt_free(vt);
         return NULL;
     }
@@ -141,6 +145,7 @@ void vt_colors(Vt *vt, const uint8_t *rgb) {
 }
 
 bool vt_clear_selection(Vt *vt) {
+    ghostty_selection_gesture_reset(vt->selection_gesture, vt->terminal);
     ghostty_tracked_grid_ref_free(vt->selection_anchor);
     vt->selection_anchor = NULL;
     vt->selection_dragged = false;
@@ -152,40 +157,81 @@ bool vt_clear_selection(Vt *vt) {
     return true;
 }
 
-static void extend_selection(Vt *vt, GhosttyPoint point) {
+static bool unit_selection(Vt *vt, GhosttyPoint point, bool press,
+                           GhosttySelection *selection) {
+    GhosttySelectionGestureEvent event;
+    check(ghostty_selection_gesture_event_new(NULL, &event, press ?
+        GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS : GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG));
+    GhosttyGridRef ref;
+    check(ghostty_terminal_grid_ref(vt->terminal, point, &ref));
+    check(ghostty_selection_gesture_event_set(event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &ref));
+    // Whole-word and line gestures use cell coordinates, without subcell hit tests.
+    GhosttySurfacePosition position = {
+        .x = point.value.coordinate.x + 0.5, .y = point.value.coordinate.y + 0.5,
+    };
+    check(ghostty_selection_gesture_event_set(event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &position));
+    if (press) {
+        // GPUI already counted native clicks; start the matching library behavior.
+        GhosttySelectionGestureBehaviors behaviors = {
+            .single_click = vt->selection_clicks == 2 ?
+                GHOSTTY_SELECTION_GESTURE_BEHAVIOR_WORD : GHOSTTY_SELECTION_GESTURE_BEHAVIOR_LINE,
+        };
+        check(ghostty_selection_gesture_event_set(event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_BEHAVIORS, &behaviors));
+    } else {
+        uint16_t columns, rows;
+        check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_COLS, &columns));
+        check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows));
+        GhosttySelectionGestureGeometry geometry = {
+            .columns = columns, .cell_width = 1, .screen_height = rows,
+        };
+        check(ghostty_selection_gesture_event_set(event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY, &geometry));
+    }
+    GhosttyResult result = ghostty_selection_gesture_event(vt->selection_gesture, vt->terminal, event, selection);
+    ghostty_selection_gesture_event_free(event);
+    if (result == GHOSTTY_NO_VALUE) return false;
+    check(result);
+    return true;
+}
+
+static bool extend_selection(Vt *vt, GhosttyPoint point, bool dragging) {
     if (vt->selection_anchor) {
         GhosttyTerminalScreen screen;
         check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen));
-        if (screen != vt->selection_screen) return;
+        if (screen != vt->selection_screen) return false;
         GhosttySelection selection = {0};
         GhosttyResult result = ghostty_tracked_grid_ref_snapshot(vt->selection_anchor, &selection.start);
-        if (result == GHOSTTY_NO_VALUE) return;
+        if (result == GHOSTTY_NO_VALUE) return false;
         check(result);
         // A primary/alternate-screen switch must not move a drag to another screen.
         GhosttyPointCoordinate start;
         result = ghostty_terminal_point_from_grid_ref(vt->terminal, &selection.start,
             GHOSTTY_POINT_TAG_VIEWPORT, &start);
-        if (result == GHOSTTY_NO_VALUE) return;
+        if (result == GHOSTTY_NO_VALUE) return false;
         check(result);
         check(ghostty_terminal_grid_ref(vt->terminal, point, &selection.end));
+        if (vt->selection_clicks > 1 && !unit_selection(vt, point, !dragging, &selection)) return false;
         check(ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection));
-        vt->selection_dragged = true;
+        return true;
     }
+    return false;
 }
 
-void vt_select(Vt *vt, uint8_t action, uint16_t x, uint16_t y) {
+void vt_select(Vt *vt, uint8_t action, uint16_t x, uint16_t y, uint8_t clicks) {
     GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
         .value = {.coordinate = {.x = x, .y = y}}};
     if (action == 0) {
         vt->selection_dragged = false;
+        vt->selection_clicks = clicks;
         check(ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &vt->selection_screen));
         check(ghostty_terminal_grid_ref_track(vt->terminal, point, &vt->selection_anchor));
+        if (clicks > 1) extend_selection(vt, point, false);
     } else if (action == 1) {
-        extend_selection(vt, point);
+        if (extend_selection(vt, point, true)) vt->selection_dragged = true;
     } else if (action == 2) {
-        if (vt->selection_dragged) extend_selection(vt, point);
+        if (vt->selection_dragged) extend_selection(vt, point, true);
         ghostty_tracked_grid_ref_free(vt->selection_anchor);
         vt->selection_anchor = NULL;
+        ghostty_selection_gesture_reset(vt->selection_gesture, vt->terminal);
         vt->selection_dragged = false;
     }
 }

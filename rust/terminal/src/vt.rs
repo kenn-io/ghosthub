@@ -46,7 +46,7 @@ unsafe extern "C" {
     fn vt_cell(vt: *mut c_void, cell: *mut RawCell) -> bool;
     fn vt_clean(vt: *mut c_void);
     fn vt_clear_selection(vt: *mut c_void) -> bool;
-    fn vt_select(vt: *mut c_void, action: u8, x: u16, y: u16);
+    fn vt_select(vt: *mut c_void, action: u8, x: u16, y: u16, clicks: u8);
     fn vt_copy_selection(vt: *mut c_void, text: *mut *const u8, len: *mut usize) -> bool;
     fn vt_key(
         vt: *mut c_void,
@@ -93,7 +93,7 @@ unsafe extern "C" fn effect(userdata: *mut c_void, kind: u32, bytes: *const u8, 
 }
 
 impl Vt {
-    pub fn select(&mut self, action: u8, column: usize, row: usize) {
+    pub fn select(&mut self, action: u8, column: usize, row: usize, clicks: u8) {
         // SAFETY: the engine checks the coordinates against its current grid.
         unsafe {
             vt_select(
@@ -101,6 +101,7 @@ impl Vt {
                 action,
                 dimension(column),
                 dimension(row),
+                clicks,
             );
         };
     }

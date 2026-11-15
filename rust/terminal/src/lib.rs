@@ -337,18 +337,23 @@ impl TerminalEngine {
                 self.clear_selection();
                 if input.modifiers.shift || self.modes().mouse_tracking == MouseTracking::None {
                     self.selecting = true;
-                    self.vt.select(0, input.column, input.row);
+                    let clicks = match input.click_count {
+                        0 | 1 => 1,
+                        2 => 2,
+                        _ => 3,
+                    };
+                    self.vt.select(0, input.column, input.row, clicks);
                     self.publish(false);
                     return Vec::new();
                 }
             }
             MouseAction::Move(Some(MouseButton::Left)) if self.selecting => {
-                self.vt.select(1, input.column, input.row);
+                self.vt.select(1, input.column, input.row, 0);
                 self.publish(false);
                 return Vec::new();
             }
             MouseAction::Release(MouseButton::Left) if self.selecting => {
-                self.vt.select(2, input.column, input.row);
+                self.vt.select(2, input.column, input.row, 0);
                 self.selecting = false;
                 self.publish(false);
                 return Vec::new();

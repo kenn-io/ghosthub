@@ -152,6 +152,8 @@ pub enum MouseAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MouseInput {
     pub action: MouseAction,
+    /// Native left-press repeat count: 0/1 selects cells, 2 words, 3+ lines.
+    pub click_count: usize,
     pub column: usize,
     pub row: usize,
     pub modifiers: Modifiers,

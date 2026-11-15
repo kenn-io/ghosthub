@@ -3982,6 +3982,7 @@ impl RootView {
                     MouseAction::Press(button),
                     cell,
                     event.modifiers,
+                    event.click_count,
                 )
             {
                 self.pointer.press(button, cell);
@@ -4008,6 +4009,7 @@ impl RootView {
                     MouseAction::Release(button),
                     cell,
                     event.modifiers,
+                    0,
                 ) {
                     self.pointer.finish_release(button);
                     if button == MouseButton::Left
@@ -4043,6 +4045,7 @@ impl RootView {
                 MouseAction::Move(button),
                 cell,
                 event.modifiers,
+                0,
             );
         }
         cx.stop_propagation();
@@ -4074,6 +4077,7 @@ impl RootView {
             );
             if let Some(action) = terminal_wheel_action(steps) {
                 let input = MouseInput {
+                    click_count: 0,
                     action,
                     column: cell.0,
                     row: cell.1,
@@ -4114,8 +4118,10 @@ impl RootView {
         action: MouseAction,
         (column, row): (usize, usize),
         modifiers: gpui::Modifiers,
+        click_count: usize,
     ) -> bool {
         let input = MouseInput {
+            click_count,
             action,
             column,
             row,
@@ -12166,6 +12172,7 @@ mod tests {
     fn wheel_batches_preserve_direction_target_and_modifiers() {
         let first = WheelBatch {
             input: MouseInput {
+                click_count: 0,
                 action: MouseAction::WheelUp,
                 column: 4,
                 row: 7,
@@ -12191,6 +12198,7 @@ mod tests {
 
         let later_opposite_target = WheelBatch {
             input: MouseInput {
+                click_count: 0,
                 action: MouseAction::WheelDown,
                 column: 12,
                 row: 9,
@@ -12234,6 +12242,7 @@ mod tests {
                     column: 12,
                     row: 9,
                     modifiers: Modifiers { alt: true, .. },
+                    ..
                 },
                 remaining: 3,
             })
@@ -12243,6 +12252,7 @@ mod tests {
     #[test]
     fn shared_input_queue_reserves_capacity_for_balancing_releases() {
         let mouse_release = PendingUiInput::Mouse(MouseInput {
+            click_count: 0,
             action: MouseAction::Release(MouseButton::Left),
             column: 0,
             row: 0,
