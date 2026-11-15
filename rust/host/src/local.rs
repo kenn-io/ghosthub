@@ -1609,7 +1609,14 @@ impl<R: CommandRunner> LocalHost<R> {
         )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if is_no_server(&stderr) || stderr.trim() == "no current target" {
+            // KWT's environment probe starts an empty server that can exit
+            // while this readiness query is connecting.
+            if is_no_server(&stderr)
+                || matches!(
+                    stderr.trim(),
+                    "no current target" | "server exited unexpectedly"
+                )
+            {
                 return Ok(None);
             }
             return Err(classify_command_failure(
@@ -1676,8 +1683,14 @@ impl<R: CommandRunner> LocalHost<R> {
         )?;
         if output.status != 0 {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // KWT starts the server before creating its first session.
-            if is_no_server(&stderr) || stderr.trim() == "no current target" {
+            // KWT's environment probe starts an empty server that can exit
+            // while this readiness query is connecting.
+            if is_no_server(&stderr)
+                || matches!(
+                    stderr.trim(),
+                    "no current target" | "server exited unexpectedly"
+                )
+            {
                 return Ok(None);
             }
             return Err(classify_command_failure(
@@ -6404,6 +6417,95 @@ mod tests {
                 .is_none()
         );
         assert!(parse_kwt_client_pid(b"007\n").is_err());
+    }
+
+    #[test]
+    fn kwt_client_readiness_waits_through_an_empty_server_exit() {
+        struct ReadinessRunner {
+            response: Mutex<Option<CommandOutput>>,
+            socket: Option<&'static str>,
+        }
+        impl CommandRunner for ReadinessRunner {
+            fn run(
+                &self,
+                program: &OsStr,
+                args: &[OsString],
+                cancellation: &CancellationToken,
+                timeout: Duration,
+            ) -> io::Result<CommandOutput> {
+                if args.iter().any(|arg| {
+                    arg == "ghosthub-read-worktree-client"
+                        || arg == "ghosthub-read-protected-worktree-client"
+                }) {
+                    return Ok(CommandOutput {
+                        status: 0,
+                        stdout: b"7\n".to_vec(),
+                        stderr: Vec::new(),
+                    });
+                }
+                if args.iter().any(|arg| arg == "list-clients") {
+                    assert!(args.iter().any(|arg| arg == CLIENT_READINESS_FORMAT));
+                    let socket = args.windows(2).find(|pair| pair[0] == "-L");
+                    assert_eq!(socket.map(|pair| pair[1].to_str().unwrap()), self.socket);
+                    return Ok(self
+                        .response
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap_or(CommandOutput {
+                            status: 0,
+                            stdout: b"8\t40\t$1\t90\n7\t42\t$3\t99\n".to_vec(),
+                            stderr: Vec::new(),
+                        }));
+                }
+                KwtMutationRunner::default().run(program, args, cancellation, timeout)
+            }
+        }
+        let (_, _, endpoint, runtime) = kwt_mutation_host();
+        for socket in [None, Some("kwt")] {
+            for diagnostic in [
+                "server exited unexpectedly",
+                "no current target",
+                "Permission denied",
+            ] {
+                let host = LocalHost::wsl(
+                    LocalConfig::with_distro("Ubuntu").unwrap(),
+                    ReadinessRunner {
+                        response: Mutex::new(Some(CommandOutput {
+                            status: 1,
+                            stdout: Vec::new(),
+                            stderr: diagnostic.as_bytes().to_vec(),
+                        })),
+                        socket,
+                    },
+                    WslExecutable::from_absolute(r"C:\Windows\System32\wsl.exe").unwrap(),
+                );
+                let cancellation = CancellationToken::new();
+                let readiness = "/tmp/.ghosthub-kwt-client-0123456789abcdef0123456789abcdef";
+                let query = || match socket {
+                    Some(socket) => host.kwt_named_client_session_identity(
+                        &endpoint,
+                        &runtime,
+                        readiness,
+                        socket,
+                        &cancellation,
+                    ),
+                    None => host.kwt_client_session_identity(
+                        &endpoint,
+                        &runtime,
+                        readiness,
+                        &cancellation,
+                    ),
+                };
+                let first = query();
+                if diagnostic == "Permission denied" {
+                    assert_eq!(first.unwrap_err().kind(), DiagnosticKind::PermissionDenied);
+                } else {
+                    assert_eq!(first.unwrap(), None, "{socket:?}: {diagnostic}");
+                    assert_eq!(query().unwrap(), Some(SessionIdentity::new(42, "$3", 99)));
+                }
+            }
+        }
     }
 
     #[test]
