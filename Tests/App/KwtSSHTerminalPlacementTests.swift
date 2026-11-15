@@ -258,28 +258,38 @@ struct KwtSSHTerminalPlacementTests {
         let lease = KwtSSHCommandLease { _ in
             try await Self.acquire(coordinator, purpose: .commands)
         }
-        let runs = LockedValue(0)
+        let renames = LockedValue(0)
+        let strandedRanOn = LockedValue<String?>(nil)
         let terminalArguments = terminal.arguments
 
-        _ = try await lease.withArguments(on: .ssh(Self.request.host)) { arguments in
-            runs.withLock { $0 += 1 }
+        let (renamed, stranded) = try await lease.withArguments(
+            on: .ssh(Self.request.host)
+        ) { arguments in
             let arguments = arguments ?? []
-            _ = await BlockingTask.run {
+            let renamed = await BlockingTask.run {
                 budget.run(arguments: arguments, timeout: 5, retryRefusal: false) { _ in
-                    AccountCommandOutput(status: 0, stdout: "renamed\n", stderr: "")
+                    renames.withLock { $0 += 1 }
+                    return AccountCommandOutput(status: 0, stdout: "renamed\n", stderr: "")
                 }
             }
             // Meanwhile another caller learns the master is full and is
             // turned away from it.
             await Self.refuseNextSession(budget: budget, arguments: terminalArguments)
-            _ = await BlockingTask.run {
-                budget.run(arguments: terminalArguments, timeout: 5, retryRefusal: false) { _ in
-                    AccountCommandOutput(status: 0, stdout: "", stderr: "")
+            let stranded = await BlockingTask.run {
+                budget.run(arguments: terminalArguments, timeout: 5, retryRefusal: false) {
+                    used in
+                    strandedRanOn.store(SSHSessionBudget.controlPath(in: used))
+                    return AccountCommandOutput(status: 0, stdout: "listed\n", stderr: "")
                 }
             }
+            return (renamed, stranded)
         }
 
-        #expect(runs.load() == 1)
+        #expect(renames.load() == 1)
+        #expect(renamed.status == 0 && renamed.stdout == "renamed\n")
+        // The stranded command ran once, on another master.
+        #expect(stranded.status == 0 && stranded.stdout == "listed\n")
+        #expect(strandedRanOn.load() == Self.socket(1))
         try await terminal.release()
     }
 
