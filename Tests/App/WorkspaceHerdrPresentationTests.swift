@@ -163,13 +163,10 @@ struct WorkspaceHerdrPresentationTests {
         await model.shutdown()
     }
 
-    @Test("a tmux session held by a replaced Herdr check takes input again")
-    func replacedHerdrCheckReleasesEarlierTmux() async throws {
-        var environment = try environment()
-        environment.snapshot.hosts[0].tmuxSessions.append(
-            TmuxSessionSummary(name: "tmux-other", managed: false, windows: [])
-        )
-        let store = RecordingNativeSessionSurfaceStore()
+    @Test("a tmux session stays held until the last overlapping Herdr check ends")
+    func overlappingHerdrChecksHoldTmuxUntilTheLastEnds() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
         let sessions = try #require(
             environment.snapshot.host(id: environment.hostID)?.herdrSessions
         )
@@ -188,34 +185,25 @@ struct WorkspaceHerdrPresentationTests {
                 return .available(sessions)
             }
         )
-        let first = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-work")
-        let second = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-other")
         let herdr = WorkspaceHerdrSessionSelection(hostID: environment.hostID, name: "worker")
-        for selection in [second, first] {
-            model.openBorrowedTmuxSession(selection)
-            await waitUntilMainActor {
-                model.prepareActiveBorrowedTmuxSurface()
-                return model.retainedBorrowedTmuxHandle(for: selection) != nil
-            }
-        }
+        let view = try await showTmuxView(
+            WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-work"),
+            model: model, store: store
+        )
 
         let replaced = Task { try await model.openBorrowedHerdrSession(herdr) }
         await waitUntilMainActor { probes.withLock { $0 } == 1 }
-        model.selectFromUser(WorkspaceSelection(selectedHostID: environment.hostID))
-        model.openBorrowedTmuxSession(second)
         let replacing = Task { try await model.openBorrowedHerdrSession(herdr) }
         await waitUntilMainActor { probes.withLock { $0 } == 2 }
+        #expect(view.isKeyboardInteractionSuspended)
 
         gates[0].open()
         await #expect(throws: CancellationError.self) { try await replaced.value }
+        #expect(view.isKeyboardInteractionSuspended)
         gates[1].open()
         try await replacing.value
         #expect(model.activeBorrowedHerdrSelection == herdr)
-
-        model.openBorrowedTmuxSession(first)
-        model.prepareActiveBorrowedTmuxSurface()
-        #expect(model.activeBorrowedTmuxSelection == first)
-        #expect(!store.surface.isKeyboardInteractionSuspended)
+        #expect(!view.isKeyboardInteractionSuspended)
         await model.shutdown()
     }
 
@@ -225,7 +213,7 @@ struct WorkspaceHerdrPresentationTests {
         environment.snapshot.hosts[0].tmuxSessions.append(
             TmuxSessionSummary(name: "tmux-other", managed: false, windows: [])
         )
-        let store = RecordingNativeSessionSurfaceStore()
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
         let sessions = try #require(
             environment.snapshot.host(id: environment.hostID)?.herdrSessions
         )
@@ -241,15 +229,8 @@ struct WorkspaceHerdrPresentationTests {
         )
         let first = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-work")
         let second = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-other")
-        for selection in [second, first] {
-            let requested = store.requestedKeys.count
-            model.openBorrowedTmuxSession(selection)
-            // The terminal exists only once the session is the shown one.
-            await waitUntilMainActor {
-                model.prepareActiveBorrowedTmuxSurface()
-                return store.requestedKeys.count > requested
-            }
-        }
+        let secondView = try await showTmuxView(second, model: model, store: store)
+        let firstView = try await showTmuxView(first, model: model, store: store)
 
         let check = Task {
             try await model.openBorrowedHerdrSession(
@@ -257,18 +238,38 @@ struct WorkspaceHerdrPresentationTests {
             )
         }
         await waitUntilMainActor { probes.withLock { $0 } == 1 }
-        #expect(store.surface.isKeyboardInteractionSuspended)
+        #expect(firstView.isKeyboardInteractionSuspended)
         model.openBorrowedTmuxSession(second)
         model.openBorrowedTmuxSession(first)
         model.prepareActiveBorrowedTmuxSurface()
         #expect(model.activeBorrowedTmuxSelection == first)
-        #expect(!store.surface.isKeyboardInteractionSuspended)
+        #expect(!firstView.isKeyboardInteractionSuspended)
+        #expect(!secondView.isKeyboardInteractionSuspended)
 
         gate.open()
         await #expect(throws: CancellationError.self) { try await check.value }
         #expect(model.activeBorrowedTmuxSelection == first)
-        #expect(!store.surface.isKeyboardInteractionSuspended)
+        #expect(!firstView.isKeyboardInteractionSuspended)
         await model.shutdown()
+    }
+
+    /// Shows `selection` and returns its terminal view, which exists only
+    /// once the session is the shown one.
+    private func showTmuxView(
+        _ selection: WorkspaceTmuxSessionSelection,
+        model: WorkspaceSceneModel,
+        store: RecordingNativeSessionSurfaceStore
+    ) async throws -> RecordingNativeSessionPaneSurface {
+        let requested = store.requestedKeys.count
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestedKeys.count > requested
+        }
+        return try #require(
+            store.paneSurfaceIfPresent(for: store.requestedKeys[requested])
+                as? RecordingNativeSessionPaneSurface
+        )
     }
 
     @Test("active capable Herdr presentation routes pane splits")
