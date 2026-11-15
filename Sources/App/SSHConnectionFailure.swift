@@ -1,5 +1,6 @@
 import Foundation
 import GhosthubHerdr
+import GhosthubTransport
 import GhosthubWorkspace
 import GhosthubZellij
 
@@ -136,11 +137,7 @@ enum SSHConnectionFailure {
         status: Int32,
         output: String
     ) -> Bool {
-        guard status == 255 else { return false }
-        return output.lowercased().contains(
-            "mux_client_request_session: session request failed: "
-                + "session open refused by peer"
-        )
+        SSHSessionRefusal.matches(status: status, output: output)
     }
 
     static func indicatesUnusableConnection(

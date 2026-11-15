@@ -19,12 +19,39 @@ struct AccountCommandOutput: Equatable, Sendable {
     )
 }
 
+/// Runs synchronous work that blocks (processes, SSH commands, session
+/// waits) as a task on dispatch threads instead of Swift's shared worker
+/// pool. That pool has one thread per core, and a command waiting for an
+/// SSH session can need async work, such as leasing another master, that
+/// only the pool runs. The work is still a task, so `Task.isCancelled`
+/// reports its caller's cancellation.
 enum BlockingTask {
+    /// Runs each job on a global dispatch queue. A queue adds threads when
+    /// its running ones block, which the shared pool never does.
+    private final class Executor: TaskExecutor {
+        private let queue: DispatchQueue
+
+        init(qos: DispatchQoS.QoSClass) {
+            queue = DispatchQueue.global(qos: qos)
+        }
+
+        func enqueue(_ job: consuming ExecutorJob) {
+            let job = UnownedJob(job)
+            let executor = asUnownedTaskExecutor()
+            queue.async { job.runSynchronously(on: executor) }
+        }
+    }
+
+    private static let userInitiated = Executor(qos: .userInitiated)
+    private static let utility = Executor(qos: .utility)
+    private static let background = Executor(qos: .background)
+    private static let standard = Executor(qos: .default)
+
     static func run<Value: Sendable>(
         priority: TaskPriority = .utility,
         _ operation: @escaping @Sendable () -> Value
     ) async -> Value {
-        let task = Task.detached(priority: priority, operation: operation)
+        let task = detached(priority: priority, operation)
         return await withTaskCancellationHandler {
             await task.value
         } onCancel: {
@@ -36,11 +63,44 @@ enum BlockingTask {
         priority: TaskPriority = .utility,
         _ operation: @escaping @Sendable () throws -> Value
     ) async throws -> Value {
-        let task = Task.detached(priority: priority, operation: operation)
+        let task = Task.detached(
+            executorPreference: executor(for: priority),
+            priority: priority,
+            operation: operation
+        )
         return try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
             task.cancel()
+        }
+    }
+
+    /// Runs work that must finish even when the caller is cancelled, such
+    /// as cleaning up after a cancelled command.
+    static func runToCompletion<Value: Sendable>(
+        priority: TaskPriority = .utility,
+        _ operation: @escaping @Sendable () -> Value
+    ) async -> Value {
+        await detached(priority: priority, operation).value
+    }
+
+    private static func detached<Value: Sendable>(
+        priority: TaskPriority,
+        _ operation: @escaping @Sendable () -> Value
+    ) -> Task<Value, Never> {
+        Task.detached(
+            executorPreference: executor(for: priority),
+            priority: priority,
+            operation: operation
+        )
+    }
+
+    private static func executor(for priority: TaskPriority) -> Executor {
+        switch priority {
+        case .userInitiated: userInitiated
+        case .utility: utility
+        case .background: background
+        default: standard
         }
     }
 }
@@ -88,7 +148,6 @@ struct AccountCommandRunner: Sendable {
     static let outputExceededStatus: Int32 = -125
     static let cancelledStatus: Int32 = -130
     static let defaultMaximumOutputBytes = 1 * 1_024 * 1_024
-    private static let sessionOpenRetryDelays: [useconds_t] = [100_000, 250_000]
 
     typealias ProcessRunner = @Sendable (
         _ executable: String,
@@ -99,11 +158,13 @@ struct AccountCommandRunner: Sendable {
 
     private let processRunner: ProcessRunner
     private let loginShellProvider: @Sendable () -> String
+    private let sessionBudget: SSHSessionBudget
 
     init(
         processRunner: ProcessRunner? = nil,
         maximumOutputBytes: Int = Self.defaultMaximumOutputBytes,
-        loginShellProvider: @escaping @Sendable () -> String = Self.loginShell
+        loginShellProvider: @escaping @Sendable () -> String = Self.loginShell,
+        sessionBudget: SSHSessionBudget = .shared
     ) {
         self.processRunner = processRunner ?? {
             executable, arguments, timeout, environmentOverrides in
@@ -116,6 +177,7 @@ struct AccountCommandRunner: Sendable {
             )
         }
         self.loginShellProvider = loginShellProvider
+        self.sessionBudget = sessionBudget
     }
 
     func runLocalLoginShell(
@@ -138,22 +200,23 @@ struct AccountCommandRunner: Sendable {
         timeout: TimeInterval,
         retryPolicy: RemoteRetryPolicy = .never
     ) -> AccountCommandOutput {
-        let invocation = (["/usr/bin/ssh"] + Self.remoteLoginArguments(
-            host: host,
-            connectionArguments: connectionArguments,
-            command: command
-        )).map(shellQuotedCommandArgument).joined(separator: " ")
-        var output = runLocalLoginShell(command: invocation, timeout: timeout)
-        guard case .idempotent = retryPolicy else { return output }
-        for delay in Self.sessionOpenRetryDelays {
-            guard SSHConnectionFailure.indicatesRefusedSessionOpen(
-                status: output.status,
-                output: output.stderr
-            ) else { break }
-            usleep(delay)
-            output = runLocalLoginShell(command: invocation, timeout: timeout)
+        let retryRefusal = if case .idempotent = retryPolicy {
+            true
+        } else {
+            false
         }
-        return output
+        return sessionBudget.run(
+            arguments: connectionArguments,
+            timeout: timeout,
+            retryRefusal: retryRefusal
+        ) { connectionArguments in
+            let invocation = (["/usr/bin/ssh"] + Self.remoteLoginArguments(
+                host: host,
+                connectionArguments: connectionArguments,
+                command: command
+            )).map(shellQuotedCommandArgument).joined(separator: " ")
+            return runLocalLoginShell(command: invocation, timeout: timeout)
+        }
     }
 
     static func loginShell() -> String {

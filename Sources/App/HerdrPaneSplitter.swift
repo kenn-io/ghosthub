@@ -50,7 +50,7 @@ struct HerdrPaneSplitter: Sendable {
             shortcut: shortcut
         )
         let runner = runner
-        let task = Task.detached(priority: .userInitiated) {
+        let result = await BlockingTask.run(priority: .userInitiated) {
             guard !Task.isCancelled else {
                 return (status: Int32(0), diagnostic: "")
             }
@@ -59,11 +59,6 @@ struct HerdrPaneSplitter: Sendable {
                 target.sshConnectionArguments,
                 command
             )
-        }
-        let result = await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
         }
         guard !Task.isCancelled, result.status != 0 else { return nil }
         return HerdrPaneSplitFailure(

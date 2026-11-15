@@ -178,31 +178,37 @@ struct TmuxImagePaster: Sendable {
                         timeout: timeout
                     )
                 case let .ssh(host):
-                    var arguments = [
-                        "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                    ]
-                    arguments += connectionArguments
-                    if let port = host.port {
-                        arguments += ["-p", String(port)]
+                    return SSHSessionBudget.shared.run(
+                        arguments: connectionArguments,
+                        timeout: timeout,
+                        retryRefusal: false
+                    ) { connectionArguments in
+                        var arguments = [
+                            "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                        ]
+                        arguments += connectionArguments
+                        if let port = host.port {
+                            arguments += ["-p", String(port)]
+                        }
+                        let destination = host.user.map { "\($0)@\(host.hostname)" }
+                            ?? host.hostname
+                        arguments += [
+                            "--",
+                            destination,
+                            AccountCommandRunner.remoteLoginCommand(
+                                host: host,
+                                command: command
+                            ),
+                        ]
+                        let invocation = (["/usr/bin/ssh"] + arguments)
+                            .map(shellQuotedCommandArgument)
+                            .joined(separator: " ")
+                            + " < " + shellQuotedCommandArgument(localImage.path)
+                        return AccountCommandRunner().runLocalLoginShell(
+                            command: invocation,
+                            timeout: timeout
+                        )
                     }
-                    let destination = host.user.map { "\($0)@\(host.hostname)" }
-                        ?? host.hostname
-                    arguments += [
-                        "--",
-                        destination,
-                        AccountCommandRunner.remoteLoginCommand(
-                            host: host,
-                            command: command
-                        ),
-                    ]
-                    let invocation = (["/usr/bin/ssh"] + arguments)
-                        .map(shellQuotedCommandArgument)
-                        .joined(separator: " ")
-                        + " < " + shellQuotedCommandArgument(localImage.path)
-                    return AccountCommandRunner().runLocalLoginShell(
-                        command: invocation,
-                        timeout: timeout
-                    )
                 }
             } catch {
                 try? FileManager.default.removeItem(at: directory)

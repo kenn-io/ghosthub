@@ -242,37 +242,43 @@ struct ExeVMClient: Sendable {
         startMarker: String,
         endMarker: String
     ) -> (status: Int32, stdout: String, stderr: String) {
-        var arguments = [
-            "-T",
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=10",
-            "-o", "ConnectionAttempts=1",
-        ]
-        arguments.append(contentsOf: connectionArguments)
-        if let port = host.port {
-            arguments.append(contentsOf: ["-p", String(port)])
+        let output = SSHSessionBudget.shared.run(
+            arguments: connectionArguments,
+            timeout: 15,
+            retryRefusal: true
+        ) { connectionArguments in
+            var arguments = [
+                "-T",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "-o", "ConnectionAttempts=1",
+            ]
+            arguments.append(contentsOf: connectionArguments)
+            if let port = host.port {
+                arguments.append(contentsOf: ["-p", String(port)])
+            }
+            let destination = host.user.map {
+                "\($0)@\(host.hostname)"
+            } ?? host.hostname
+            arguments.append(contentsOf: [
+                "--", destination, "ls", "--json",
+            ])
+            let sshCommand = (["/usr/bin/ssh"] + arguments)
+                .map(shellQuotedCommandArgument)
+                .joined(separator: " ")
+            let command = """
+            printf '\\n%s\\n' \(shellQuotedCommandArgument(startMarker))
+            \(sshCommand)
+            ghosthub_exe_status=$?
+            printf '\\n%s\\n' \(shellQuotedCommandArgument(endMarker))
+            exit "$ghosthub_exe_status"
+            """
+            return AccountCommandRunner.runProcess(
+                executable: AccountCommandRunner.loginShell(),
+                arguments: ["-lc", accountShellCommand(command)],
+                timeout: 15
+            )
         }
-        let destination = host.user.map {
-            "\($0)@\(host.hostname)"
-        } ?? host.hostname
-        arguments.append(contentsOf: [
-            "--", destination, "ls", "--json",
-        ])
-        let sshCommand = (["/usr/bin/ssh"] + arguments)
-            .map(shellQuotedCommandArgument)
-            .joined(separator: " ")
-        let command = """
-        printf '\\n%s\\n' \(shellQuotedCommandArgument(startMarker))
-        \(sshCommand)
-        ghosthub_exe_status=$?
-        printf '\\n%s\\n' \(shellQuotedCommandArgument(endMarker))
-        exit "$ghosthub_exe_status"
-        """
-        let output = AccountCommandRunner.runProcess(
-            executable: AccountCommandRunner.loginShell(),
-            arguments: ["-lc", accountShellCommand(command)],
-            timeout: 15
-        )
         return (output.status, output.stdout, output.stderr)
     }
 }

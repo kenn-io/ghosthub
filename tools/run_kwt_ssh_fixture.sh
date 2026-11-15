@@ -104,7 +104,11 @@ printf '%s\n' "$(cat "$fixture/interactive_key.pub")" \
 chmod 600 "$fixture/client_key" "$fixture/host_key" \
     "$fixture/interactive_key" "$fixture/authorized_keys" \
     "$fixture/interactive_known_hosts" "$fixture/unattended_known_hosts"
-cat > "$fixture/sshd_config" <<'EOF'
+# Below OpenSSH's default of 10, so the live tests exercise Ghosthub learning
+# a server's per-connection session limit and spreading terminals across
+# kwt masters.
+session_limit=4
+cat > "$fixture/sshd_config" <<EOF
 Port 22
 ListenAddress 0.0.0.0
 HostKey /fixture/host_key
@@ -119,6 +123,7 @@ AllowTcpForwarding yes
 PermitOpen any
 PrintMotd no
 LogLevel ERROR
+MaxSessions $session_limit
 EOF
 chmod 600 "$fixture/sshd_config"
 
@@ -259,6 +264,7 @@ ssh -F "$fixture/ssh_config" ghosthub-jumped printf fixture-ready \
 
 for test_filter in \
     KwtSSHLiveIntegrationTests \
+    KwtSSHSessionLimitLiveTests \
     TmuxImagePasterLiveIntegrationTests
 do
     GHOSTHUB_RUN_LIVE_INTEGRATION_TESTS=1 \
@@ -268,6 +274,8 @@ do
     GHOSTHUB_SSH_INTERACTIVE_INTEGRATION_DESTINATION=ghosthub-interactive-jumped \
     GHOSTHUB_SSH_UNATTENDED_INTEGRATION_DESTINATION=ghosthub-unattended \
     GHOSTHUB_SSH_UNATTENDED_KNOWN_HOSTS="$fixture/unattended_known_hosts" \
+    GHOSTHUB_SSH_SESSION_LIMIT_INTEGRATION_DESTINATION=ghosthub-direct \
+    GHOSTHUB_SSH_SESSION_LIMIT="$session_limit" \
     GHOSTHUB_SSH_INTEGRATION_KWT_HOME="$kwt_home" \
     GHOSTHUB_KWT_CONTRACT_BINARY="$kwt_binary" \
         sh "$repo_root/tools/run_swift_tests.sh" \

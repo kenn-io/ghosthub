@@ -217,13 +217,16 @@ final class NativeHerdrSessionCoordinator {
                         arguments: []
                     )
                 }
-                let probe = Task.detached(priority: .userInitiated) {
+                let resolution = await BlockingTask.run(priority: .userInitiated) {
                     herdrPathProvider(host, sshConnectionSnapshot.arguments)
                 }
-                let resolution = await withTaskCancellationHandler {
-                    await probe.value
-                } onCancel: {
-                    probe.cancel()
+                // Setup probes ran beside the terminal's place; its own
+                // session counts from here, just before it launches.
+                do {
+                    try await sshConnection?.activateSessionReservation()
+                } catch {
+                    try? await sshConnection?.release()
+                    throw error
                 }
                 self?.finishAttach(
                     handle: handle,
@@ -544,18 +547,13 @@ final class NativeHerdrSessionCoordinator {
         let bindingID = UUID()
         let provider = paneSplitCapabilityProvider
         let task = Task { [weak self] in
-            let probe = Task.detached(priority: .userInitiated) {
+            let result = await BlockingTask.run(priority: .userInitiated) {
                 provider(
                     attachment.host,
                     attachment.sshConnectionSnapshot.arguments,
                     attachment.herdrPath,
                     handle.name
                 )
-            }
-            let result = await withTaskCancellationHandler {
-                await probe.value
-            } onCancel: {
-                probe.cancel()
             }
             guard let self,
                   !Task.isCancelled,

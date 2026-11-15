@@ -380,6 +380,58 @@ struct KwtInventoryClientTests {
         #expect(inventory.directoryWorkspaces.map(\.path) == ["/srv/hub"])
     }
 
+    @Test("more remote inventory loads than worker threads all run at once")
+    func remoteInventoryWaitsOffTheWorkerPool() async {
+        // Each load's first command waits until every load has started, as
+        // commands do when they queue for SSH sessions that other work must
+        // free.
+        let count = ProcessInfo.processInfo.activeProcessorCount * 2 + 2
+        let gate = LockedValue((started: 0, open: false))
+        let everyoneStarted = DispatchSemaphore(value: 0)
+        let client = KwtInventoryClient(
+            remoteRunner: { _, _, _ in
+                var mustWait = false
+                var opens = false
+                gate.withLock { state in
+                    guard !state.open else { return }
+                    state.started += 1
+                    opens = state.started == count
+                    state.open = opens
+                    mustWait = !opens
+                }
+                if opens {
+                    for _ in 1 ..< count {
+                        everyoneStarted.signal()
+                    }
+                } else if mustWait {
+                    _ = everyoneStarted.wait(timeout: .now() + 10)
+                }
+                return AccountCommandOutput(status: 1, stdout: "", stderr: "")
+            },
+            retryDelays: []
+        )
+        let began = Date()
+
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0 ..< count {
+                group.addTask {
+                    let host = SSHHostInfo(
+                        user: "tester",
+                        hostname: "builder-\(index).example",
+                        port: nil
+                    )
+                    _ = try? await client.load(
+                        from: .ssh(host),
+                        sshConnectionArguments: ["-S", "/tmp/kwt-\(index).sock"]
+                    )
+                }
+            }
+        }
+
+        #expect(gate.load().open)
+        #expect(Date().timeIntervalSince(began) < 5)
+    }
+
     @Test("remote project inventory is serialized")
     func remoteProjectInventoryIsSerialized() async throws {
         let ssh = SSHHostInfo(user: "tester", hostname: "builder", port: nil)

@@ -112,7 +112,7 @@ struct TmuxPaneSplitter: Sendable {
             hookIndex: hookIndex
         )
         let runner = runner
-        let task = Task.detached(priority: .userInitiated) {
+        let result = await BlockingTask.run(priority: .userInitiated) {
             guard !Task.isCancelled else {
                 return (status: Int32(0), diagnostic: "")
             }
@@ -122,25 +122,19 @@ struct TmuxPaneSplitter: Sendable {
                 command
             )
         }
-        let result = await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
-        }
         if Task.isCancelled {
             let cleanupCommand = TmuxAttachedClientGuard.cleanupCommand(
                 tmuxPath: target.tmuxPath,
                 socketName: target.socketName,
                 hookIndex: hookIndex
             )
-            let cleanupTask = Task.detached(priority: .userInitiated) {
+            _ = await BlockingTask.runToCompletion(priority: .userInitiated) {
                 runner(
                     target.host,
                     target.sshConnectionArguments,
                     cleanupCommand
                 )
             }
-            _ = await cleanupTask.value
             return nil
         }
         if result.diagnostic.split(whereSeparator: \.isNewline)
@@ -487,14 +481,13 @@ struct TmuxPaneSplitter: Sendable {
             hookIndex: hookIndex
         )
         let runner = runner
-        let cleanupTask = Task.detached(priority: .userInitiated) {
+        _ = await BlockingTask.runToCompletion(priority: .userInitiated) {
             runner(
                 target.host,
                 target.sshConnectionArguments,
                 cleanup
             )
         }
-        _ = await cleanupTask.value
         return nil
     }
 
@@ -504,16 +497,11 @@ struct TmuxPaneSplitter: Sendable {
         priority: TaskPriority = .userInitiated
     ) async -> (status: Int32, diagnostic: String) {
         let runner = runner
-        let task = Task.detached(priority: priority) {
+        return await BlockingTask.run(priority: priority) {
             guard !Task.isCancelled else {
                 return (status: Int32(0), diagnostic: "")
             }
             return runner(target.host, target.sshConnectionArguments, command)
-        }
-        return await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
         }
     }
 
@@ -649,30 +637,43 @@ struct TmuxPaneSplitter: Sendable {
             )
             return (result.status, result.stdout)
         case let .ssh(info):
-            var arguments = [
-                "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            ]
-            arguments += sshConnectionArguments
-            if let port = info.port {
-                arguments += ["-p", String(port)]
-            }
-            let destination = info.user.map { "\($0)@\(info.hostname)" }
-                ?? info.hostname
-            arguments += [
-                "--",
-                destination,
-                AccountCommandRunner.remoteLoginCommand(
-                    host: info,
-                    command: command
-                ),
-            ]
-            let result = AccountCommandRunner.runProcessInLoginShell(
-                executable: "/usr/bin/ssh",
-                arguments: arguments,
+            // Standard error is merged into the diagnostic, which is where
+            // a refused session reports itself.
+            let output = SSHSessionBudget.shared.run(
+                arguments: sshConnectionArguments,
                 timeout: 15,
-                captureStandardError: true
-            )
-            return (result.status, result.stdout)
+                retryRefusal: false
+            ) { sshConnectionArguments in
+                var arguments = [
+                    "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                ]
+                arguments += sshConnectionArguments
+                if let port = info.port {
+                    arguments += ["-p", String(port)]
+                }
+                let destination = info.user.map { "\($0)@\(info.hostname)" }
+                    ?? info.hostname
+                arguments += [
+                    "--",
+                    destination,
+                    AccountCommandRunner.remoteLoginCommand(
+                        host: info,
+                        command: command
+                    ),
+                ]
+                let result = AccountCommandRunner.runProcessInLoginShell(
+                    executable: "/usr/bin/ssh",
+                    arguments: arguments,
+                    timeout: 15,
+                    captureStandardError: true
+                )
+                return AccountCommandOutput(
+                    status: result.status,
+                    stdout: result.stdout,
+                    stderr: result.stdout
+                )
+            }
+            return (output.status, output.stdout)
         }
     }
 

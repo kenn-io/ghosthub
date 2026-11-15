@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubTransport
 
 public enum ZellijCommandError:
     Error, Equatable, LocalizedError, Sendable {
@@ -14,10 +15,11 @@ public enum ZellijCommandError:
         case .unavailable:
             return "Zellij is unavailable on this host."
         case let .commandFailed(status, stderr):
-            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return detail.isEmpty
-                ? "Zellij exited with status \(status)."
-                : "Zellij exited with status \(status): \(detail)"
+            return SSHSessionRefusal.describeCommandFailure(
+                tool: "Zellij",
+                status: status,
+                detail: stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
         case .missingMarker:
             return "Zellij returned output without Ghosthub's inventory marker."
         case let .malformedInventory(line):

@@ -26,6 +26,7 @@ final class KwtSSHConnectionSession: ObservableObject {
 
     private let request: KwtSSHDestinationRequest
     private let coordinator: KwtSSHAcquisitionCoordinator
+    private let purpose: KwtSSHConnectionPurpose
     private let onPresentationRequired: @MainActor @Sendable () -> Void
     private var acquisitionID: UUID?
     private var acquisitionTask: Task<Void, Never>?
@@ -75,6 +76,7 @@ final class KwtSSHConnectionSession: ObservableObject {
         host: SSHHostInfo,
         destination: String,
         coordinator: KwtSSHAcquisitionCoordinator = .shared,
+        purpose: KwtSSHConnectionPurpose = .commands,
         onPresentationRequired: @escaping @MainActor @Sendable () -> Void = {}
     ) {
         request = KwtSSHDestinationRequest(
@@ -82,6 +84,7 @@ final class KwtSSHConnectionSession: ObservableObject {
             host: host
         )
         self.coordinator = coordinator
+        self.purpose = purpose
         self.onPresentationRequired = onPresentationRequired
         start()
     }
@@ -222,6 +225,7 @@ final class KwtSSHConnectionSession: ObservableObject {
     private func start() {
         let request = request
         let coordinator = coordinator
+        let purpose = purpose
         let acquisitionID = UUID()
         self.acquisitionID = acquisitionID
         connectionFailure = nil
@@ -231,6 +235,7 @@ final class KwtSSHConnectionSession: ObservableObject {
                     request: request,
                     subscriberID: acquisitionID,
                     canPresentPrompts: true,
+                    purpose: purpose,
                     prompt: { [weak self] _, prompt in
                         guard let self else { throw CancellationError() }
                         return try await response(

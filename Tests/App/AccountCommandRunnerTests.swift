@@ -32,7 +32,8 @@ struct AccountCommandRunnerTests {
                     stderr: "note\n"
                 )
             },
-            loginShellProvider: { "/bin/account-shell" }
+            loginShellProvider: { "/bin/account-shell" },
+            sessionBudget: SSHSessionBudget(sleep: { _ in })
         )
 
         let result = runner.runLocalLoginShell(
@@ -70,7 +71,8 @@ struct AccountCommandRunnerTests {
                     stderr: "diagnostic\n"
                 )
             },
-            loginShellProvider: { "/bin/account-shell" }
+            loginShellProvider: { "/bin/account-shell" },
+            sessionBudget: SSHSessionBudget(sleep: { _ in })
         )
         let host = SSHHostInfo(
             user: "dev",
@@ -122,7 +124,8 @@ struct AccountCommandRunnerTests {
                     stderr: ""
                 )
             },
-            loginShellProvider: { "/bin/account-shell" }
+            loginShellProvider: { "/bin/account-shell" },
+            sessionBudget: SSHSessionBudget(sleep: { _ in })
         )
 
         let result = runner.runRemoteLoginShell(
@@ -157,7 +160,8 @@ struct AccountCommandRunnerTests {
                     """
                 )
             },
-            loginShellProvider: { "/bin/account-shell" }
+            loginShellProvider: { "/bin/account-shell" },
+            sessionBudget: SSHSessionBudget(sleep: { _ in })
         )
 
         let result = runner.runRemoteLoginShell(
@@ -187,7 +191,8 @@ struct AccountCommandRunnerTests {
                     stderr: "Permission denied (publickey).\n"
                 )
             },
-            loginShellProvider: { "/bin/account-shell" }
+            loginShellProvider: { "/bin/account-shell" },
+            sessionBudget: SSHSessionBudget(sleep: { _ in })
         )
 
         let result = runner.runRemoteLoginShell(
@@ -221,7 +226,8 @@ struct AccountCommandRunnerTests {
                     """
                 )
             },
-            loginShellProvider: { "/bin/account-shell" }
+            loginShellProvider: { "/bin/account-shell" },
+            sessionBudget: SSHSessionBudget(sleep: { _ in })
         )
 
         let result = runner.runRemoteLoginShell(
@@ -237,7 +243,7 @@ struct AccountCommandRunnerTests {
         )
 
         #expect(result.status == 255)
-        #expect(attempts.withLock { $0 } == 3)
+        #expect(attempts.withLock { $0 } == SSHSessionBudget.maximumRefusalAttempts)
     }
 
     @Test("subprocesses do not inherit enclosing multiplexer clients")

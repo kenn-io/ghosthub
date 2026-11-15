@@ -106,12 +106,17 @@ identity and generation. Reconnect resolves and acquires again; it never
 reuses stored control-socket arguments. A presentation whose OpenSSH client
 itself exits with status 255 marks a shared lease unusable so no other caller
 joins the dead master. A masterless lease is unsupported and fails before a
-terminal surface launches. Read-only inventory and probe commands opt into two
-bounded retries when OpenSSH reports `session open refused by peer`. Mutating
-commands never use this retry because remote command diagnostics share
-OpenSSH's standard-error stream. Other command failures are never retried, and
-a persistent refusal continues through normal shared-lease invalidation and
-host diagnostics.
+terminal surface launches. Each presentation also claims a place on its
+master, moving to another kwt master for the route when the first already
+holds its share of terminals, and takes its SSH session just before the
+terminal launches. The counting rules are in
+[Architecture](architecture.md). Read-only
+inventory and probe commands are queued again, up to five attempts, when
+OpenSSH reports `session open refused by peer`. Mutating commands never repeat
+because remote command diagnostics share OpenSSH's standard-error stream. A
+refusal does not mark the master unusable. Other command failures are never
+retried, and a persistent refusal is reported as the SSH connection refusing
+another session rather than as a tool failure.
 Presentation lease failures open a modal only when OpenSSH needs host review,
 authentication, or explicit configuration recovery. Ordinary transport
 failures return to the session reconnect supervisor, which keeps retrying in

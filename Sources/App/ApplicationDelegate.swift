@@ -167,7 +167,7 @@ final class ApplicationDelegate: NSObject,
 
     var shutdownForTermination: @MainActor @Sendable () async -> Void = {
         await WindowRegistry.shared.shutdownAll()
-        try? await KwtSSHConnectionPool.shared.releaseAll()
+        try? await KwtSSHConnectionLanes.shared.releaseAll()
     }
 
     var openWorkspaceWindow: (WorkspaceWindowState) -> Void = { _ in }

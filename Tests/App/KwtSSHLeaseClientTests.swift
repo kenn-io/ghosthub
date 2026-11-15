@@ -248,8 +248,11 @@ struct KwtSSHLeaseClientTests {
         )
     }
 
-    @Test("streams bound prompts and releases the daemon lease on close", arguments: [true, false])
-    func streamsPromptsAndReleases(compression: Bool) async throws {
+    @Test(
+        "streams bound prompts and releases the daemon lease on close",
+        arguments: [true, false], [0, 2]
+    )
+    func streamsPromptsAndReleases(compression: Bool, connection: Int) async throws {
         let fixture = try TempDirectoryFixture()
         let helper = try fixture.createExecutable(
             name: "kwt",
@@ -265,6 +268,7 @@ struct KwtSSHLeaseClientTests {
         route.compression = compression
         let lease = try await client.acquire(
             route: route,
+            connection: connection,
             prompt: { prompt in
                 prompts.withLock { $0.append(prompt) }
                 return prompt.id == "password" ? "secret" : "123456"
@@ -299,18 +303,23 @@ struct KwtSSHLeaseClientTests {
             algorithm: "ED25519",
             fingerprint: "SHA256:fixture"
         ))
-        #expect(
-            try String(contentsOf: arguments, encoding: .utf8)
-                .split(separator: "\n").map(String.init) == [
-                    "ssh", "lease", "--json", "--open-browser=false",
-                    "--route-identity", "sha256:route-observation",
-                    "--projection-policy", "kwt.openssh.projection.v2",
-                    "--host-key-policy", "review",
-                    "--compression", compression ? "yes" : "no",
-                    "--user", "deploy", "--port", "2200",
-                    "build.example.test",
-                ]
-        )
+        var expectedArguments: [String] = [
+            "ssh", "lease", "--json", "--open-browser=false",
+            "--route-identity", "sha256:route-observation",
+            "--projection-policy", "kwt.openssh.projection.v2",
+            "--host-key-policy", "review",
+        ]
+        if connection > 0 {
+            expectedArguments += ["--connection", String(connection)]
+        }
+        expectedArguments += [
+            "--compression", compression ? "yes" : "no",
+            "--user", "deploy", "--port", "2200",
+            "build.example.test",
+        ]
+        let recordedArguments = try String(contentsOf: arguments, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(recordedArguments == expectedArguments)
         let responseLines = try String(contentsOf: responses, encoding: .utf8)
             .split(separator: "\n")
         #expect(responseLines.count == 2)

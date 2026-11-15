@@ -432,18 +432,26 @@ struct KwtRemoteInstaller: Sendable {
         destination: String,
         connectionArguments: [String]
     ) -> AccountCommandOutput {
-        let command = (["/usr/bin/scp"] + uploadArguments(
-            host: host,
-            source: source,
-            destination: destination,
-            connectionArguments: connectionArguments
-        ))
-        .map(shellQuotedCommandArgument)
-        .joined(separator: " ")
-        return AccountCommandRunner().runLocalLoginShell(
-            command: command,
-            timeout: 120
-        )
+        // scp opens one session on the master, so it waits for one like any
+        // command. It is not repeated after a refusal.
+        SSHSessionBudget.shared.run(
+            arguments: connectionArguments,
+            timeout: 120,
+            retryRefusal: false
+        ) { connectionArguments in
+            let command = (["/usr/bin/scp"] + uploadArguments(
+                host: host,
+                source: source,
+                destination: destination,
+                connectionArguments: connectionArguments
+            ))
+            .map(shellQuotedCommandArgument)
+            .joined(separator: " ")
+            return AccountCommandRunner().runLocalLoginShell(
+                command: command,
+                timeout: 120
+            )
+        }
     }
 
     static func uploadArguments(
