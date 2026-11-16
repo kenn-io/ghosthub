@@ -158,9 +158,9 @@ address. A normal click or drag still selects text; hold **Shift** when the
 terminal program uses the mouse.
 
 Programs must mark these links with OSC 8. Plain text URLs are not detected.
-Link forwarding requires tmux 3.4 or later. KWT worktree clients also need
-hyperlinks enabled in their tmux terminal features; Ghosthub does not change
-that server setting.
+Tmux 3.4 or later forwards links automatically in ordinary sessions and KWT
+worktree terminals, including protected pull-request workspaces. No tmux
+configuration change is needed.
 
 ![Terminal links with a destination preview in the Rust app](/docs/assets/guide-rust-hyperlinks.png)
 

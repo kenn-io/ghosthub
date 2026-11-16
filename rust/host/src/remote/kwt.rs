@@ -535,9 +535,12 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             RemoteCommandLocale::Login,
             args.iter().copied(),
         );
-        if let Some(value) = command.iter_mut().find(|value| value.starts_with("TERM=")) {
-            *value = format!("TERM={term}");
-        }
+        let term_index = command
+            .iter()
+            .position(|value| value.starts_with("TERM="))
+            .expect("the tmux environment includes TERM");
+        command[term_index] = format!("TERM={term}");
+        command.insert(term_index, "KWT_TMUX_CLIENT_FEATURES=hyperlinks".to_owned());
         let binary = snapshot.tmux_binary().ok_or_else(|| {
             RemoteTmuxError::new(
                 DiagnosticKind::ExecutableNotFound,

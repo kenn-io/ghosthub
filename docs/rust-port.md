@@ -1783,8 +1783,11 @@ paths. Merely receiving link output does not request an opener.
 Ordinary local and SSH tmux creation and attachment advertise hyperlinks with
 `-T hyperlinks`. Tmux 3.4 or later can then forward OSC 8 without changing the
 server's configuration; older admitted versions ignore this unknown feature.
-KWT launches its own worktree clients, so those clients still depend on tmux's
-configured terminal features. The pinned helper has no client-feature option.
+KWT worktree clients receive `KWT_TMUX_CLIENT_FEATURES=hyperlinks` on local
+and SSH open/attach plans, including protected PR workspaces. The pinned helper
+passes this hint to its new tmux client and removes it from child and pane
+environments. Inventory commands and existing-client switches keep their own
+behavior; no shared server option or terminal identity changes.
 
 Terminal drag selection uses libghostty's tracked grid references and active
 selection. The renderer receives owned `Cell.selected` flags; it does not

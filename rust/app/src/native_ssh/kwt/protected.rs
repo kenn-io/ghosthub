@@ -107,6 +107,7 @@ exec /usr/bin/tmux "$@"
     std::fs::write(fixture.root.join("home/delay-protected-session"), "").unwrap();
     open().unwrap();
     fixture.tmux_shell(name, "protected-open");
+    fixture.hyperlink_probe();
     assert!(fixture.root.join("home/probed-protected-session").exists());
     assert!(!sentinel.exists(), "imported checkout layout executed");
     let presentation = |workspace: &Workspace| match workspace.snapshot().content() {
