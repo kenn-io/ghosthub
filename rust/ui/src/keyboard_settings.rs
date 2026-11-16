@@ -18,14 +18,40 @@ impl Editor {
 }
 
 fn bindings(preferences: &KeyboardPreferences) -> Vec<(ShortcutAction, gpui::KeybindingKeystroke)> {
-    ShortcutAction::ALL
+    let mut bindings: Vec<_> = ShortcutAction::ALL
         .into_iter()
         .filter_map(|action| {
             let chord = preferences.binding(action)?.gpui_value();
             let key = gpui::Keystroke::parse(&chord).expect("validated shortcut syntax");
             Some((action, gpui::KeybindingKeystroke::from_keystroke(key)))
         })
-        .collect()
+        .collect();
+    // Explicit assignments win; the standard plus key also zooms with the default binding.
+    if preferences
+        .binding(ShortcutAction::IncreaseFontSize)
+        .is_some_and(|chord| chord.config_value() == "ctrl+=")
+    {
+        for chord in ["ctrl-+", "ctrl-shift-+", "ctrl-shift-="] {
+            let key = gpui::Keystroke::parse(chord).expect("standard zoom shortcut");
+            bindings.push((
+                ShortcutAction::IncreaseFontSize,
+                gpui::KeybindingKeystroke::from_keystroke(key),
+            ));
+        }
+    }
+    bindings
+}
+
+pub(super) fn font_zoom(action: ShortcutAction) -> Option<workspace::TerminalFontZoom> {
+    use workspace::TerminalFontZoom;
+    match action {
+        ShortcutAction::IncreaseFontSize => Some(TerminalFontZoom::Increase),
+        ShortcutAction::DecreaseFontSize => Some(TerminalFontZoom::Decrease),
+        ShortcutAction::ResetFontSize => Some(TerminalFontZoom::Reset),
+        ShortcutAction::ToggleSidebar
+        | ShortcutAction::NextSession
+        | ShortcutAction::PreviousSession => None,
+    }
 }
 
 fn recorded_chord(key: &gpui::Keystroke) -> Result<KeyChord, String> {
@@ -71,11 +97,22 @@ impl RootView {
         let Some(action) = self.application_shortcut(&event.keystroke) else {
             return;
         };
-        if !event.is_held {
+        if let Some(command) = font_zoom(action) {
+            if !matches!(
+                self.workspace.snapshot().content(),
+                WorkspaceContent::Terminal { .. }
+            ) {
+                return;
+            }
+            self.apply_font_zoom(command, window, cx);
+        } else if !event.is_held {
             match action {
                 ShortcutAction::ToggleSidebar => self.toggle_sidebar(window, cx),
                 ShortcutAction::NextSession => self.cycle_session(false, window, cx),
                 ShortcutAction::PreviousSession => self.cycle_session(true, window, cx),
+                ShortcutAction::IncreaseFontSize
+                | ShortcutAction::DecreaseFontSize
+                | ShortcutAction::ResetFontSize => {}
             }
         }
         cx.stop_propagation();
@@ -316,6 +353,41 @@ mod tests {
     }
 
     #[test]
+    fn font_zoom_matches_defaults_and_yields_to_explicit_bindings() {
+        let mut preferences = KeyboardPreferences::default();
+        for (event, action) in [
+            ("ctrl-=", ShortcutAction::IncreaseFontSize),
+            ("ctrl-+", ShortcutAction::IncreaseFontSize),
+            ("ctrl-shift-+", ShortcutAction::IncreaseFontSize),
+            ("ctrl-shift-=", ShortcutAction::IncreaseFontSize),
+            ("ctrl--", ShortcutAction::DecreaseFontSize),
+            ("ctrl-0", ShortcutAction::ResetFontSize),
+        ] {
+            assert_eq!(matches(&preferences, event), Some(action), "{event}");
+        }
+        preferences
+            .set(ShortcutAction::ToggleSidebar, Some("ctrl+shift+plus"))
+            .unwrap();
+        assert_eq!(
+            matches(&preferences, "ctrl-shift-+"),
+            Some(ShortcutAction::ToggleSidebar)
+        );
+        preferences
+            .set(ShortcutAction::IncreaseFontSize, Some("alt+f12"))
+            .unwrap();
+        assert_eq!(
+            matches(&preferences, "alt-f12"),
+            Some(ShortcutAction::IncreaseFontSize)
+        );
+        assert_eq!(matches(&preferences, "ctrl-="), None);
+        assert_eq!(matches(&preferences, "ctrl-+"), None);
+        preferences
+            .set(ShortcutAction::IncreaseFontSize, Some("none"))
+            .unwrap();
+        assert_eq!(matches(&preferences, "alt-f12"), None);
+    }
+
+    #[test]
     fn shortcut_matching_uses_current_bindings_and_disabled_actions() {
         let mut preferences = KeyboardPreferences::default();
         assert_eq!(
@@ -338,6 +410,12 @@ mod tests {
             matches(&preferences, "ctrl-shift-tab"),
             Some(ShortcutAction::PreviousSession)
         );
+        preferences
+            .set(ShortcutAction::IncreaseFontSize, Some("none"))
+            .unwrap();
+        preferences
+            .set(ShortcutAction::DecreaseFontSize, Some("none"))
+            .unwrap();
         for (configured, event, different_event) in [
             ("ctrl+-", "ctrl--", "ctrl-="),
             ("alt+plus", "alt-+", "alt-="),

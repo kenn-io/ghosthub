@@ -1757,6 +1757,15 @@ is enabled. Hosts owns only
 detail regions are the permanent container for the remaining Swift settings
 domains.
 
+Font zoom is scene-local. `Workspace::zoom_terminal_font` increases or decreases
+one point, clamps to the supported 1–65535 range, or resets to the latest saved
+Appearance size. `WorkspaceSnapshot::appearance` publishes the effective font
+size; `configured_appearance` continues to expose the saved default. Zoom never
+writes configuration, leaves other scenes independent, and survives navigation
+and retained-client reuse. New scenes start without an override. GPUI remeasures
+the same font used for painting and resizes the active PTY when that effective
+font changes, including changes made through the workspace API.
+
 Terminal drag selection uses libghostty's tracked grid references and active
 selection. The renderer receives owned `Cell.selected` flags; it does not
 reconstruct text from paint runs. The library formatter copies selected Unicode
@@ -1818,13 +1827,15 @@ Missing bundled tooling leaves ownership unknown and keeps cached workspace
 records. Developer builds need the bundled helper to enable Rename.
 
 Settings → **Keyboard** records, clears, and restores shortcuts for Toggle
-Sidebar and next/previous session navigation. Changes use the existing atomic
+Sidebar, next/previous session navigation, and increase/decrease/reset font size. Changes use the existing atomic
 config writer and preserve other windows' latest settings. Ctrl or Alt is
 required; action conflicts, Paste, and reserved system chords are rejected.
 The focused view handles each key before application shortcut dispatch, so
 recording can reject a configured chord and retained terminal key sequences
 keep their repeat/release events. Unavailable navigation remains terminal input.
-Keyboard edits leave host inventory and active clients in place. Recording ends
+The default Increase shortcut also accepts the shifted Plus key. Explicit
+bindings take priority, and overriding or disabling Increase removes those
+extra default forms. Keyboard edits leave host inventory and active clients in place. Recording ends
 on Escape, pane changes, or window deactivation. The runtime API exposes the
 same preferences and validated per-action edits to other consumers.
 
@@ -1875,8 +1886,8 @@ The parity inventory is:
 | Hosts | Native add, edit, remove, explicit connect, and SSH prompt UI |
 | Appearance | Built-in themes, Custom colors, installed-font and size pickers, live preview, and atomic persistence |
 | Sidebar | Shared session list; Manual, Name, Backend, and Needs Attention sorting; saved drag order; Chip, Text, or Dot labels; Regular or Compact rows; worktree-session and root-checkout visibility; live preview |
-| Terminal | Cursor shape, shell-controlled cursor permission, mouse hiding while typing, drag selection, explicit/automatic selection copying, remote clipboard writes, and atomic persistence |
-| Keyboard | Record, clear, and restore Toggle Sidebar and next/previous session shortcuts; validate conflicts; save immediately across windows; remaining actions follow their feature work |
+| Terminal | Window-scoped font zoom, cursor shape, shell-controlled cursor permission, mouse hiding while typing, drag selection, explicit/automatic selection copying, remote clipboard writes, and atomic persistence |
+| Keyboard | Record, clear, and restore sidebar, session navigation, and font zoom shortcuts; validate conflicts; save immediately across windows; remaining actions follow their feature work |
 | Worktrees | Saved wildcard patterns hide tmux rows from the sidebar and sibling navigation; project worktrees and terminals stay available |
 | Agents | Live approval, input, and working badges; per-host hook status and explicit installation in Hosts; completion acknowledgement and the dedicated Agents pane remain unimplemented |
 | Privacy | Anonymous usage-reporting preference not yet implemented |

@@ -146,6 +146,7 @@ pub(crate) struct Scene {
     /// events and its clipboard pushes are dropped when it moved.
     pub(crate) clipboard_epoch: AtomicU64,
     pub(crate) terminal_geometry: Mutex<TerminalGeometry>,
+    pub(crate) font_size: Mutex<Option<u16>>,
     pub(crate) attachment: Mutex<AttachmentState<AttachRequest>>,
     pub(crate) terminal_notice: RwLock<Option<WorkspaceNotice>>,
 }
@@ -191,6 +192,7 @@ pub(crate) fn attach_scene(
         operation_events: Mutex::new(std::collections::VecDeque::new()),
         clipboard_epoch: AtomicU64::new(0),
         terminal_geometry: Mutex::new(default_terminal_geometry()),
+        font_size: Mutex::new(None),
         attachment: Mutex::new(AttachmentState::new()),
         terminal_notice: RwLock::new(notice),
     });

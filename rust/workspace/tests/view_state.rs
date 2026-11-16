@@ -456,3 +456,76 @@ fn saved_terminal_settings_are_persisted_and_published_without_rebuilding_hosts(
     assert!(!loaded.terminal().allow_remote_clipboard_write());
     fs::remove_dir_all(root).expect("remove temporary config root");
 }
+
+#[test]
+fn font_zoom_is_window_scoped_and_reset_uses_the_latest_saved_size() {
+    use workspace::TerminalFontZoom;
+    let (root, roots, workspace) = settings_fixture();
+    let draft = workspace.configured_appearance();
+    workspace.save_appearance(&draft).unwrap();
+    let other = workspace.open_scene();
+    let path = root.join("config.toml");
+    let original = fs::read(&path).unwrap();
+    let hosts = workspace.snapshot().hosts().to_vec();
+    let revision = workspace.snapshot().revision();
+    workspace
+        .zoom_terminal_font(TerminalFontZoom::Increase)
+        .unwrap();
+    workspace
+        .zoom_terminal_font(TerminalFontZoom::Increase)
+        .unwrap();
+    assert_eq!(workspace.snapshot().appearance().font_size(), 20);
+    assert!(workspace.snapshot().revision() > revision);
+    assert_eq!(other.snapshot().appearance().font_size(), 18);
+    other
+        .zoom_terminal_font(TerminalFontZoom::Decrease)
+        .unwrap();
+    assert_eq!(other.snapshot().appearance().font_size(), 17);
+    assert_eq!(workspace.configured_appearance().font_size, "18");
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(workspace.snapshot().hosts(), hosts);
+    let mut changed = workspace.configured_appearance();
+    changed.font_size = "24".to_owned();
+    other.save_appearance(&changed).unwrap();
+    assert_eq!(workspace.snapshot().appearance().font_size(), 20);
+    let fresh = workspace.open_scene();
+    assert_eq!(fresh.snapshot().appearance().font_size(), 24);
+    workspace
+        .zoom_terminal_font(TerminalFontZoom::Reset)
+        .unwrap();
+    assert_eq!(workspace.snapshot().appearance().font_size(), 24);
+    assert_eq!(other.snapshot().appearance().font_size(), 17);
+    assert_eq!(
+        ApplicationConfig::load(&roots)
+            .unwrap()
+            .terminal()
+            .font_size(),
+        24
+    );
+    workspace.close();
+    assert!(
+        workspace
+            .zoom_terminal_font(TerminalFontZoom::Increase)
+            .is_err()
+    );
+    assert_eq!(other.snapshot().appearance().font_size(), 17);
+    other.close();
+    fresh.close();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn font_zoom_stops_at_the_supported_point_sizes() {
+    use workspace::TerminalFontZoom;
+    for (size, command, expected) in [
+        (1, TerminalFontZoom::Decrease, 1),
+        (u16::MAX, TerminalFontZoom::Increase, u16::MAX),
+        (18, TerminalFontZoom::Decrease, 17),
+    ] {
+        let appearance =
+            TerminalAppearance::new("monospace", size, "#101010", "#eeeeee", false).unwrap();
+        let workspace = Workspace::preview(WorkspaceSnapshot::shell(appearance.into(), Vec::new()));
+        workspace.zoom_terminal_font(command).unwrap();
+        assert_eq!(workspace.snapshot().appearance().font_size(), expected);
+    }
+}

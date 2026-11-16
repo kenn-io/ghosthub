@@ -81,3 +81,28 @@ fn invalid_or_conflicting_shortcuts_reject_the_configuration() {
             .is_none()
     );
 }
+
+#[test]
+fn font_zoom_shortcuts_can_be_changed_disabled_and_restored() {
+    let mut keyboard = ApplicationConfig::default().keyboard().clone();
+    for (action, default) in [
+        (ShortcutAction::IncreaseFontSize, "ctrl+="),
+        (ShortcutAction::DecreaseFontSize, "ctrl+-"),
+        (ShortcutAction::ResetFontSize, "ctrl+0"),
+    ] {
+        assert_eq!(keyboard.binding(action).unwrap().config_value(), default);
+        keyboard.set(action, Some("alt+f12")).unwrap();
+        assert_eq!(keyboard.binding(action).unwrap().config_value(), "alt+f12");
+        keyboard.set(action, Some("none")).unwrap();
+        assert!(keyboard.binding(action).is_none());
+        keyboard.set(action, None).unwrap();
+        assert_eq!(keyboard.binding(action).unwrap().config_value(), default);
+    }
+    let before = keyboard.clone();
+    assert!(
+        keyboard
+            .set(ShortcutAction::IncreaseFontSize, Some("ctrl+-"))
+            .is_err()
+    );
+    assert_eq!(keyboard, before);
+}
