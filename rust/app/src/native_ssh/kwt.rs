@@ -1393,6 +1393,7 @@ fn opens_idle_directories_and_reuses_the_attached_client() {
     let initial = selection();
     fixture.workspace.switch_session(&initial).unwrap();
     fixture.tmux_shell(initial.session(), "idle-directory-opened");
+    fixture.hyperlink_probe();
     fixture
         .workspace
         .send_key(KeyInput::text(
@@ -1504,6 +1505,7 @@ fn opens_idle_worktrees_and_reuses_the_attached_client() {
     };
     open().unwrap();
     fixture.tmux_shell(worktree.session_name(), "idle-worktree-opened");
+    fixture.hyperlink_probe();
     let client = workspace_tmux(&fixture, true, &["list-clients", "-F", "#{client_pid}"]);
     assert!(!client.is_empty());
     open().unwrap();

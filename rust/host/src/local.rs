@@ -1440,7 +1440,8 @@ impl<R: CommandRunner> LocalHost<R> {
             .kwt_home
             .as_deref()
             .map(|path| format!("KWT_HOME={path}"));
-        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        let mut extra_environment = vec!["KWT_TMUX_CLIENT_FEATURES=hyperlinks"];
+        extra_environment.extend(kwt_home.as_deref());
         append_tmux_environment(
             &mut args,
             Some(term.environment()),
@@ -1514,7 +1515,8 @@ impl<R: CommandRunner> LocalHost<R> {
             .kwt_home
             .as_deref()
             .map(|path| format!("KWT_HOME={path}"));
-        let extra_environment = kwt_home.as_deref().into_iter().collect::<Vec<_>>();
+        let mut extra_environment = vec!["KWT_TMUX_CLIENT_FEATURES=hyperlinks"];
+        extra_environment.extend(kwt_home.as_deref());
         append_tmux_environment(
             &mut args,
             Some(term.environment()),
@@ -6220,6 +6222,10 @@ mod tests {
             .map(|argument| argument.to_string_lossy())
             .collect::<Vec<_>>();
         assert!(
+            args.iter()
+                .any(|argument| argument == "KWT_TMUX_CLIENT_FEATURES=hyperlinks")
+        );
+        assert!(
             args.windows(3)
                 .any(|args| { args == [&test_kwt_helper_path(), "open", "/work/widget/topic",] })
         );
@@ -6351,6 +6357,10 @@ mod tests {
             .iter()
             .map(|argument| argument.to_string_lossy())
             .collect::<Vec<_>>();
+        assert!(
+            args.iter()
+                .any(|argument| argument == "KWT_TMUX_CLIENT_FEATURES=hyperlinks")
+        );
         assert!(args.windows(4).any(|args| {
             args == [
                 &test_kwt_helper_path(),

@@ -216,9 +216,14 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let expected = format!("kwt-native-{nonce}");
+        let target = format!("https://example.com/worktree/{nonce}");
+        let version = String::from_utf8(self.tmux(&["-V"]).stdout).unwrap();
+        let links = !version.starts_with("tmux 3.2") && !version.starts_with("tmux 3.3");
         self.workspace
             .send_key(KeyInput::text(
-                format!("printf 'kwt-native-%s\\n' {nonce}"),
+                format!(
+                    r"printf 'kwt-native-%s\n\033]8;;{target}\033\\Docs\033]8;;\033\\\n' {nonce}"
+                ),
                 Modifiers::default(),
             ))
             .unwrap();
@@ -230,13 +235,17 @@ impl Fixture {
             let WorkspaceContent::Terminal { surface, .. } = snapshot.content() else {
                 return None;
             };
-            surface
-                .load()
+            let frame = surface.load();
+            (frame
                 .cells()
                 .map(surface::Cell::text)
                 .collect::<String>()
                 .contains(&expected)
-                .then_some(())
+                && (!links
+                    || frame
+                        .cells()
+                        .any(|cell| cell.hyperlink.as_deref() == Some(target.as_str()))))
+            .then_some(())
         });
     }
 
