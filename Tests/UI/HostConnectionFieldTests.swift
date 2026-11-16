@@ -64,6 +64,29 @@ struct HostOperationTargetTests {
         ))
     }
 
+    @Test("changing agent forwarding invalidates pending host results")
+    func agentForwardingInvalidatesPendingResults() {
+        var draft = SSHHostDraft(
+            configKey: "remote",
+            name: "Remote",
+            platform: .linux,
+            sshDestination: "dev@example.test"
+        )
+        #expect(draft.forwardAgent == nil)
+        let target = HostOperationTarget(draft)
+        #expect(target.isCurrent(
+            selectedDraftID: draft.id,
+            drafts: [draft]
+        ))
+
+        draft.forwardAgent = true
+
+        #expect(!target.isCurrent(
+            selectedDraftID: draft.id,
+            drafts: [draft]
+        ))
+    }
+
     @Test("results apply only to the selected unchanged endpoint")
     func matchesSelectedEndpoint() {
         let draft = SSHHostDraft(

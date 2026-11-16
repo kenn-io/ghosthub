@@ -739,6 +739,45 @@ final class SettingsStoreTests {
         #expect(try #require(makeSUT().sshHosts.first).compression == !expected)
     }
 
+    @Test(
+        "SSH agent forwarding survives settings edits and reloads",
+        arguments: [
+            ("", Bool?.none),
+            (", \"forwardAgent\": true", true),
+            (", \"forwardAgent\": false", false),
+        ]
+    )
+    func testSSHAgentForwardingPersists(
+        agentField: String,
+        expected: Bool?
+    ) throws {
+        defaults.set(Data("""
+        [{
+          "configKey": "remote",
+          "name": "Remote",
+          "platform": "linux",
+          "sshDestination": "dev@example.test"\(agentField)
+        }]
+        """.utf8), forKey: "ghosthub.settings.hosts.ssh")
+
+        let store = makeSUT()
+        var draft = SettingsViewDraft(store: store)
+        #expect(try #require(draft.sshHosts.first).forwardAgent == expected)
+
+        draft.sshHosts[0].name = " Renamed Remote "
+        _ = draft.persist(to: store)
+        let reloaded = makeSUT()
+        #expect(try #require(reloaded.sshHosts.first).forwardAgent == expected)
+
+        draft = SettingsViewDraft(store: reloaded)
+        draft.sshHosts[0].forwardAgent = expected != true
+        #expect(draft.persist(to: reloaded).shouldRefreshHosts)
+        #expect(try #require(makeSUT().sshHosts.first).forwardAgent == (expected != true))
+        draft.sshHosts[0].forwardAgent = nil
+        #expect(draft.persist(to: reloaded).shouldRefreshHosts)
+        #expect(try #require(makeSUT().sshHosts.first).forwardAgent == nil)
+    }
+
     @Test
     func testSSHHostsIgnoreLegacyAppConfig() throws {
         try writeAppConfig(toml: """

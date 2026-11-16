@@ -58,6 +58,7 @@ public enum SSHHostSanitizer {
                 platform: host.platform,
                 sshDestination: sshDestination,
                 compression: host.compression,
+                forwardAgent: host.forwardAgent,
                 launchProfiles: launchProfiles(host.launchProfiles)
             )
         }

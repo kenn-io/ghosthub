@@ -87,6 +87,7 @@ enum ConfiguredHostOverlay {
             host.platform = configured.platform
             host.sshDestination = configured.sshDestination
             host.sshCompression = configured.compression
+            host.sshForwardAgent = configured.forwardAgent
             host.preferredTransport = .ssh
             host.exeVM = entry.exeVM
             if invalidatedHostIDs.contains(host.id) {

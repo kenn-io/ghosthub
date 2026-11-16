@@ -531,6 +531,13 @@ releases existing attachments; reopening a session acquires the new route.
 Transport preferences do not change the endpoint used for project-registry
 mutation fences or removal quarantine.
 
+Each saved host also has an optional agent-forwarding override. The default
+follows OpenSSH configuration; On and Off select an explicit `ForwardAgent`
+value for the destination. Ghosthub carries that value through route resolution,
+leases, and short commands so the shared master and terminal agree. Jump hosts
+keep their own settings. Forwarding changes refresh connections while preserving
+host and project identity.
+
 Long-lived remote tmux, Herdr, and Zellij presentations acquire multiplexed
 SSH leases from kwt. Kwt owns the OpenSSH master, route revalidation, ProxyJump
 chain, askpass transport, host-key prompt parsing, generation, idle policy, and

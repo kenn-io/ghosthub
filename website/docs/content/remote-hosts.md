@@ -114,6 +114,23 @@ host that requested the response. The response is kept only for the running app
 session. **Continue** can intentionally submit an empty response when the
 challenge requires one.
 
+### SSH agent forwarding
+
+In **Settings → Hosts**, choose **Agent forwarding** for a saved host:
+
+- **SSH configuration** follows that host's `ForwardAgent` setting. This is the default.
+- **On** forwards your local SSH agent to the host.
+- **Off** disables forwarding for that host, including when SSH configuration enables it.
+
+Select **Done**, then reopen the host's sessions to use the new choice. The setting
+applies to the destination; jump hosts keep their own SSH settings.
+
+Forwarding lets commands on the remote host ask your local agent to sign SSH
+logins. Private keys stay on your computer. Load the intended keys into your
+agent first, for example with `ssh-add ~/.ssh/id_ed25519`. In a remote terminal,
+`ssh-add -l` lists the keys available through forwarding. Forwarding remains
+available while Ghosthub has an active connection to that host.
+
 If a host shows a caution icon, select it to review trust, authenticate, or
 retry. A successful ordinary host-inventory authentication refreshes inventory;
 it does not open a tmux, Herdr, or Zellij session by itself.

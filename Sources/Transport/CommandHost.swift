@@ -18,19 +18,22 @@ public struct SSHHostInfo: Codable, Hashable, Sendable {
     public let port: Int?
     public let platform: Platform
     public let compression: Bool
+    public let forwardAgent: Bool?
 
     public init(
         user: String?,
         hostname: String,
         port: Int?,
         platform: Platform = .posix,
-        compression: Bool = true
+        compression: Bool = true,
+        forwardAgent: Bool? = nil
     ) {
         self.user = user
         self.hostname = hostname
         self.port = port
         self.platform = platform
         self.compression = compression
+        self.forwardAgent = forwardAgent
     }
 
     public var displayName: String {

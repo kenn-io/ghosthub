@@ -74,6 +74,9 @@ struct KwtSSHCommandClient: Sendable {
             "--host-key-policy", "strict",
             "--compression", host.compression ? "yes" : "no",
         ]
+        if let forwardAgent = host.forwardAgent {
+            arguments.append(contentsOf: ["--forward-agent", forwardAgent ? "yes" : "no"])
+        }
         if let expectedRouteIdentity {
             arguments += ["--route-identity", expectedRouteIdentity]
         }

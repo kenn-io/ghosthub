@@ -150,7 +150,8 @@ struct KwtRemoteInstaller: Sendable {
             user: parsed.user,
             hostname: parsed.hostname,
             port: parsed.port,
-            compression: host.compression
+            compression: host.compression,
+            forwardAgent: host.forwardAgent
         )
         let commandLease = commandLease
         try await commandLease.withConnection(on: .ssh(info)) { connection in

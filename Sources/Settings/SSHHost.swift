@@ -7,6 +7,7 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
     public var platform: HostPlatform
     public var sshDestination: String
     public var compression: Bool
+    public var forwardAgent: Bool?
     public var launchProfiles: [TmuxLaunchProfile]
 
     public var id: String { configKey }
@@ -17,6 +18,7 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
         platform: HostPlatform,
         sshDestination: String,
         compression: Bool = true,
+        forwardAgent: Bool? = nil,
         launchProfiles: [TmuxLaunchProfile] = []
     ) {
         self.configKey = configKey
@@ -24,6 +26,7 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
         self.platform = platform
         self.sshDestination = sshDestination
         self.compression = compression
+        self.forwardAgent = forwardAgent
         self.launchProfiles = launchProfiles
     }
 
@@ -33,6 +36,7 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
         case platform
         case sshDestination
         case compression
+        case forwardAgent
         case launchProfiles
     }
 
@@ -49,6 +53,7 @@ public struct SSHHost: Codable, Equatable, Sendable, Identifiable {
             Bool.self,
             forKey: .compression
         ) ?? true
+        forwardAgent = try container.decodeIfPresent(Bool.self, forKey: .forwardAgent)
         launchProfiles = try container.decodeIfPresent(
             [TmuxLaunchProfile].self,
             forKey: .launchProfiles

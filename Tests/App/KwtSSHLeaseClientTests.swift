@@ -248,6 +248,21 @@ struct KwtSSHLeaseClientTests {
         )
     }
 
+    @Test("leases carry the host's forwarding override", arguments: [true, false])
+    func forwardsAgentChoice(forwardAgent: Bool) async throws {
+        let fixture = try TempDirectoryFixture()
+        let helper = try fixture.createExecutable(name: "kwt", content: Self.helperScript)
+        let client = KwtSSHLeaseClient(binaryPath: helper.path)
+        var route = Self.route
+        route.forwardAgent = forwardAgent
+        let lease = try await client.acquire(route: route, prompt: { _ in "fixture" })
+        try await lease.release()
+        let arguments = try String(contentsOf: fixture.childURL("arguments"), encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        let flag = try #require(arguments.firstIndex(of: "--forward-agent"))
+        #expect(arguments[flag + 1] == (forwardAgent ? "yes" : "no"))
+    }
+
     @Test(
         "streams bound prompts and releases the daemon lease on close",
         arguments: [true, false], [0, 2]
