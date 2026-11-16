@@ -111,7 +111,8 @@ struct KwtWindowsInstaller: Sendable {
             hostname: parsed.hostname,
             port: parsed.port,
             platform: .windows,
-            compression: configuredHost.compression
+            compression: configuredHost.compression,
+            forwardAgent: configuredHost.forwardAgent
         )
         do {
             return try await commandLease.withConnection(on: .ssh(host)) {

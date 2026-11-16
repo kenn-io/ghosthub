@@ -7170,7 +7170,8 @@ final class WorkspaceSceneModel: ObservableObject {
             name: host.name,
             platform: host.platform,
             sshDestination: destination,
-            compression: host.sshCompression
+            compression: host.sshCompression,
+            forwardAgent: host.sshForwardAgent
         )
     }
 
@@ -7221,7 +7222,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostname: parsed.hostname,
                 port: parsed.port,
                 platform: host.platform == .windows ? .windows : .posix,
-                compression: host.compression
+                compression: host.compression,
+                forwardAgent: host.forwardAgent
             ),
             destination
         )
@@ -7531,7 +7533,8 @@ final class WorkspaceSceneModel: ObservableObject {
                 hostname: sshHost.hostname,
                 port: sshHost.port,
                 platform: .posix,
-                compression: host.compression
+                compression: host.compression,
+                forwardAgent: host.forwardAgent
             ))
         } else {
             target = .local
@@ -7569,7 +7572,8 @@ final class WorkspaceSceneModel: ObservableObject {
             hostname: sshHost.hostname,
             port: sshHost.port,
             platform: host.platform == .windows ? .windows : .posix,
-            compression: host.compression
+            compression: host.compression,
+            forwardAgent: host.forwardAgent
         ))
         var provisioningHost = host
         provisioningHost.sshDestination = destination

@@ -134,9 +134,9 @@ struct PinnedKwtContractTests {
 
     @Test(
         "exact helper resolves the SSH route snapshot consumed by Ghosthub",
-        arguments: [true, false]
+        arguments: [true, false], [nil, true, false] as [Bool?]
     )
-    func sshRouteSnapshot(compression: Bool) throws {
+    func sshRouteSnapshot(compression: Bool, forwardAgent: Bool?) throws {
         guard ProcessInfo.processInfo.environment[
             "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
         ] == "1" else { return }
@@ -164,6 +164,7 @@ struct PinnedKwtContractTests {
 
         Host tailscale-build
             Compression \(compression ? "no" : "yes")
+            ForwardAgent \(forwardAgent == true ? "no" : "yes")
             HostName 100.64.0.8
             User operator
             Port 2222
@@ -217,11 +218,14 @@ struct PinnedKwtContractTests {
             user: nil,
             hostname: "tailscale-build",
             port: nil,
-            compression: compression
+            compression: compression, forwardAgent: forwardAgent
         ))
 
         #expect(snapshot.logicalTarget.hostname == "tailscale-build")
         #expect(snapshot.compression == compression)
+        #expect(snapshot.forwardAgent == forwardAgent)
+        #expect(snapshot.targets.last?.projection.arguments
+            .contains("ForwardAgent=\(forwardAgent == false ? "no" : "yes")") == true)
         #expect(snapshot.targets.last?.projection.arguments.contains(
             "Compression=\(compression ? "yes" : "no")"
         ) == true)

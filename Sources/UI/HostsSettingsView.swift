@@ -43,6 +43,7 @@ struct HostOperationTarget: Equatable, Identifiable, Sendable {
     let sshDestination: String
     let platform: HostPlatform
     let compression: Bool
+    let forwardAgent: Bool?
 
     var id: UUID { operationID }
 
@@ -52,6 +53,7 @@ struct HostOperationTarget: Equatable, Identifiable, Sendable {
         sshDestination = draft.sshDestination
         platform = draft.platform
         compression = draft.compression
+        forwardAgent = draft.forwardAgent
     }
 
     func isCurrent(
@@ -66,6 +68,7 @@ struct HostOperationTarget: Equatable, Identifiable, Sendable {
         return draft.sshDestination == sshDestination
             && draft.platform == platform
             && draft.compression == compression
+            && draft.forwardAgent == forwardAgent
     }
 }
 
@@ -478,6 +481,19 @@ public struct HostsSettingsView: View {
                                 .labelsHidden()
                             }
 
+                            hostSettingField("Agent forwarding") {
+                                Picker("Agent forwarding", selection: binding.forwardAgent) {
+                                    Text("SSH configuration").tag(Bool?.none)
+                                    Text("On").tag(Bool?.some(true))
+                                    Text("Off").tag(Bool?.some(false))
+                                }
+                                .labelsHidden()
+                                .help(
+                                    "Allow remote sessions to use your local SSH agent. Reopen sessions after saving."
+                                )
+                                .accessibilityIdentifier("ssh-agent-forwarding")
+                            }
+
                             Toggle("SSH compression", isOn: binding.compression)
                                 .help(
                                     "Reduce network traffic. Select Done, then reopen sessions to use the new setting."
@@ -888,7 +904,8 @@ public struct HostsSettingsView: View {
         name: Binding<String>,
         sshDestination: Binding<String>,
         platform: Binding<HostPlatform>,
-        compression: Binding<Bool>
+        compression: Binding<Bool>,
+        forwardAgent: Binding<Bool?>
     )? {
         guard let index = selectedSSHHostDraftIndex else {
             return nil
@@ -920,6 +937,13 @@ public struct HostsSettingsView: View {
                 get: { sshHosts[index].compression },
                 set: {
                     sshHosts[index].compression = $0
+                    clearSSHHostProbeFeedback()
+                }
+            ),
+            forwardAgent: Binding(
+                get: { sshHosts[index].forwardAgent },
+                set: {
+                    sshHosts[index].forwardAgent = $0
                     clearSSHHostProbeFeedback()
                 }
             )

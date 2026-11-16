@@ -30,8 +30,12 @@ struct KwtSSHRouteClientTests {
         ))
     }
 
-    @Test("bundled kwt resolves an ordered ProxyJump route", arguments: [true, false])
-    func resolvesOrderedRoute(compression: Bool) throws {
+    @Test(
+        "bundled kwt resolves an ordered ProxyJump route",
+        arguments: [true, false],
+        [nil, true, false] as [Bool?]
+    )
+    func resolvesOrderedRoute(compression: Bool, forwardAgent: Bool?) throws {
         let invocation = LockedValue<(String, [String])?>(nil)
         let client = KwtSSHRouteClient(
             runner: { executable, arguments, _ in
@@ -40,7 +44,8 @@ struct KwtSSHRouteClientTests {
                     status: 0,
                     stdout: Self.routeJSON.replacingOccurrences(
                         of: "\"compression\": true",
-                        with: "\"compression\": \(compression)"
+                        with: "\"compression\": \(compression)" +
+                            (forwardAgent.map { ", \"forward_agent\": \($0)" } ?? "")
                     ),
                     stderr: ""
                 )
@@ -52,18 +57,26 @@ struct KwtSSHRouteClientTests {
             user: "deploy",
             hostname: "build.example.test",
             port: 2200,
-            compression: compression
+            compression: compression, forwardAgent: forwardAgent
         ))
 
         #expect(invocation.load()?.0 ==
             "/Applications/Ghosthub.app/Contents/Helpers/kwt")
-        #expect(invocation.load()?.1 == [
+        var expectedArguments = [
             "ssh", "resolve", "--json",
             "--compression", compression ? "yes" : "no",
             "--user", "deploy",
             "--port", "2200",
             "build.example.test",
-        ])
+        ]
+        if let forwardAgent {
+            expectedArguments.insert(
+                contentsOf: ["--forward-agent", forwardAgent ? "yes" : "no"],
+                at: 5
+            )
+        }
+        #expect(invocation.load()?.1 == expectedArguments)
+        #expect(snapshot.forwardAgent == forwardAgent)
         #expect(snapshot.routeIdentity == "sha256:route-observation")
         #expect(snapshot.compression == compression)
         #expect(snapshot.projectionPolicy == "kwt.openssh.projection.v2")

@@ -32,6 +32,27 @@ struct ConfiguredHostOverlayTests {
         ))
     }
 
+    @Test("agent forwarding changes reach command routing without discarding project identity")
+    func changesAgentForwarding() throws {
+        var configured = SSHHost(
+            configKey: "builder", name: "Builder", platform: .linux,
+            sshDestination: "build.example.test"
+        )
+        var source = ConfiguredHostOverlay.apply([configured], to: .empty)
+        let host = try #require(source.hosts.first)
+        let project = ProjectSummary.fixture(hostID: host.id)
+        source.projects = [project]
+        configured.forwardAgent = true
+
+        let updated = ConfiguredHostOverlay.apply([configured], to: source)
+
+        #expect(updated.hosts.first?.id == host.id)
+        #expect(updated.projects == [project])
+        #expect(CommandHostResolver.resolve(try #require(updated.hosts.first)) == .ssh(
+            SSHHostInfo(user: nil, hostname: "build.example.test", port: nil, forwardAgent: true)
+        ))
+    }
+
     @Test("app-owned SSH hosts replace transitional remote inventory")
     func configuredHostsReplaceTransitionalRemoteInventory() {
         let local = HostSummary.fixture(

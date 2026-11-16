@@ -40,9 +40,9 @@ struct KwtSSHCommandClientTests {
 
     @Test(
         "remote commands pass intent to kwt instead of receiving SSH arguments",
-        arguments: [true, false]
+        arguments: [true, false], [nil, true, false] as [Bool?]
     )
-    func runsThroughKwt(compression: Bool) async {
+    func runsThroughKwt(compression: Bool, forwardAgent: Bool?) async {
         let captured = Mutex<(String, [String], TimeInterval)?>(nil)
         let client = KwtSSHCommandClient(
             runner: { executable, arguments, timeout in
@@ -60,7 +60,7 @@ struct KwtSSHCommandClientTests {
             hostname: "build.example.test",
             port: 2200,
             platform: .posix,
-            compression: compression
+            compression: compression, forwardAgent: forwardAgent
         )
 
         let output = await client.run(
@@ -73,7 +73,7 @@ struct KwtSSHCommandClientTests {
         #expect(output.status == 0)
         #expect(output.stdout == "inventory\n")
         #expect(captured.withLock { $0?.0 } == "/bundle/kwt")
-        #expect(captured.withLock { $0?.1 } == [
+        var expectedArguments = [
             "ssh", "exec", "--quiet", "--json",
             "--host-key-policy", "strict",
             "--compression", compression ? "yes" : "no",
@@ -86,7 +86,14 @@ struct KwtSSHCommandClientTests {
                 host: host,
                 command: "printf inventory"
             ),
-        ])
+        ]
+        if let forwardAgent {
+            expectedArguments.insert(
+                contentsOf: ["--forward-agent", forwardAgent ? "yes" : "no"],
+                at: 8
+            )
+        }
+        #expect(captured.withLock { $0?.1 } == expectedArguments)
         #expect(captured.withLock { $0?.2 } == 17)
     }
 

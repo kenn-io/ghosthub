@@ -620,6 +620,9 @@ struct KwtSSHLeaseClient: Sendable {
         if let compression = route.compression {
             arguments.append(contentsOf: ["--compression", compression ? "yes" : "no"])
         }
+        if let forwardAgent = route.forwardAgent {
+            arguments.append(contentsOf: ["--forward-agent", forwardAgent ? "yes" : "no"])
+        }
         if let user = route.logicalTarget.user {
             arguments.append(contentsOf: ["--user", user])
         }

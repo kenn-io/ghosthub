@@ -70,6 +70,7 @@ struct KwtSSHRouteSnapshot: Decodable, Equatable, Sendable {
     let projectionPolicy: String
     let observedAt: String
     var compression: Bool? = nil
+    var forwardAgent: Bool? = nil
 
     private enum CodingKeys: String, CodingKey {
         case logicalTarget = "logical_target"
@@ -78,6 +79,7 @@ struct KwtSSHRouteSnapshot: Decodable, Equatable, Sendable {
         case projectionPolicy = "projection_policy"
         case observedAt = "observed_at"
         case compression
+        case forwardAgent = "forward_agent"
     }
 }
 
@@ -145,6 +147,9 @@ struct KwtSSHRouteClient: Sendable {
         var arguments = binaryPath == nil ? ["kwt"] : []
         arguments.append(contentsOf: ["ssh", "resolve", "--json"])
         arguments.append(contentsOf: ["--compression", host.compression ? "yes" : "no"])
+        if let forwardAgent = host.forwardAgent {
+            arguments.append(contentsOf: ["--forward-agent", forwardAgent ? "yes" : "no"])
+        }
         if let user = host.user {
             arguments.append(contentsOf: ["--user", user])
         }
@@ -174,6 +179,7 @@ struct KwtSSHRouteClient: Sendable {
         let requestedTarget = KwtSSHTarget(host)
         guard snapshot.logicalTarget == requestedTarget,
               snapshot.compression == host.compression,
+              snapshot.forwardAgent == host.forwardAgent,
               snapshot.targets.last?.logicalTarget == requestedTarget,
               !snapshot.targets.isEmpty,
               !snapshot.routeIdentity.isEmpty,
