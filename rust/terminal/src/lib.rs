@@ -413,7 +413,7 @@ impl TerminalEngine {
             rows.row_identities.push(id);
             if force || dirty {
                 let mut cells = Vec::with_capacity(self.size.columns());
-                while let Some(cell) = self.vt.cell() {
+                while let Some(cell) = self.vt.cell(cells.len(), row) {
                     cells.push(cell);
                 }
                 assert_eq!(cells.len(), self.size.columns());

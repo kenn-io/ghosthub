@@ -1766,6 +1766,26 @@ and retained-client reuse. New scenes start without an override. GPUI remeasures
 the same font used for painting and resizes the active PTY when that effective
 font changes, including changes made through the workspace API.
 
+Program-supplied OSC 8 hyperlinks are owned `Cell.hyperlink` values in surface
+frames. The VT bridge reads targets through libghostty grid references and
+shares adjacent copies with `Arc<str>`; no library pointer crosses into a frame.
+`SurfaceFrame::hyperlink_at` handles viewport bounds, wide glyphs, and invisible
+text. Plain text URL detection remains separate work.
+
+GPUI underlines labelled links without changing their terminal colors or
+emphasis. Hover previews the current frame's destination. Ctrl-click opens it
+through GPUI's native OS URL handler only after release on the same cell and
+presentation with the same target. Drags, changed destinations, or releasing
+Ctrl cancel the action. Session changes clear the pending gesture. Ordinary
+clicks, mouse reports, Shift selection, and text copying retain their existing
+paths. Merely receiving link output does not request an opener.
+
+Ordinary local and SSH tmux creation and attachment advertise hyperlinks with
+`-T hyperlinks`. Tmux 3.4 or later can then forward OSC 8 without changing the
+server's configuration; older admitted versions ignore this unknown feature.
+KWT launches its own worktree clients, so those clients still depend on tmux's
+configured terminal features. The pinned helper has no client-feature option.
+
 Terminal drag selection uses libghostty's tracked grid references and active
 selection. The renderer receives owned `Cell.selected` flags; it does not
 reconstruct text from paint runs. The library formatter copies selected Unicode

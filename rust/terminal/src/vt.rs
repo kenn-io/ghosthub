@@ -4,7 +4,7 @@
 //! contain Rust-owned data before returning to the terminal worker.
 #![allow(unsafe_code)]
 
-use std::{ffi::c_void, ptr::NonNull};
+use std::{ffi::c_void, ptr::NonNull, sync::Arc};
 
 use surface::{Cell, CellStyle, Cursor, CursorShape, GridSize, Rgb};
 
@@ -25,6 +25,8 @@ struct RawCell {
     background: [u8; 3],
     style: u8,
     selected: bool,
+    hyperlink: *const u8,
+    hyperlink_len: usize,
 }
 
 type EffectCallback = unsafe extern "C" fn(*mut c_void, u32, *const u8, usize);
@@ -43,7 +45,7 @@ unsafe extern "C" {
     fn vt_mode(vt: *mut c_void, mode: u16) -> bool;
     fn vt_snapshot(vt: *mut c_void, cursor: *mut RawCursor) -> i32;
     fn vt_row(vt: *mut c_void, identity: *mut u64, dirty: *mut bool) -> bool;
-    fn vt_cell(vt: *mut c_void, cell: *mut RawCell) -> bool;
+    fn vt_cell(vt: *mut c_void, cell: *mut RawCell, x: u16, y: u16) -> bool;
     fn vt_clean(vt: *mut c_void);
     fn vt_clear_selection(vt: *mut c_void) -> bool;
     fn vt_select(vt: *mut c_void, action: u8, x: u16, y: u16, clicks: u8);
@@ -72,6 +74,7 @@ pub(super) struct Vt {
     // worker. libghostty invokes callbacks only during our exclusive calls.
     #[allow(clippy::box_collection)]
     effects: Box<Vec<Effect>>,
+    hyperlink: Option<Arc<str>>,
 }
 
 // SAFETY: the entire instance moves to one terminal worker. libghostty creates
@@ -218,6 +221,7 @@ impl Vt {
         Self {
             handle: NonNull::new(handle).expect("create libghostty terminal"),
             effects,
+            hyperlink: None,
         }
     }
 
@@ -286,7 +290,7 @@ impl Vt {
             .then_some((identity, dirty))
     }
 
-    pub fn cell(&mut self) -> Option<Cell> {
+    pub fn cell(&mut self, column: usize, row: usize) -> Option<Cell> {
         let mut cell = RawCell {
             selected: false,
             text: std::ptr::null(),
@@ -294,9 +298,18 @@ impl Vt {
             foreground: [0; 3],
             background: [0; 3],
             style: 0,
+            hyperlink: std::ptr::null(),
+            hyperlink_len: 0,
         };
         // SAFETY: the current row initializes all fields on a successful read.
-        if !unsafe { vt_cell(self.handle.as_ptr(), &raw mut cell) } {
+        if !unsafe {
+            vt_cell(
+                self.handle.as_ptr(),
+                &raw mut cell,
+                u16::try_from(column).expect("terminal column fits the VT grid"),
+                u16::try_from(row).expect("terminal row fits the VT grid"),
+            )
+        } {
             return None;
         }
         #[cfg(test)]
@@ -310,6 +323,16 @@ impl Vt {
         };
         let mut converted = Cell::plain(text);
         converted.selected = cell.selected;
+        if cell.hyperlink_len > 0 {
+            // SAFETY: the library-owned URI buffer remains live until the next cell read.
+            let bytes = unsafe { std::slice::from_raw_parts(cell.hyperlink, cell.hyperlink_len) };
+            if let Ok(uri) = std::str::from_utf8(bytes) {
+                if self.hyperlink.as_deref() != Some(uri) {
+                    self.hyperlink = Some(Arc::from(uri));
+                }
+                converted.hyperlink.clone_from(&self.hyperlink);
+            }
+        }
         converted.foreground = Rgb::new(cell.foreground[0], cell.foreground[1], cell.foreground[2]);
         converted.background = Rgb::new(cell.background[0], cell.background[1], cell.background[2]);
         for (bit, style) in [

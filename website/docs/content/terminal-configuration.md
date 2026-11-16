@@ -150,6 +150,20 @@ clipboard writes** is off.
 
 ![Rust Terminal settings with automatic selection copying](/docs/assets/guide-rust-terminal-settings.png)
 
+### Open terminal links
+
+In the Rust app, **Ctrl-click** an underlined link to open its destination
+with your operating system's default application. Hover over it to see the
+address. A normal click or drag still selects text; hold **Shift** when the
+terminal program uses the mouse.
+
+Programs must mark these links with OSC 8. Plain text URLs are not detected.
+Link forwarding requires tmux 3.4 or later. KWT worktree clients also need
+hyperlinks enabled in their tmux terminal features; Ghosthub does not change
+that server setting.
+
+![Terminal links with a destination preview in the Rust app](/docs/assets/guide-rust-hyperlinks.png)
+
 ## Quit behavior
 
 **Confirm before quitting Ghosthub** is enabled by default under

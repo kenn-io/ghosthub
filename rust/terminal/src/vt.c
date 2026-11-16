@@ -20,6 +20,7 @@ typedef struct {
     uint8_t *selection_text;
     size_t selection_len;
     GhosttyBuffer text;
+    GhosttyBuffer hyperlink;
     Effect effect;
     void *userdata;
     bool reading_clipboard;
@@ -37,6 +38,8 @@ typedef struct {
     size_t len;
     uint8_t foreground[3], background[3], style;
     bool selected;
+    const uint8_t *hyperlink;
+    size_t hyperlink_len;
 } VtCell;
 
 static void check(GhosttyResult result) {
@@ -93,6 +96,7 @@ void vt_free(Vt *vt) {
     ghostty_render_state_free(vt->render);
     ghostty_terminal_free(vt->terminal);
     free(vt->text.ptr);
+    free(vt->hyperlink.ptr);
     free(vt->osc.ptr);
     free(vt);
 }
@@ -353,7 +357,7 @@ bool vt_row(Vt *vt, uint64_t *identity, bool *dirty) {
     return true;
 }
 
-bool vt_cell(Vt *vt, VtCell *cell) {
+bool vt_cell(Vt *vt, VtCell *cell, uint16_t x, uint16_t y) {
     if (!ghostty_render_state_row_cells_next(vt->cells)) return false;
     check(ghostty_render_state_row_cells_get(vt->cells,
         GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &cell->selected));
@@ -375,6 +379,28 @@ bool vt_cell(Vt *vt, VtCell *cell) {
     GhosttyCell raw;
     GhosttyCellWide wide;
     check(ghostty_render_state_row_cells_get(vt->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw));
+    bool has_hyperlink;
+    check(ghostty_cell_get(raw, GHOSTTY_CELL_DATA_HAS_HYPERLINK, &has_hyperlink));
+    cell->hyperlink = NULL;
+    cell->hyperlink_len = 0;
+    if (has_hyperlink) {
+        GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
+            .value = {.coordinate = {.x = x, .y = y}}};
+        GhosttyGridRef ref = {0};
+        check(ghostty_terminal_grid_ref(vt->terminal, point, &ref));
+        result = ghostty_grid_ref_hyperlink_uri(&ref, vt->hyperlink.ptr,
+            vt->hyperlink.cap, &cell->hyperlink_len);
+        if (result == GHOSTTY_OUT_OF_SPACE) {
+            uint8_t *uri = realloc(vt->hyperlink.ptr, cell->hyperlink_len);
+            if (!uri) abort();
+            vt->hyperlink.ptr = uri;
+            vt->hyperlink.cap = cell->hyperlink_len;
+            result = ghostty_grid_ref_hyperlink_uri(&ref, vt->hyperlink.ptr,
+                vt->hyperlink.cap, &cell->hyperlink_len);
+        }
+        check(result);
+        cell->hyperlink = vt->hyperlink.ptr;
+    }
     check(ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide));
     if (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL || wide == GHOSTTY_CELL_WIDE_SPACER_HEAD) {
         cell->len = 0;

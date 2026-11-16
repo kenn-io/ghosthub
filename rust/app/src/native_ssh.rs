@@ -223,6 +223,31 @@ impl Fixture {
         self.tmux_shell(name, marker);
     }
 
+    fn hyperlink_probe(&self) {
+        // Admitted tmux 3.2/3.3 clients predate OSC 8 forwarding.
+        let version = self.tmux(&["-V"]);
+        if version.starts_with("tmux 3.2") || version.starts_with("tmux 3.3") {
+            return;
+        }
+        self.workspace
+            .send_key(KeyInput::text(
+                "printf '\\033]8;;https://example.com/docs\\033\\\\Docs\\033]8;;\\033\\\\\\n'",
+                Modifiers::default(),
+            ))
+            .unwrap();
+        self.workspace
+            .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
+            .unwrap();
+        self.wait(|snapshot| {
+            let WorkspaceContent::Terminal { surface, .. } = snapshot.content() else {
+                return false;
+            };
+            surface.load().cells().any(|cell| {
+                cell.text() == "D" && cell.hyperlink.as_deref() == Some("https://example.com/docs")
+            })
+        });
+    }
+
     #[track_caller]
     fn tmux_shell(&self, name: &str, marker: &str) {
         self.wait(|snapshot| matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == name));
@@ -569,6 +594,7 @@ fn native_ssh_connects_attaches_and_preserves_sessions() {
         .unwrap();
     assert_eq!(host.sessions().len(), 2);
     fixture.attach("review", "ready");
+    fixture.hyperlink_probe();
     fixture.workspace.resize(91, 29).unwrap();
     fixture.wait(|_| {
         fixture.tmux(&["list-clients", "-F", "#{client_width}:#{client_height}"]) == "91:29"
@@ -767,6 +793,7 @@ fn native_ssh_creates_exact_tmux_session_and_preserves_it() {
         .unwrap();
     fixture.wait(|snapshot| matches!(snapshot.content(), WorkspaceContent::Terminal { session, .. } if session == name));
     fixture.attach(name, "created");
+    fixture.hyperlink_probe();
     let target = format!("={name}:");
     let identity = fixture.tmux(&[
         "display-message",

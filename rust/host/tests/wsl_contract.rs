@@ -2155,6 +2155,8 @@ fn attach_plan_targets_the_fresh_stable_session_id() {
             "TMUX_TMPDIR",
             "TERM=xterm-256color",
             "/usr/bin/tmux",
+            "-T",
+            "hyperlinks",
             "if-shell",
             "-F",
             "-t",

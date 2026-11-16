@@ -76,6 +76,7 @@ pub struct Cell {
     pub background: Rgb,
     pub style: CellStyle,
     pub selected: bool,
+    pub hyperlink: Option<Arc<str>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -124,6 +125,7 @@ impl Default for Cell {
             background: Rgb::BLACK,
             style: CellStyle::default(),
             selected: false,
+            hyperlink: None,
         }
     }
 }
@@ -256,6 +258,20 @@ impl SurfaceFrame {
     #[must_use]
     pub fn row(&self, row: usize) -> &[Cell] {
         &self.rows[row]
+    }
+
+    /// Resolve a visible link at a viewport cell, including the second cell of a wide glyph.
+    #[must_use]
+    pub fn hyperlink_at(&self, column: usize, row: usize) -> Option<&str> {
+        let row = self.rows.get(row)?;
+        let mut cell = row.get(column)?;
+        if cell.text().is_empty() && column > 0 && row[column - 1].style.contains(CellStyle::WIDE) {
+            cell = &row[column - 1];
+        }
+        if cell.style.contains(CellStyle::HIDDEN) {
+            return None;
+        }
+        cell.hyperlink.as_deref()
     }
 
     pub fn row_mut(&mut self, row: usize) -> &mut [Cell] {

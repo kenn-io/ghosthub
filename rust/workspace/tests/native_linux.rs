@@ -154,6 +154,32 @@ impl Fixture {
         self.wait(|| matches!(self.workspace.snapshot().content(), WorkspaceContent::Terminal { session, .. } if session == name));
     }
 
+    fn hyperlink_probe(&self) {
+        // Admitted tmux 3.2/3.3 clients predate OSC 8 forwarding.
+        let version = self.text(&["-V"]);
+        if version.starts_with("tmux 3.2") || version.starts_with("tmux 3.3") {
+            return;
+        }
+        self.workspace
+            .send_key(KeyInput::text(
+                "printf '\\033]8;;https://example.com/docs\\033\\\\Docs\\033]8;;\\033\\\\\\n'",
+                Modifiers::default(),
+            ))
+            .unwrap();
+        self.workspace
+            .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
+            .unwrap();
+        self.wait(|| {
+            let snapshot = self.workspace.snapshot();
+            let WorkspaceContent::Terminal { surface, .. } = snapshot.content() else {
+                return false;
+            };
+            surface.load().cells().any(|cell| {
+                cell.text() == "D" && cell.hyperlink.as_deref() == Some("https://example.com/docs")
+            })
+        });
+    }
+
     fn shell_probe(&self, marker: &str) {
         self.workspace
             .send_key(KeyInput::text(
@@ -201,6 +227,7 @@ fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
         .expect("attach discovered native session");
     fixture.wait_terminal("work");
     fixture.shell_probe("ready");
+    fixture.hyperlink_probe();
     fixture
         .workspace
         .resize(91, 29)
@@ -227,6 +254,7 @@ fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
         .expect("create native session");
     fixture.wait_terminal("created here");
     fixture.shell_probe("ready");
+    fixture.hyperlink_probe();
     let created_identity = fixture.identity("created here");
     fixture.workspace.close();
     fixture.wait(|| {
