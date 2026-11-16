@@ -756,14 +756,20 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
     private(set) var requestedConfigurations: [TerminalSurfaceConfiguration] = []
     private(set) var removedKeys: [SurfaceKey] = []
     private var retainedKeys: Set<SurfaceKey> = []
+    /// Set when each terminal gets its own view, so a test can tell one
+    /// terminal's input state from another's. Otherwise all share `surface`.
+    private let viewPerSurface: Bool
+    private var views: [SurfaceKey: RecordingNativeSessionPaneSurface] = [:]
 
     var lastCommand: String? { requestedConfigurations.last?.command }
 
     init(
         launchError: Error? = nil,
         launchFailureIsRetryable: Bool = false,
-        closeOnRegistrationCode: UInt32? = nil
+        closeOnRegistrationCode: UInt32? = nil,
+        viewPerSurface: Bool = false
     ) {
+        self.viewPerSurface = viewPerSurface
         surface = RecordingNativeSessionPaneSurface(
             launchError: launchError,
             launchFailureIsRetryable: launchFailureIsRetryable,
@@ -778,18 +784,26 @@ final class RecordingNativeSessionSurfaceStore: NativeSessionSurfaceStoring {
         requestedKeys.append(key)
         requestedConfigurations.append(configuration)
         retainedKeys.insert(key)
-        return surface
+        guard viewPerSurface else { return surface }
+        if let view = views[key] {
+            return view
+        }
+        let view = RecordingNativeSessionPaneSurface()
+        views[key] = view
+        return view
     }
 
     func paneSurfaceIfPresent(
         for key: SurfaceKey
     ) -> (any NativeSessionPaneSurfacing)? {
-        retainedKeys.contains(key) ? surface : nil
+        guard retainedKeys.contains(key) else { return nil }
+        return viewPerSurface ? views[key] : surface
     }
 
     func removeSurface(for key: SurfaceKey) {
         removedKeys.append(key)
         retainedKeys.remove(key)
+        views[key] = nil
     }
 }
 
@@ -800,6 +814,7 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var terminalOperationErrorMessage: String?
     var terminalFindController = TerminalFindController.unavailable
     var hasEffectiveKeyboardFocus = false
+    var isKeyboardInteractionSuspended = false
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     /// Mutable so a test can fail one attach and let the next succeed, which is
     /// how a transient surface failure behaves in practice.

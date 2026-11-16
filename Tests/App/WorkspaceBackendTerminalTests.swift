@@ -1,9 +1,11 @@
+import AppKit
 import Foundation
 import GhosthubBackendTerminal
 import GhosthubHerdr
 import GhosthubPersistence
 import GhosthubTestSupport
 import GhosthubTransport
+import GhosthubUI
 import GhosthubWorkspace
 import Synchronization
 import Testing
@@ -150,10 +152,14 @@ struct WorkspaceBackendTerminalTests {
             localHostID: environment.localHostID,
             snapshot: environment.snapshot,
             workspaceInventoryStore: workspaceInventoryStore,
+            nativeTmuxSurfaceStore: store,
             nativeHerdrSurfaceStore: herdrStore,
+            nativeZellijSurfaceStore: store,
             nativeBackendTerminalSurfaceStore: store,
             nativeBackendTerminalExecutableProvider: { kind, _, _ in fake.executable(kind) },
+            nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             nativeHerdrPathProvider: { _ in .success("/opt/test/herdr") },
+            nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
             herdrPaneSplitCapabilityProvider: { _, _, _, _ in .success(nil) },
             kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
             herdrSSHConnectionSnapshotProvider: { _ in
@@ -970,6 +976,171 @@ struct WorkspaceBackendTerminalTests {
 
         #expect(model.activeBackendTerminalSelection == rex)
         #expect(fake.attaches.withLock { $0 } == 2)
+        await model.shutdown()
+    }
+
+    @Test("a terminal takes no input and holds its reconnect while a Zellij session is checked")
+    func zellijCheckHoldsTerminal() async throws {
+        let environment = try environment(
+            terminals: [Self.rexTerminal],
+            zellijSessions: [.init(name: "work")],
+            remote: true
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        let gate = AsyncGate()
+        let gated = Mutex(false)
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            fake: fake,
+            zellijSessionDiscovery: { _ in
+                if gated.withLock({ $0 }) {
+                    await gate.wait()
+                }
+                // The session ended after the sidebar listed it.
+                return .available([])
+            }
+        )
+        let rex = environment.selection(Self.rexTerminal)
+        try await model.openBackendTerminal(rex)
+        await launchSurface(model, store: store)
+
+        gated.withLock { $0 = true }
+        model.openBorrowedZellijSession(.init(hostID: environment.localHostID, name: "work"))
+        #expect(model.isCheckingSessionPresentation)
+        #expect(store.surface.isKeyboardInteractionSuspended)
+
+        var closed: Set<UUID> = []
+        try closeNewestSurface(store, closed: &closed, exitCode: 255)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(fake.attaches.withLock { $0 } == 1)
+
+        gate.open()
+        await waitUntilMainActor { model.pendingZellijPresentationSelection == nil }
+        await launchSurface(model, store: store, after: 1)
+
+        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(fake.attaches.withLock { $0 } == 2)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
+        await model.shutdown()
+    }
+
+    @Test("a tmux session takes no input until the terminal replacing it is checked")
+    func terminalCheckHoldsTmux() async throws {
+        let environment = try environment(terminals: [Self.rexTerminal])
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let tmux = WorkspaceTmuxSessionSelection(hostID: environment.host.id, name: "tmux-work")
+        model.openBorrowedTmuxSession(tmux)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestedKeys.contains { $0.target == .tmuxSession }
+        }
+
+        let gate = AsyncGate()
+        fake.nextValidationGate.withLock { $0 = gate }
+        let opening = Task { @MainActor in
+            try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+        }
+        await waitUntilMainActor { fake.nextValidationGate.withLock { $0 == nil } }
+        #expect(store.surface.isKeyboardInteractionSuspended)
+
+        // The terminal ended, so the open fails and tmux stays.
+        fake.terminals.withLock { $0 = [] }
+        gate.open()
+        await #expect(throws: (any Error).self) { try await opening.value }
+
+        #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
+        await model.shutdown()
+    }
+
+    @Test(
+        "a tmux session takes focus back when a Zellij open fails, unless focus moved",
+        arguments: [false, true]
+    )
+    func failedZellijOpenRestoresTmuxFocus(focusMoved: Bool) async throws {
+        let environment = try environment(terminals: [], zellijSessions: [.init(name: "work")])
+        let store = RecordingNativeSessionSurfaceStore()
+        let gate = AsyncGate()
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            zellijSessionDiscovery: { _ in
+                await gate.wait()
+                // The session ended after the sidebar listed it.
+                return .available([])
+            }
+        )
+        let tmux = WorkspaceTmuxSessionSelection(hostID: environment.host.id, name: "tmux-work")
+        model.openBorrowedTmuxSession(tmux)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestedKeys.contains { $0.target == .tmuxSession }
+        }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let elsewhere = NSTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        window.contentView = elsewhere
+        model.workspaceWindow = window
+
+        model.openBorrowedZellijSession(.init(hostID: environment.host.id, name: "work"))
+        #expect(window.firstResponder === window)
+        if focusMoved {
+            #expect(window.makeFirstResponder(elsewhere))
+        }
+        let requestsBeforeFailure = store.surface.keyboardFocusRequestCount
+        gate.open()
+        await waitUntilMainActor { model.pendingZellijPresentationSelection == nil }
+
+        #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
+        #expect(
+            store.surface.keyboardFocusRequestCount
+                == requestsBeforeFailure + (focusMoved ? 0 : 1)
+        )
+        await model.shutdown()
+    }
+
+    @Test("a Zellij session takes no input until the terminal replacing it is checked")
+    func terminalCheckHoldsZellij() async throws {
+        let environment = try environment(
+            terminals: [Self.rexTerminal],
+            zellijSessions: [.init(name: "work")]
+        )
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.rexTerminal])
+        let model = try makeTerminalModel(
+            environment,
+            store: store,
+            fake: fake,
+            zellijSessionDiscovery: { _ in .available(["work"]) }
+        )
+        let zellij = WorkspaceZellijSessionSelection(hostID: environment.host.id, name: "work")
+        model.openBorrowedZellijSession(zellij)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedZellijSurface()
+            return store.requestedKeys.contains { $0.target == .zellijSession }
+        }
+
+        let gate = AsyncGate()
+        fake.nextValidationGate.withLock { $0 = gate }
+        let opening = Task { @MainActor in
+            try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+        }
+        await waitUntilMainActor { fake.nextValidationGate.withLock { $0 == nil } }
+        #expect(store.surface.isKeyboardInteractionSuspended)
+
+        fake.terminals.withLock { $0 = [] }
+        gate.open()
+        await #expect(throws: (any Error).self) { try await opening.value }
+
+        #expect(model.activeBorrowedZellijSelection == zellij)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
         await model.shutdown()
     }
 }

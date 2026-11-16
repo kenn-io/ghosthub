@@ -146,11 +146,13 @@ struct WorkspaceHerdrPresentationTests {
         await waitUntilMainActor { probeStarted.withLock { $0 } }
         #expect(window.firstResponder !== input)
         #expect(model.activeBorrowedTmuxSelection == tmux)
+        #expect(store.surface.isKeyboardInteractionSuspended)
         let requestsBeforeReturn = store.surface.keyboardFocusRequestCount
 
         model.selectFromUser(WorkspaceSelection(selectedHostID: environment.hostID))
         model.openBorrowedTmuxSession(tmux)
         #expect(store.surface.keyboardFocusRequestCount == requestsBeforeReturn + 1)
+        #expect(!store.surface.isKeyboardInteractionSuspended)
 
         releaseProbe.open()
         await #expect(throws: CancellationError.self) {
@@ -159,6 +161,115 @@ struct WorkspaceHerdrPresentationTests {
         #expect(model.activeBorrowedTmuxSelection == tmux)
         #expect(model.activeBorrowedHerdrSelection == nil)
         await model.shutdown()
+    }
+
+    @Test("a tmux session stays held until the last overlapping Herdr check ends")
+    func overlappingHerdrChecksHoldTmuxUntilTheLastEnds() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let sessions = try #require(
+            environment.snapshot.host(id: environment.hostID)?.herdrSessions
+        )
+        let gates = [AsyncGate(), AsyncGate()]
+        let probes = Mutex(0)
+        let model = try makeHerdrModel(
+            environment, store: store,
+            validationDiscovery: { _, _ in
+                let probe = probes.withLock { count in
+                    defer { count += 1 }
+                    return count
+                }
+                if probe < gates.count {
+                    await gates[probe].wait()
+                }
+                return .available(sessions)
+            }
+        )
+        let herdr = WorkspaceHerdrSessionSelection(hostID: environment.hostID, name: "worker")
+        let view = try await showTmuxView(
+            WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-work"),
+            model: model, store: store
+        )
+
+        let replaced = Task { try await model.openBorrowedHerdrSession(herdr) }
+        await waitUntilMainActor { probes.withLock { $0 } == 1 }
+        let replacing = Task { try await model.openBorrowedHerdrSession(herdr) }
+        await waitUntilMainActor { probes.withLock { $0 } == 2 }
+        #expect(view.isKeyboardInteractionSuspended)
+
+        gates[0].open()
+        await #expect(throws: CancellationError.self) { try await replaced.value }
+        #expect(view.isKeyboardInteractionSuspended)
+        gates[1].open()
+        try await replacing.value
+        #expect(model.activeBorrowedHerdrSelection == herdr)
+        #expect(!view.isKeyboardInteractionSuspended)
+        await model.shutdown()
+    }
+
+    @Test("switching tmux sessions during a Herdr check gives typing back at once")
+    func tmuxSwitchDuringHerdrCheckReleasesHold() async throws {
+        var environment = try environment()
+        environment.snapshot.hosts[0].tmuxSessions.append(
+            TmuxSessionSummary(name: "tmux-other", managed: false, windows: [])
+        )
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let sessions = try #require(
+            environment.snapshot.host(id: environment.hostID)?.herdrSessions
+        )
+        let gate = AsyncGate()
+        let probes = Mutex(0)
+        let model = try makeHerdrModel(
+            environment, store: store,
+            validationDiscovery: { _, _ in
+                probes.withLock { $0 += 1 }
+                await gate.wait()
+                return .available(sessions)
+            }
+        )
+        let first = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-work")
+        let second = WorkspaceTmuxSessionSelection(hostID: environment.hostID, name: "tmux-other")
+        let secondView = try await showTmuxView(second, model: model, store: store)
+        let firstView = try await showTmuxView(first, model: model, store: store)
+
+        let check = Task {
+            try await model.openBorrowedHerdrSession(
+                WorkspaceHerdrSessionSelection(hostID: environment.hostID, name: "worker")
+            )
+        }
+        await waitUntilMainActor { probes.withLock { $0 } == 1 }
+        #expect(firstView.isKeyboardInteractionSuspended)
+        model.openBorrowedTmuxSession(second)
+        model.openBorrowedTmuxSession(first)
+        model.prepareActiveBorrowedTmuxSurface()
+        #expect(model.activeBorrowedTmuxSelection == first)
+        #expect(!firstView.isKeyboardInteractionSuspended)
+        #expect(!secondView.isKeyboardInteractionSuspended)
+
+        gate.open()
+        await #expect(throws: CancellationError.self) { try await check.value }
+        #expect(model.activeBorrowedTmuxSelection == first)
+        #expect(!firstView.isKeyboardInteractionSuspended)
+        await model.shutdown()
+    }
+
+    /// Shows `selection` and returns its terminal view, which exists only
+    /// once the session is the shown one.
+    private func showTmuxView(
+        _ selection: WorkspaceTmuxSessionSelection,
+        model: WorkspaceSceneModel,
+        store: RecordingNativeSessionSurfaceStore
+    ) async throws -> RecordingNativeSessionPaneSurface {
+        let requested = store.requestedKeys.count
+        model.openBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return store.requestedKeys.count > requested
+        }
+        return try #require(
+            store.paneSurfaceIfPresent(for: store.requestedKeys[requested])
+                as? RecordingNativeSessionPaneSurface
+        )
     }
 
     @Test("active capable Herdr presentation routes pane splits")
