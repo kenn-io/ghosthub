@@ -2306,6 +2306,7 @@ impl<R: CommandRunner> LocalHost<R> {
             &[],
         );
         args.push(OsString::from(&self.config.tmux_binary));
+        args.extend(["-T", "hyperlinks"].into_iter().map(OsString::from));
         if let Some(socket_name) = socket_name {
             args.extend([OsString::from("-L"), OsString::from(socket_name)]);
         }
@@ -2687,6 +2688,7 @@ impl<R: CommandRunner> LocalHost<R> {
             &[],
         );
         args.push(OsString::from(&self.config.tmux_binary));
+        args.extend(["-T", "hyperlinks"].into_iter().map(OsString::from));
         args.extend(
             ["new-session", "-A", "-E", "-s"]
                 .into_iter()
@@ -6943,6 +6945,8 @@ mod tests {
                 "TERM=xterm-256color",
                 "TMUX_TMPDIR=/run/user/1000/ghosthub",
                 "/opt/tmux/bin/tmux",
+                "-T",
+                "hyperlinks",
                 "new-session",
                 "-A",
                 "-E",

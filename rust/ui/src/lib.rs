@@ -8,6 +8,7 @@ mod agent_hooks_settings;
 mod keyboard_settings;
 mod session_rename;
 mod sidebar;
+mod terminal_links;
 mod worktrees_settings;
 use sidebar::menus::SidebarMenu;
 
@@ -195,6 +196,10 @@ fn surface_paint_row(
         if cell.style.contains(CellStyle::HIDDEN) {
             foreground = background;
         }
+        let mut style = cell.style;
+        if cell.hyperlink.is_some() && !style.contains(CellStyle::HIDDEN) {
+            style.insert(CellStyle::UNDERLINE);
+        }
         let run = PaintRun {
             text: if cell.text().is_empty() {
                 " ".to_owned()
@@ -204,7 +209,7 @@ fn surface_paint_row(
             columns: usize::from(cell.style.contains(CellStyle::WIDE)) + 1,
             foreground: rgb_value(foreground),
             background: rgb_value(background),
-            style: cell.style,
+            style,
             cursor: cell_cursor
                 .filter(|shape| !matches!(shape, CursorShape::Block | CursorShape::Hidden)),
         };
@@ -388,6 +393,7 @@ pub struct RootView {
     wheel_remainder: f32,
     keyboard: TerminalKeyboard,
     pointer: TerminalPointer,
+    links: terminal_links::TerminalLinks,
     terminal_pointer_visibility: TerminalPointerVisibility,
     sidebar_visible: bool,
     collapsed_hosts: HashSet<String>,
@@ -1887,6 +1893,7 @@ impl RootView {
             wheel_remainder: 0.0,
             keyboard: TerminalKeyboard::default(),
             pointer: TerminalPointer::default(),
+            links: terminal_links::TerminalLinks::default(),
             terminal_pointer_visibility: TerminalPointerVisibility::Visible,
             sidebar_visible: true,
             collapsed_hosts: HashSet::new(),
@@ -3493,6 +3500,7 @@ impl RootView {
         self.wheel_remainder = 0.0;
         self.keyboard = TerminalKeyboard::default();
         self.pointer = TerminalPointer::default();
+        self.links = terminal_links::TerminalLinks::default();
         if matches!(
             self.diagnostic.as_deref(),
             Some(INPUT_BUFFERED_DIAGNOSTIC | INPUT_BUFFER_FULL_DIAGNOSTIC)
@@ -3963,6 +3971,20 @@ impl RootView {
         }
     }
 
+    fn terminal_link_at(&self, presentation_id: u64, cell: (usize, usize)) -> Option<String> {
+        let snapshot = self.workspace.snapshot();
+        if terminal_presentation_id(snapshot.content()) != Some(presentation_id) {
+            return None;
+        }
+        let WorkspaceContent::Terminal { surface, .. } = snapshot.content() else {
+            return None;
+        };
+        surface
+            .load()
+            .hyperlink_at(cell.0, cell.1)
+            .map(str::to_owned)
+    }
+
     fn on_mouse_down(
         &mut self,
         presentation_id: u64,
@@ -3976,6 +3998,19 @@ impl RootView {
         window.focus(&self.focus);
         if let Some(button) = terminal_mouse_button(event.button) {
             let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
+            if button == MouseButton::Left
+                && let Some(cell) = cell
+            {
+                let target = self.terminal_link_at(presentation_id, cell);
+                if self
+                    .links
+                    .press(presentation_id, cell, event.modifiers, target.as_deref())
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+            }
             if let Some(cell) = cell
                 && self.send_mouse_at_cell(
                     presentation_id,
@@ -4003,6 +4038,17 @@ impl RootView {
         }
         if let Some(button) = terminal_mouse_button(event.button) {
             let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
+            if button == MouseButton::Left && self.links.is_pressed() {
+                let target = cell.and_then(|cell| self.terminal_link_at(presentation_id, cell));
+                if let Some(target) =
+                    self.links
+                        .release(presentation_id, cell, event.modifiers, target.as_deref())
+                {
+                    cx.open_url(&target);
+                }
+                cx.stop_propagation();
+                return;
+            }
             if let Some(cell) = self.pointer.release_cell(button, cell) {
                 if self.send_mouse_at_cell(
                     presentation_id,
@@ -4039,6 +4085,18 @@ impl RootView {
         }
         let button = event.pressed_button.and_then(terminal_mouse_button);
         let cell = self.terminal_cell_at(event.position.x.into(), event.position.y.into());
+        if self.links.observe(
+            presentation_id,
+            cell,
+            event.modifiers,
+            button == Some(MouseButton::Left),
+        ) {
+            cx.notify();
+        }
+        if self.links.is_pressed() {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(cell) = self.pointer.observe(cell) {
             self.send_mouse_at_cell(
                 presentation_id,
@@ -4466,7 +4524,7 @@ impl RootView {
         let rows = self.paint_cache.update(&frame, cursor_override).to_vec();
         self.observed_surface_identity = Some(identity);
         self.observed_surface_generation = frame.generation();
-        let terminal = self.terminal_surface_element(presentation_id, appearance, rows, cx);
+        let terminal = self.terminal_surface_element(presentation_id, appearance, &frame, rows, cx);
 
         div()
             .size_full()
@@ -4481,10 +4539,18 @@ impl RootView {
         &self,
         presentation_id: u64,
         appearance: &workspace::Appearance,
+        frame: &SurfaceFrame,
         rows: Vec<Arc<Vec<PaintRun>>>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        div()
+        let hover = self
+            .links
+            .hover
+            .filter(|hover| hover.presentation_id == presentation_id);
+        let target = hover
+            .and_then(|hover| frame.hyperlink_at(hover.cell.0, hover.cell.1))
+            .map(str::to_owned);
+        let mut element = div()
             .id("terminal-surface")
             .track_focus(&self.focus)
             .flex()
@@ -4498,6 +4564,15 @@ impl RootView {
             .line_height(px(self.terminal_metrics.line_height))
             .font_weight(FontWeight::NORMAL)
             .when(
+                target.is_some() && hover.is_some_and(|hover| hover.control),
+                |element| element.cursor(gpui::CursorStyle::PointingHand),
+            )
+            .when_some(target, |element, target| {
+                element.tooltip(move |_, cx| {
+                    sidebar::tooltip(format!("{target}\nCtrl+click to open"), cx)
+                })
+            })
+            .when(
                 self.terminal_pointer_visibility == TerminalPointerVisibility::Hidden,
                 |element| element.cursor(gpui::CursorStyle::None),
             )
@@ -4506,61 +4581,33 @@ impl RootView {
             }))
             .on_key_up(cx.listener(move |this, event, window, cx| {
                 this.on_key_up(presentation_id, event, window, cx);
-            }))
-            .on_mouse_down(
-                GpuiMouseButton::Left,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_down(presentation_id, event, window, cx);
-                }),
-            )
-            .on_mouse_down(
-                GpuiMouseButton::Middle,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_down(presentation_id, event, window, cx);
-                }),
-            )
-            .on_mouse_down(
-                GpuiMouseButton::Right,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_down(presentation_id, event, window, cx);
-                }),
-            )
-            .on_mouse_up(
-                GpuiMouseButton::Left,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_up(presentation_id, event, window, cx);
-                }),
-            )
-            .on_mouse_up(
-                GpuiMouseButton::Middle,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_up(presentation_id, event, window, cx);
-                }),
-            )
-            .on_mouse_up(
-                GpuiMouseButton::Right,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_up(presentation_id, event, window, cx);
-                }),
-            )
-            .on_mouse_up_out(
-                GpuiMouseButton::Left,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_up(presentation_id, event, window, cx);
-                }),
-            )
-            .on_mouse_up_out(
-                GpuiMouseButton::Middle,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_up(presentation_id, event, window, cx);
-                }),
-            )
-            .on_mouse_up_out(
-                GpuiMouseButton::Right,
-                cx.listener(move |this, event, window, cx| {
-                    this.on_mouse_up(presentation_id, event, window, cx);
-                }),
-            )
+            }));
+        for button in [
+            GpuiMouseButton::Left,
+            GpuiMouseButton::Middle,
+            GpuiMouseButton::Right,
+        ] {
+            element = element
+                .on_mouse_down(
+                    button,
+                    cx.listener(move |this, event, window, cx| {
+                        this.on_mouse_down(presentation_id, event, window, cx);
+                    }),
+                )
+                .on_mouse_up(
+                    button,
+                    cx.listener(move |this, event, window, cx| {
+                        this.on_mouse_up(presentation_id, event, window, cx);
+                    }),
+                )
+                .on_mouse_up_out(
+                    button,
+                    cx.listener(move |this, event, window, cx| {
+                        this.on_mouse_up(presentation_id, event, window, cx);
+                    }),
+                );
+        }
+        element
             .on_mouse_move(cx.listener(move |this, event, window, cx| {
                 this.on_mouse_move(presentation_id, event, window, cx);
             }))
@@ -9667,6 +9714,28 @@ fn load_linux_fonts(text: &gpui::TextSystem) {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+
+    #[test]
+    fn hyperlinks_keep_terminal_colors_and_emphasis_and_hide_with_invisible_text() {
+        use super::surface_paint_rows;
+        use surface::{CellStyle, Rgb};
+        let mut frame = SurfaceFrame::blank(1, GridSize::new(3, 1).unwrap());
+        let cell = &mut frame.row_mut(0)[0];
+        *cell = surface::Cell::plain("A");
+        cell.hyperlink = Some("https://example.com/docs".into());
+        cell.foreground = Rgb::new(12, 34, 56);
+        cell.style.insert(CellStyle::BOLD);
+        let hidden = &mut frame.row_mut(0)[1];
+        *hidden = surface::Cell::plain("B");
+        hidden.hyperlink = Some("https://example.com/hidden".into());
+        hidden.style.insert(CellStyle::HIDDEN);
+        let rows = surface_paint_rows(&frame);
+        assert_eq!(rows[0][0].foreground, 0x0c_2238);
+        assert!(rows[0][0].style.contains(CellStyle::BOLD));
+        assert!(rows[0][0].style.contains(CellStyle::UNDERLINE));
+        assert!(!rows[0][1].style.contains(CellStyle::UNDERLINE));
+        assert!(frame.hyperlink_at(1, 0).is_none());
+    }
 
     #[test]
     fn dialog_text_accepts_space_with_or_without_a_character() {

@@ -965,6 +965,8 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             })?,
             RemoteCommandLocale::Login,
             [
+                "-T",
+                "hyperlinks",
                 "if-shell",
                 "-F",
                 "-t",
@@ -1162,6 +1164,8 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             executable,
             RemoteCommandLocale::Login,
             [
+                "-T",
+                "hyperlinks",
                 "new-session",
                 "-A",
                 "-E",
