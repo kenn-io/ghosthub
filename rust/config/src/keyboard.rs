@@ -7,6 +7,7 @@ use crate::ConfigError;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShortcutAction {
+    CommandPalette,
     ToggleSidebar,
     NextSession,
     PreviousSession,
@@ -16,7 +17,8 @@ pub enum ShortcutAction {
 }
 
 impl ShortcutAction {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
+        Self::CommandPalette,
         Self::ToggleSidebar,
         Self::NextSession,
         Self::PreviousSession,
@@ -28,6 +30,7 @@ impl ShortcutAction {
     #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
+            Self::CommandPalette => "Command Palette",
             Self::ToggleSidebar => "Toggle Sidebar",
             Self::NextSession => "Next Session",
             Self::PreviousSession => "Previous Session",
@@ -39,6 +42,7 @@ impl ShortcutAction {
 
     fn default_binding(self) -> KeyChord {
         let (shift, key) = match self {
+            Self::CommandPalette => (true, "p"),
             Self::ToggleSidebar => (true, "b"),
             Self::NextSession => (false, "tab"),
             Self::PreviousSession => (true, "tab"),
@@ -225,7 +229,13 @@ impl KeyboardPreferences {
         match self.shortcuts.get(&action) {
             Some(Shortcut::Disabled) => None,
             Some(Shortcut::Binding(chord)) => Some(chord.clone()),
-            None => Some(action.default_binding()),
+            None => {
+                let default = action.default_binding();
+                // The new palette default yields to shortcuts the user already assigned.
+                let occupied = action == ShortcutAction::CommandPalette
+                    && self.shortcuts.values().any(|shortcut| matches!(shortcut, Shortcut::Binding(chord) if chord == &default));
+                (!occupied).then_some(default)
+            }
         }
     }
 

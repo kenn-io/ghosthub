@@ -44,6 +44,27 @@ Press Return to perform the selected action.
 
 ![Command Palette searching for a worktree](/docs/assets/guide-quick-launch.png)
 
+### Windows and Linux
+
+In the Rust app, click **Commands** in the title bar or press **Ctrl+Shift+P**.
+Search for sessions, project worktrees, registered directory workspaces, hosts,
+Settings pages, or the sidebar toggle. Results follow the sidebar's session
+visibility settings. Collapsing a host does not hide its results.
+
+Search words can match different parts of a result, such as `studio review tmux`.
+Every word must match; letter case does not matter. Use **Up** and **Down** to
+choose a result, then **Enter** to open it. **Escape** closes the palette and
+returns to the same terminal. You can also click a result.
+
+Stopped Herdr sessions appear as **Restart** results. Selecting one restarts
+that session; selecting a running Herdr session attaches to it.
+
+Creation, Kill, Stop, Delete, and Rename remain in their existing sidebar menus.
+The Rust palette currently covers navigation and Settings. Change or disable
+its shortcut in [Settings → Keyboard](keyboard-shortcuts.md#windows-and-linux).
+
+![Command Palette offering Restart for stopped Herdr sessions on local and SSH hosts](/docs/assets/guide-rust-command-palette.png)
+
 ## Open tabs and windows
 
 - ++cmd+t++ opens a workspace tab in the current window.

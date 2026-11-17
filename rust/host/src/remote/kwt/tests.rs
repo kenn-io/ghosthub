@@ -9,6 +9,7 @@ use crate::{CommandPrefix, HerdrInventory, KwtWorktreeCreate, SshTarget, ZellijI
 struct KwtRunner {
     mutation: CommandOutput,
     deadlines: Mutex<Vec<Duration>>,
+    client_probes: Mutex<usize>,
 }
 
 impl CommandRunner for KwtRunner {
@@ -33,6 +34,28 @@ impl CommandRunner for KwtRunner {
             )
         } else if marker.starts_with("GHOSTHUB_KWT_READY_") {
             (0, b"".as_slice(), b"".as_slice())
+        } else if marker.starts_with("GHOSTHUB_KWT_CLIENT_") {
+            if command.contains("if test -s") {
+                assert!(
+                    command.contains("/tmp/.ghosthub-kwt-client-0123456789abcdef0123456789abcdef")
+                );
+                (0, b"7\n".as_slice(), b"".as_slice())
+            } else {
+                assert!(command.contains("list-clients") && command.contains("kwt-pr-fixture"));
+                assert!(!command.contains("TMUX_TMPDIR="));
+                let mut count = self.client_probes.lock().unwrap();
+                let first = *count == 0;
+                *count += 1;
+                if first {
+                    (
+                        self.mutation.status,
+                        self.mutation.stdout.as_slice(),
+                        self.mutation.stderr.as_slice(),
+                    )
+                } else {
+                    (0, b"8|40|$1|90\n7|42|$3|99\n".as_slice(), b"".as_slice())
+                }
+            }
         } else if marker.starts_with("GHOSTHUB_KWT_SESSION_") {
             assert!(command.contains("-L") && command.contains("kwt-pr-fixture"));
             assert!(command.contains("list-sessions"));
@@ -105,6 +128,7 @@ fn fixture(
     let runner = Arc::new(KwtRunner {
         mutation: output,
         deadlines: Mutex::default(),
+        client_probes: Mutex::default(),
     });
     let host = RemoteTmuxHost::with_commands(
         config,
@@ -257,4 +281,45 @@ fn remote_pr_provider_calls_allow_fetch_time_and_preserve_uncertain_results() {
         [Duration::from_mins(5), Duration::from_mins(5)],
         "never replay the import"
     );
+}
+
+#[test]
+fn protected_client_readiness_waits_through_an_empty_server_exit() {
+    for diagnostic in [
+        "no current target",
+        "server exited unexpectedly",
+        "Permission denied",
+    ] {
+        let (mut host, mut snapshot, _) = fixture(CommandOutput {
+            status: 1,
+            stdout: Vec::new(),
+            stderr: diagnostic.as_bytes().to_vec(),
+        });
+        host.config.socket_directory = Some("/tmp/ordinary-tmux".into());
+        snapshot.tmux_binary = Some("/usr/bin/tmux".into());
+        let plan = session::RepairOrOpenPlan::worktree(
+            "ssh",
+            Vec::new(),
+            "review",
+            "/tmp/.ghosthub-kwt-client-0123456789abcdef0123456789abcdef",
+        );
+        let query = || {
+            host.kwt_protected_client_identity(
+                &snapshot,
+                &plan,
+                "kwt-pr-fixture",
+                &CancellationToken::new(),
+            )
+        };
+        let first = query();
+        if diagnostic == "Permission denied" {
+            assert_eq!(first.unwrap_err().kind(), DiagnosticKind::Transport);
+        } else {
+            assert!(first.unwrap().is_none(), "{diagnostic}");
+            assert_eq!(
+                query().unwrap(),
+                Some(session::SessionIdentity::new(42, "$3", 99))
+            );
+        }
+    }
 }

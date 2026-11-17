@@ -644,11 +644,14 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             cancellation,
         )?;
         let diagnostic = String::from_utf8_lossy(&output.stderr);
-        // KWT can start the server before creating its first session. Even an
-        // untargeted list-clients reports "no current target" during that gap.
+        // KWT probes an empty server before creating its session. That server
+        // can exit while this read-only readiness query is connecting.
         if output.status != 0
             && (super::is_missing_tmux_server(&diagnostic)
-                || diagnostic.trim() == "no current target")
+                || matches!(
+                    diagnostic.trim(),
+                    "no current target" | "server exited unexpectedly"
+                ))
         {
             return Ok(None);
         }

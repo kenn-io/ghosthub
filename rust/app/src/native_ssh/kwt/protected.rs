@@ -29,10 +29,16 @@ if test -e "$HOME/delay-protected-session"; then
             ;;
         *" list-clients "*)
             if test -e "$HOME/creating-protected-session"; then
-                /usr/bin/tmux "$@"
-                result=$?
+                if ! test -e "$HOME/probed-empty-protected-server"; then
+                    /usr/bin/tmux "$@"
+                    result=$?
+                    touch "$HOME/probed-empty-protected-server"
+                    exit "$result"
+                fi
+                # The empty bootstrap server may exit while the probe connects.
+                printf 'server exited unexpectedly\n' >&2
                 touch "$HOME/probed-protected-session"
-                exit "$result"
+                exit 1
             fi
             ;;
     esac
