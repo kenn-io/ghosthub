@@ -106,3 +106,37 @@ fn font_zoom_shortcuts_can_be_changed_disabled_and_restored() {
     );
     assert_eq!(keyboard, before);
 }
+
+#[test]
+fn command_palette_shortcut_can_be_reassigned_cleared_and_restored() {
+    let mut keyboard = ApplicationConfig::default().keyboard().clone();
+    assert_eq!(
+        keyboard
+            .binding(ShortcutAction::CommandPalette)
+            .unwrap()
+            .config_value(),
+        "ctrl+shift+p"
+    );
+    keyboard
+        .set(ShortcutAction::CommandPalette, Some("alt+p"))
+        .unwrap();
+    assert_eq!(
+        keyboard
+            .binding(ShortcutAction::CommandPalette)
+            .unwrap()
+            .config_value(),
+        "alt+p"
+    );
+    keyboard
+        .set(ShortcutAction::CommandPalette, Some("none"))
+        .unwrap();
+    assert!(keyboard.binding(ShortcutAction::CommandPalette).is_none());
+    keyboard.set(ShortcutAction::CommandPalette, None).unwrap();
+    assert_eq!(
+        keyboard
+            .binding(ShortcutAction::CommandPalette)
+            .unwrap()
+            .config_value(),
+        "ctrl+shift+p"
+    );
+}

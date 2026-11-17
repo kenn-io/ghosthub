@@ -1691,6 +1691,18 @@ and pointer mapping update with the visible content area. Sidebar host entries
 use one compact line for the logical host name; distro configuration is not
 duplicated beneath it and remains visible only in endpoint-relevant contexts.
 
+The title bar's **Commands** button and configurable `Ctrl+Shift+P` shortcut
+open the Rust Command Palette. It searches openable sessions, project worktrees,
+registered directories, host selection/connection, supported Settings panes,
+and sidebar visibility. Case-insensitive search requires every query word to
+match the result title or subtitle, preserving catalog order. Session visibility
+and worktree eligibility use the sidebar's existing rules. Collapsed hosts remain
+searchable. Selection follows its exact destination across inventory reordering;
+a removed or changed destination cannot become another action on Enter or click.
+The palette owns keyboard focus until it closes and reuses the existing workspace
+open paths. Creation and destructive lifecycle commands remain in sidebar menus.
+See the [navigation Guide](https://ghosthub.ai/docs/windows-navigation/#windows-and-linux).
+
 The flow resolves and verifies the exact mux binary, discovers live identity,
 reserves the presentation, and launches an AttachPlan whose single tmux
 `if-shell -F` command atomically compares server PID, session ID, and creation

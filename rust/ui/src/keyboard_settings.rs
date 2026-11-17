@@ -48,7 +48,8 @@ pub(super) fn font_zoom(action: ShortcutAction) -> Option<workspace::TerminalFon
         ShortcutAction::IncreaseFontSize => Some(TerminalFontZoom::Increase),
         ShortcutAction::DecreaseFontSize => Some(TerminalFontZoom::Decrease),
         ShortcutAction::ResetFontSize => Some(TerminalFontZoom::Reset),
-        ShortcutAction::ToggleSidebar
+        ShortcutAction::CommandPalette
+        | ShortcutAction::ToggleSidebar
         | ShortcutAction::NextSession
         | ShortcutAction::PreviousSession => None,
     }
@@ -107,6 +108,7 @@ impl RootView {
             self.apply_font_zoom(command, window, cx);
         } else if !event.is_held {
             match action {
+                ShortcutAction::CommandPalette => self.open_command_palette(window, cx),
                 ShortcutAction::ToggleSidebar => self.toggle_sidebar(window, cx),
                 ShortcutAction::NextSession => self.cycle_session(false, window, cx),
                 ShortcutAction::PreviousSession => self.cycle_session(true, window, cx),
@@ -431,6 +433,28 @@ mod tests {
             );
             assert_eq!(matches(&preferences, different_event), None);
         }
+    }
+
+    #[test]
+    fn command_palette_matches_its_current_shortcut_only() {
+        let mut preferences = KeyboardPreferences::default();
+        assert_eq!(
+            matches(&preferences, "ctrl-shift-p"),
+            Some(ShortcutAction::CommandPalette)
+        );
+        assert_eq!(matches(&preferences, "ctrl-p"), None);
+        preferences
+            .set(ShortcutAction::CommandPalette, Some("alt+p"))
+            .unwrap();
+        assert_eq!(matches(&preferences, "ctrl-shift-p"), None);
+        assert_eq!(
+            matches(&preferences, "alt-p"),
+            Some(ShortcutAction::CommandPalette)
+        );
+        preferences
+            .set(ShortcutAction::CommandPalette, Some("none"))
+            .unwrap();
+        assert_eq!(matches(&preferences, "alt-p"), None);
     }
 
     #[test]

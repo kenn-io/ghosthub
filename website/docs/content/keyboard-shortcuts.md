@@ -123,6 +123,7 @@ The Rust app has these configurable shortcuts:
 
 | Action | Default |
 | --- | --- |
+| Command Palette | **Ctrl+Shift+P** |
 | Toggle Sidebar | **Ctrl+Shift+B** |
 | Next Session | **Ctrl+Tab** |
 | Previous Session | **Ctrl+Shift+Tab** |
@@ -136,7 +137,7 @@ combination. **Escape** cancels recording. **Clear** disables the action, and
 and apply to every open window. Recording stops if you leave the window or
 choose another Settings pane.
 
-![Session navigation and terminal font shortcuts in the Rust app](/docs/assets/guide-rust-keyboard.png)
+![Command Palette, session navigation, and font shortcuts in the Rust app](/docs/assets/guide-rust-keyboard.png)
 
 Include **Ctrl** or **Alt** in each binding. The recorder keeps the previous
 binding when it reports a conflict with another action, Copy, Paste, or an
@@ -160,6 +161,7 @@ Configuration tools can edit the same overrides in `config.toml`:
 
 ```toml
 [keyboard.shortcuts]
+command-palette = "alt+p"
 toggle-sidebar = "alt+b"
 next-session = "alt+right"
 previous-session = "none"

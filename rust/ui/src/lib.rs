@@ -5,6 +5,7 @@
 mod windows_key;
 
 mod agent_hooks_settings;
+mod command_palette;
 mod keyboard_settings;
 mod session_rename;
 mod sidebar;
@@ -371,6 +372,8 @@ pub struct RootView {
     create_focus: FocusHandle,
     project_focus: FocusHandle,
     settings_focus: FocusHandle,
+    palette_focus: FocusHandle,
+    palette: Option<command_palette::Dialog>,
     observed_keyboard: Option<workspace::KeyboardPreferences>,
     keyboard_bindings: Vec<(workspace::ShortcutAction, gpui::KeybindingKeystroke)>,
     hooks_focus: FocusHandle,
@@ -1871,6 +1874,8 @@ impl RootView {
             create_focus: cx.focus_handle(),
             project_focus: cx.focus_handle(),
             settings_focus: cx.focus_handle(),
+            palette_focus: cx.focus_handle(),
+            palette: None,
             observed_keyboard: None,
             keyboard_bindings: Vec::new(),
             hooks_focus: cx.focus_handle(),
@@ -1912,6 +1917,7 @@ impl RootView {
         };
         Self::observe_shortcut_recording(window, cx);
         view.resize_for_window(window);
+        window.focus(&view.focus);
         view
     }
 
@@ -3885,8 +3891,13 @@ impl RootView {
         }
         let action = self.application_shortcut(keystroke);
         let is_zoom = action.and_then(keyboard_settings::font_zoom).is_some();
-        if action == Some(workspace::ShortcutAction::ToggleSidebar)
-            || is_zoom
+        if matches!(
+            action,
+            Some(
+                workspace::ShortcutAction::ToggleSidebar
+                    | workspace::ShortcutAction::CommandPalette
+            )
+        ) || is_zoom
             || (matches!(
                 action,
                 Some(
@@ -4717,6 +4728,7 @@ impl RootView {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_lines)] // Keep the native title bar and its controls in one composition.
     fn title_bar(&self, title: String, cx: &mut Context<Self>) -> gpui::AnyElement {
         let verb = if self.sidebar_visible { "Hide" } else { "Show" };
         let toggle_label = self
@@ -4770,7 +4782,25 @@ impl RootView {
                     })
                     .text_sm()
                     .text_color(rgb(0xc4_c9d2))
-                    .child(title),
+                    .overflow_hidden()
+                    .child(div().truncate().child(title)),
+            )
+            .child(
+                div()
+                    .id("open-command-palette")
+                    .flex_none()
+                    .h_full()
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .text_color(rgb(0xa5_acb8))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(0x24_2933)).text_color(rgb(0xe5_e9f0)))
+                    .child("Commands")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_command_palette(window, cx);
+                    })),
             )
             .child(
                 div()
@@ -8934,16 +8964,22 @@ impl Render for RootView {
         let snapshot = self.workspace.snapshot();
         self.sync_terminal_font(window, snapshot.appearance());
         if self.restore_focus {
-            window.focus(&self.focus);
+            window.focus(if self.palette.is_some() {
+                &self.palette_focus
+            } else {
+                &self.focus
+            });
             self.restore_focus = false;
         }
         if !self.ssh_prompts.is_empty() && !self.ssh_prompt_focus.is_focused(window) {
+            self.palette = None;
             window.focus(&self.ssh_prompt_focus);
         }
         let title = workspace_window_title(snapshot.content());
         window.set_window_title(&title);
         self.synchronize_render_state(&snapshot);
         let content = self.content_element(&snapshot, cx);
+        let palette_overlay = self.command_palette_overlay(window, cx);
         let creation_overlay = self.new_session_overlay(&snapshot, window, cx);
         let rename_overlay = self.session_rename_overlay(window, cx);
         let project_overlay = self.project_overlay(window, cx);
@@ -8979,6 +9015,7 @@ impl Render for RootView {
             }))
             .child(self.title_bar(title, cx))
             .child(div().flex_1().min_h_0().w_full().child(content))
+            .children(palette_overlay)
             .children(creation_overlay)
             .children(rename_overlay)
             .children(project_overlay)
@@ -10012,12 +10049,12 @@ mod tests {
             focused_settings_detail(&dialog),
             Some(SettingsPane::Keyboard)
         );
-        for _ in 0..18 {
+        for _ in 0..21 {
             advance_settings_focus(&mut dialog, false);
         }
         assert_eq!(dialog.sidebar_focus, Some(SettingsPane::Appearance));
         advance_settings_focus(&mut dialog, true);
-        assert_eq!(dialog.keyboard_editor.focus, 17);
+        assert_eq!(dialog.keyboard_editor.focus, 20);
         assert_eq!(
             focused_settings_detail(&dialog),
             Some(SettingsPane::Keyboard)

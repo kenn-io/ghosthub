@@ -8,7 +8,7 @@ pub(super) enum SidebarSession {
 }
 
 impl SidebarSession {
-    fn title(&self) -> String {
+    pub(super) fn title(&self) -> String {
         let show_endpoint = match self {
             Self::Session(row) => row.show_endpoint,
             Self::Herdr(row) => row.show_endpoint,
@@ -21,7 +21,7 @@ impl SidebarSession {
         }
     }
 
-    fn selection(&self) -> &SessionSelection {
+    pub(super) fn selection(&self) -> &SessionSelection {
         match self {
             Self::Session(row) => &row.selection,
             Self::Herdr(row) => &row.selection,
@@ -35,7 +35,7 @@ impl SidebarSession {
         }
     }
 
-    fn stopped(&self) -> bool {
+    pub(super) fn stopped(&self) -> bool {
         matches!(self, Self::Herdr(row) if row.inventory.as_ref().is_some_and(|item| item.state() == HerdrSessionState::Stopped))
     }
 
@@ -59,6 +59,11 @@ impl SidebarSession {
                         .is_none()
             }
         }
+    }
+
+    pub(super) fn can_open(&self) -> bool {
+        self.can_navigate()
+            || matches!(self, Self::Herdr(item) if self.stopped() && item.access.can_restart() && item.inventory.as_ref().and_then(herdr_operation_label).is_none())
     }
 
     fn activity(&self) -> Option<&workspace::AgentActivity> {
@@ -225,7 +230,7 @@ pub(super) fn row_height(preferences: &SidebarPreferences) -> f32 {
     }
 }
 
-fn backend_label(kind: workspace::SessionKind) -> &'static str {
+pub(super) fn backend_label(kind: workspace::SessionKind) -> &'static str {
     match kind {
         workspace::SessionKind::Tmux => "tmux",
         workspace::SessionKind::Zellij => "zellij",
@@ -382,8 +387,7 @@ impl RootView {
         let selection = row.selection().clone();
         let group = format!("session-{}", order_id(&selection));
         let actions = row.actions(host);
-        let interactive = row.can_navigate()
-            || matches!(row, SidebarSession::Herdr(item) if row.stopped() && item.access.can_restart() && item.inventory.as_ref().and_then(herdr_operation_label).is_none());
+        let interactive = row.can_open();
         let stopped = row.stopped();
         let mut hint = format!(
             "{} · {} · {}",
