@@ -23,7 +23,8 @@ final class ShortcutMonitor {
         monitor = NSEvent.addLocalMonitorForEvents(
             matching: [.keyDown, .keyUp]
         ) { [weak self] event in
-            self?.process(event) ?? event
+            guard let self else { return event }
+            return process(event)
         }
     }
 

@@ -245,6 +245,47 @@ struct ShortcutMonitorTests {
         #expect(monitor.processForTesting(keyUp) === keyUp)
     }
 
+    @Test("an installed monitor stops a handled shortcut from dispatching again")
+    func installedMonitorConsumesHandledShortcut() throws {
+        var actions: [ApplicationShortcutAction] = []
+        let monitor = ShortcutMonitor(
+            shortcuts: { ApplicationShortcutCatalog.compiledDefaults },
+            perform: { action in
+                actions.append(action)
+                return true
+            }
+        )
+        monitor.install()
+        defer { monitor.uninstall() }
+        // A menu item stands in for every later handler, such as the
+        // focused terminal's own split shortcut.
+        let laterHandler = MenuActionRecorder()
+        let item = NSMenuItem(
+            title: "Split Down",
+            action: #selector(MenuActionRecorder.record(_:)),
+            keyEquivalent: "D"
+        )
+        item.keyEquivalentModifierMask = [.command]
+        item.target = laterHandler
+        let submenu = NSMenu(title: "Pane")
+        submenu.addItem(item)
+        let topItem = NSMenuItem()
+        topItem.submenu = submenu
+        let menu = NSMenu()
+        menu.addItem(topItem)
+        let app = NSApplication.shared
+        let previousMenu = app.mainMenu
+        app.mainMenu = menu
+        defer { app.mainMenu = previousMenu }
+
+        app.sendEvent(try #require(keyEvent(
+            modifiers: [.command, .shift], characters: "D", keyCode: 2
+        )))
+
+        #expect(actions == [.splitDown])
+        #expect(laterHandler.count == 0)
+    }
+
     private func binding(
         _ modifiers: NSEvent.ModifierFlags,
         _ characters: String?,
@@ -276,6 +317,14 @@ struct ShortcutMonitorTests {
             isARepeat: isRepeat,
             keyCode: keyCode
         )
+    }
+}
+
+private final class MenuActionRecorder: NSObject {
+    private(set) var count = 0
+
+    @objc func record(_: Any?) {
+        count += 1
     }
 }
 #endif
