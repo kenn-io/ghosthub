@@ -34,9 +34,5 @@ available in the released Swift macOS app.
 
 - [Windows and Linux Rust port](rust-port.md): the native Windows/WSL2 and Linux
   implementations, development instructions, and remaining parity work.
-- [Worktree sandboxes](sandboxes.md): the accepted contract for a feature that
-  is not implemented yet.
-- [Sandbox image operations](sandbox-image.md): build and promotion procedures
-  for the planned sandbox image.
 - [Web UI](web-ui.md): the approved design for an additional Rust app client,
   written before implementation.

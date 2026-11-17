@@ -135,12 +135,6 @@ archive checksum from `.github/zig.sha256`. Update both when bumping Zig.
 Changes to the reusable workflow itself must reach `main` before a pull
 request can use them.
 
-Sandbox-capable builds will also consume the root `SANDBOX_IMAGE` file as the
-sole runtime image identity. Packaging reads the tag-free digest from that
-file and embeds it as `GhosthubSandboxImage`; Swift, build scripts, workflows,
-and documentation must not duplicate the digest literal. This packaging
-boundary belongs to the unimplemented [sandbox design](sandboxes.md).
-
 The embedded kwt revision and release-facing version are written into
 `Info.plist` as `GhosthubKwtSourceRevision` and `GhosthubKwtVersion`. The
 remote matrix pin is recorded independently as
@@ -234,82 +228,10 @@ Session-start safety and configuration failures are non-retryable. Kwt also
 resolves a session-local `default-shell` before falling back to the
 server-global value, so every pane follows the same tmux shell policy.
 
-### Sandbox image release inputs
-
-`images/sandbox/APT_SNAPSHOT`, `Dockerfile`, `UBUNTU_BASE`, `VERSION`,
-`packages.txt`, `tests/image-contract.sh`, and
-`vulnerability-dispositions.json` are reviewed image inputs. Pull requests
-require two no-cache builds with pinned BuildKit and the snapshot-derived
-source epoch to have the same Docker content identity, then scan the image
-without publication credentials. A merge that changes the image source builds
-and checks one local image, publishes one immutable
-`candidate-<full-main-commit>` digest, verifies its content identity against
-that build, then creates GitHub-signed provenance and SPDX SBOM attestations
-from the registry object pulled by digest. The provenance binds a deterministic
-digest of every reviewed image input. Trusted promotion recomputes that digest
-from `main` and rejects older candidates built from different input content.
-The publishing workflow runs only on protected-`main` pushes and has no
-branch-selectable dispatch; manual and pull-request validation remain in a
-separate read-only workflow. Only the seven reviewed inputs trigger candidate
-publication. An intended image change in Python build orchestration or other
-build logic must also bump the image `VERSION` or another reviewed input;
-report-and-pin merges do not publish candidates.
-
-An Apple-silicon developer vets that exact public digest with Apple
-`container` 1.2.2, then commits only its canonical report and the tag-free
-`SANDBOX_IMAGE` pin on a task branch. Promotion is dispatched from trusted
-`main` tooling with the exact pushed task-branch commit as inert evidence. A
-repository-dispatch event fixes both the workflow source and `GITHUB_REF` to
-the default branch; a caller cannot select task-branch code for a package-write
-job. The workflow requires one open pull request whose complete diff is
-exactly the pin and matching report at the trusted `main` revision. It rechecks
-GitHub attestations and image identity, and performs a current vulnerability
-rescan after approval in the protected `sandbox-image-production` environment. It
-adds `vX.Y.Z` to the already tested manifest without rebuilding or wrapping it
-in a new index. Candidate and production aliases are
-workflow-enforced immutable policy; GHCR tag settings are not treated as the
-authority. The `sandbox-image-promotion` status points to a completed
-successful run of the exact trusted promotion workflow for that pull-request
-head. The gate verifies that run through the GitHub API; the status alone is
-not promotion authority. An active default-branch ruleset provisioned with no
-bypass actors or ref exclusions requires the status from a dedicated
-status-only GitHub App. Global up-to-date enforcement is disabled so unrelated
-pull requests remain mergeable when `main` advances; reconciliation separately
-invalidates stale promotion evidence. Its
-key is available only through a
-no-reviewer environment restricted to `main`; no `GITHUB_TOKEN` receives
-status-write or package-write authority. Candidate publication and production
-retagging use a separate package-writer credential available only through
-exact-`main` environments, and the GHCR package does not inherit repository
-Actions access. Trusted promotion and every reconciliation audit the
-environment, parsed workflow authority, app integration ID, and repository
-policy. Reconciliation fences all open heads before file inspection.
-Trusted-main tooling audits the proposed workflow tree without executing it,
-refuses changes to the credential-bearing status workflow, and rechecks
-promotion and freshness before authorizing the exact pull-request head. A
-GitHub or API failure therefore leaves the merge blocked. This makes the exact
-PR head and current `main` base part of authorization. Main changes invalidate the
-status, and successful promotion evidence expires after 24 hours.
-
-The scheduled and manually dispatchable maintenance workflow rescans the
-pinned digest with a current vulnerability database, verifies its report,
-dispositions, aliases, and attestations, and reports relevant Ubuntu refresh
-availability. It has no package or repository write authority and fails
-visibly when operator action is required. Merging refreshed build inputs
-publishes a candidate; production still uses the old digest until the separate
-vetting, pin, and promotion steps finish. During that interval, maintenance
-rejects the old image because its attested inputs differ from `main`. A
-candidate can acquire new vulnerability findings while it awaits promotion;
-refresh the image inputs again if a fixed package is available.
-The developer procedure, including temporary dispositions for vendor-confirmed
-scanner false positives, is
-[Sandbox Image Operations](sandbox-image.md).
-
 ## Protected signing environment
 
 Signing, notarization, and publishing jobs run only in `kenn-io/ghosthub`.
-Every such job in `.github/workflows/release.yml`, `nightly.yml`, and the
-sandbox image workflows carries a
+Every such job in `.github/workflows/release.yml` and `nightly.yml` carries a
 `github.repository == 'kenn-io/ghosthub'` condition, so a fork that inherits
 the tag or schedule trigger skips the job instead of failing on absent
 credentials. `tools/tests/test_workflow_fork_guards.py` enforces that contract.

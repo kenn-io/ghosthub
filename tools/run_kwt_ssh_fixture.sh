@@ -83,10 +83,7 @@ ssh_trace="$scratch/ssh.log"
 mkdir -m 700 "$fixture" "$bin_dir"
 project_suffix=$(printf '%s' "${scratch##*.}" | tr '[:upper:]' '[:lower:]')
 compose_project="ghosthub-ssh-$project_suffix"
-image_inputs=$(shasum -a 256 \
-    "$fixture_source/Dockerfile" \
-    "$repo_root/images/sandbox/UBUNTU_BASE" \
-    "$repo_root/images/sandbox/APT_SNAPSHOT" | shasum -a 256)
+image_inputs=$(shasum -a 256 < "$fixture_source/Dockerfile")
 image_tag="ghosthub-ssh-fixture:${image_inputs%% *}"
 
 export GHOSTHUB_SSH_FIXTURE_DIR="$fixture"
@@ -127,11 +124,7 @@ MaxSessions $session_limit
 EOF
 chmod 600 "$fixture/sshd_config"
 
-ubuntu_base=$(tr -d '\n' < "$repo_root/images/sandbox/UBUNTU_BASE")
-apt_snapshot=$(tr -d '\n' < "$repo_root/images/sandbox/APT_SNAPSHOT")
 docker build \
-    --build-arg "UBUNTU_BASE=$ubuntu_base" \
-    --build-arg "APT_SNAPSHOT=$apt_snapshot" \
     --file "$fixture_source/Dockerfile" \
     --tag "$image_tag" \
     "$fixture_source"

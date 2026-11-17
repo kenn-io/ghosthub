@@ -1,8 +1,7 @@
-# check=skip=InvalidDefaultArgInFrom
-ARG UBUNTU_BASE
+ARG UBUNTU_BASE=sha256:7e7957462d7b6db141de67623f46135d82a6bc131bc2ff369aedfccfa91c0a1b
 FROM ubuntu@${UBUNTU_BASE}
 
-ARG APT_SNAPSHOT
+ARG APT_SNAPSHOT=20261112T021708Z
 
 RUN set -eux; \
     printf '%s\n' \
