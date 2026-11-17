@@ -56,11 +56,14 @@ Every word must match; letter case does not matter. Use **Up** and **Down** to
 choose a result, then **Enter** to open it. **Escape** closes the palette and
 returns to the same terminal. You can also click a result.
 
+Stopped Herdr sessions appear as **Restart** results. Selecting one restarts
+that session; selecting a running Herdr session attaches to it.
+
 Creation, Kill, Stop, Delete, and Rename remain in their existing sidebar menus.
 The Rust palette currently covers navigation and Settings. Change or disable
 its shortcut in [Settings → Keyboard](keyboard-shortcuts.md#windows-and-linux).
 
-![Rust Command Palette searching sessions across hosts](/docs/assets/guide-rust-command-palette.png)
+![Command Palette offering Restart for stopped Herdr sessions on local and SSH hosts](/docs/assets/guide-rust-command-palette.png)
 
 ## Open tabs and windows
 

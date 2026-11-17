@@ -455,6 +455,16 @@ mod tests {
             .set(ShortcutAction::CommandPalette, Some("none"))
             .unwrap();
         assert_eq!(matches(&preferences, "alt-p"), None);
+        preferences
+            .set(ShortcutAction::CommandPalette, None)
+            .unwrap();
+        preferences
+            .set(ShortcutAction::ToggleSidebar, Some("ctrl+shift+p"))
+            .unwrap();
+        assert_eq!(
+            matches(&preferences, "ctrl-shift-p"),
+            Some(ShortcutAction::ToggleSidebar)
+        );
     }
 
     #[test]

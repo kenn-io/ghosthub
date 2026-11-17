@@ -5,6 +5,7 @@ enum Action {
     Host(String),
     Connect(String),
     Session(SessionSelection),
+    RestartHerdr(SessionSelection),
     Worktree(WorktreeOpenTarget),
     Settings(SettingsPane),
     ToggleSidebar,
@@ -41,7 +42,11 @@ fn entries(
                         sidebar::backend_label(session.selection().kind()),
                         host.endpoint()
                     ),
-                    action: Action::Session(session.selection().clone()),
+                    action: if session.stopped() {
+                        Action::RestartHerdr(session.selection().clone())
+                    } else {
+                        Action::Session(session.selection().clone())
+                    },
                 });
             }
         }
@@ -165,7 +170,7 @@ fn result_id(entry: &Entry) -> gpui::ElementId {
 
 pub(super) struct Dialog {
     query: String,
-    selected: Option<Action>,
+    selected: Option<gpui::ElementId>,
     select_all: bool,
     scroll: gpui::ScrollHandle,
 }
@@ -174,17 +179,16 @@ impl Dialog {
     fn new(rows: &[Entry]) -> Self {
         Self {
             query: String::new(),
-            selected: rows.first().map(|row| row.action.clone()),
+            selected: rows.first().map(result_id),
             select_all: false,
             scroll: gpui::ScrollHandle::new(),
         }
     }
 
-    fn chosen<'a>(&self, rows: &'a [Entry]) -> Option<&'a Action> {
+    fn chosen<'a>(&self, rows: &'a [Entry]) -> Option<&'a Entry> {
         matching(rows, &self.query)
             .into_iter()
-            .find(|row| Some(&row.action) == self.selected.as_ref())
-            .map(|row| &row.action)
+            .find(|row| Some(result_id(row)).as_ref() == self.selected.as_ref())
     }
 
     fn set_query(&mut self, query: String, rows: &[Entry]) {
@@ -192,7 +196,7 @@ impl Dialog {
         self.select_all = false;
         self.selected = matching(rows, &self.query)
             .first()
-            .map(|row| row.action.clone());
+            .map(|row| result_id(row));
         self.scroll.set_offset(gpui::point(px(0.0), px(0.0)));
     }
 
@@ -203,7 +207,7 @@ impl Dialog {
         }
         let index = matches
             .iter()
-            .position(|row| Some(&row.action) == self.selected.as_ref());
+            .position(|row| Some(result_id(row)).as_ref() == self.selected.as_ref());
         let index = index.map_or(if reverse { matches.len() - 1 } else { 0 }, |index| {
             if reverse {
                 (index + matches.len() - 1) % matches.len()
@@ -211,7 +215,7 @@ impl Dialog {
                 (index + 1) % matches.len()
             }
         });
-        self.selected = Some(matches[index].action.clone());
+        self.selected = Some(result_id(matches[index]));
         self.scroll.scroll_to_item(index);
     }
 }
@@ -268,6 +272,7 @@ impl RootView {
         self.close_command_palette(window, cx);
         match action {
             Action::Session(selection) => self.select_session(selection, window, cx),
+            Action::RestartHerdr(selection) => self.restart_herdr_session(selection, window, cx),
             Action::Worktree(target) => self.select_worktree(target, window, cx),
             Action::Host(id) => {
                 self.diagnostic = self
@@ -300,7 +305,7 @@ impl RootView {
         match key.key.as_str() {
             "escape" => self.close_command_palette(window, cx),
             "enter" if !event.is_held => {
-                let action = dialog.chosen(&rows).cloned();
+                let action = dialog.chosen(&rows).map(|row| row.action.clone());
                 if let Some(action) = action {
                     self.run_palette_action(&action, window, cx);
                 }
@@ -359,7 +364,7 @@ impl RootView {
             .track_scroll(&dialog.scroll);
         for entry in &matches {
             let action = entry.action.clone();
-            let selected = Some(&action) == dialog.selected.as_ref();
+            let selected = Some(result_id(entry)).as_ref() == dialog.selected.as_ref();
             results = results.child(
                 div()
                     .id(result_id(entry))
@@ -482,7 +487,7 @@ mod tests {
     #[test]
     fn matching_uses_all_words_across_host_backend_and_destination() {
         let host = HostItem::ssh(
-            "studio",
+            "ssh:studio",
             "Studio",
             "studio.example",
             HostConnectionState::Ready,
@@ -518,19 +523,31 @@ mod tests {
             },
         ];
         let mut dialog = Dialog::new(&rows);
-        assert_eq!(dialog.chosen(&rows), Some(&Action::Host("local".into())));
+        assert_eq!(
+            dialog.chosen(&rows).map(|row| &row.action),
+            Some(&Action::Host("local".into()))
+        );
         dialog.move_selection(&rows, true);
-        assert_eq!(dialog.chosen(&rows), Some(&Action::Host("studio".into())));
+        assert_eq!(
+            dialog.chosen(&rows).map(|row| &row.action),
+            Some(&Action::Host("studio".into()))
+        );
         dialog.move_selection(&rows, false);
-        assert_eq!(dialog.chosen(&rows), Some(&Action::Host("local".into())));
+        assert_eq!(
+            dialog.chosen(&rows).map(|row| &row.action),
+            Some(&Action::Host("local".into()))
+        );
         let reordered = vec![rows[1].clone(), rows[0].clone()];
         assert_eq!(
-            dialog.chosen(&reordered),
+            dialog.chosen(&reordered).map(|row| &row.action),
             Some(&Action::Host("local".into()))
         );
         assert!(dialog.chosen(&rows[1..]).is_none());
         dialog.set_query("STUDIO".into(), &rows);
-        assert_eq!(dialog.chosen(&rows), Some(&Action::Host("studio".into())));
+        assert_eq!(
+            dialog.chosen(&rows).map(|row| &row.action),
+            Some(&Action::Host("studio".into()))
+        );
         dialog.set_query("missing".into(), &rows);
         dialog.move_selection(&rows, false);
         assert!(dialog.chosen(&rows).is_none());
@@ -548,7 +565,7 @@ mod tests {
             false,
         );
         let host = HostItem::ssh(
-            "studio",
+            "ssh:studio",
             "Studio",
             "studio.example",
             HostConnectionState::Ready,
@@ -588,9 +605,9 @@ mod tests {
         };
         assert_eq!(target.generation.as_deref(), Some("generation"));
         assert_eq!(target.registration_fingerprint, "registration");
-        assert_eq!(target.host_id, "studio");
+        assert_eq!(target.host_id, "ssh:studio");
         let unavailable = HostItem::ssh(
-            "offline",
+            "ssh:offline",
             "Offline",
             "offline.example",
             HostConnectionState::Unavailable,
@@ -611,7 +628,7 @@ mod tests {
     #[test]
     fn direct_worktrees_directories_and_retained_protected_clients_keep_their_open_paths() {
         let protected = SessionSelection::kwt_workspace(
-            "studio",
+            "ssh:studio",
             "studio.example",
             "review",
             KwtTmuxAttachMode::Protected,
@@ -620,7 +637,7 @@ mod tests {
             Some("old-checkout".into()),
         );
         let host = HostItem::ssh(
-            "studio",
+            "ssh:studio",
             "Studio",
             "studio.example",
             HostConnectionState::Ready,
@@ -703,5 +720,132 @@ mod tests {
             ..studio.clone()
         };
         assert_ne!(result_id(&studio), result_id(&replacement));
+    }
+    #[test]
+    fn duplicate_workspace_destinations_remain_separately_navigable() {
+        let host = HostItem::wsl(
+            "Linux",
+            None,
+            HostConnectionState::Ready,
+            vec![
+                workspace::SessionItem::new("main", 0),
+                workspace::SessionItem::new("logs", 0),
+            ],
+            None,
+        )
+        .with_kwt_inventory(
+            vec![workspace::ProjectItem::new(
+                "example.com/team/atlas",
+                "Atlas",
+                "/work/atlas",
+                "registration",
+                vec![workspace::WorktreeItem::new(
+                    "/work/atlas",
+                    "main",
+                    true,
+                    None,
+                    "main",
+                    (None, KwtTmuxAttachMode::Direct),
+                    true,
+                )],
+            )],
+            vec![workspace::DirectoryWorkspaceItem::new(
+                "Logs",
+                "/work/logs",
+                "logs",
+                (None, KwtTmuxAttachMode::Direct),
+                true,
+            )],
+        );
+        let preferences = workspace::SidebarPreferences {
+            hide_worktree_sessions: false,
+            ..workspace::SidebarPreferences::default()
+        };
+        let active = SessionSelection::kwt_workspace(
+            host.id(),
+            host.endpoint(),
+            "main",
+            KwtTmuxAttachMode::Direct,
+            None,
+            "/work/atlas",
+            None,
+        );
+        let retained = SessionSelection::kwt_workspace(
+            host.id(),
+            host.endpoint(),
+            "logs",
+            KwtTmuxAttachMode::Direct,
+            None,
+            "/work/logs",
+            None,
+        );
+        let rows = entries(&[host], Some(&active), &[retained], &preferences, true);
+        let mut dialog = Dialog::new(&rows);
+        for row in &rows {
+            assert!(
+                dialog.chosen(&rows).unwrap().title == row.title,
+                "{} was skipped",
+                row.title
+            );
+            dialog.move_selection(&rows, false);
+        }
+        assert!(dialog.chosen(&rows).unwrap().title == rows[0].title);
+        for row in rows.iter().rev() {
+            dialog.move_selection(&rows, true);
+            assert!(
+                dialog.chosen(&rows).unwrap().title == row.title,
+                "{} was skipped",
+                row.title
+            );
+        }
+    }
+
+    #[test]
+    fn stopped_herdr_results_keep_the_restart_intent_when_inventory_changes() {
+        for mut host in [
+            HostItem::wsl("Linux", None, HostConnectionState::Ready, Vec::new(), None),
+            HostItem::ssh(
+                "ssh:studio",
+                "Studio",
+                "studio.example",
+                HostConnectionState::Ready,
+                Vec::new(),
+                None,
+            ),
+        ] {
+            host = host.with_herdr_sessions(vec![workspace::HerdrSessionItem::new(
+                "notes",
+                false,
+                HerdrSessionState::Stopped,
+            )]);
+            let rows = entries(
+                std::slice::from_ref(&host),
+                None,
+                &[],
+                &workspace::SidebarPreferences::default(),
+                true,
+            );
+            let mut dialog = Dialog::new(&rows);
+            dialog.set_query("notes".into(), &rows);
+            let action = &dialog.chosen(&rows).unwrap().action;
+            assert!(
+                matches!(action, Action::RestartHerdr(selection) if selection.host_id() == host.id() && selection.session() == "notes")
+            );
+            host = host.with_herdr_sessions(vec![workspace::HerdrSessionItem::new(
+                "notes",
+                false,
+                HerdrSessionState::Running,
+            )]);
+            let current = entries(
+                &[host],
+                None,
+                &[],
+                &workspace::SidebarPreferences::default(),
+                true,
+            );
+            assert_eq!(matching(&current, "notes").len(), 1);
+            assert!(dialog.chosen(&current).is_none());
+            assert!(!current.iter().any(|row| &row.action == action));
+        }
     }
 }

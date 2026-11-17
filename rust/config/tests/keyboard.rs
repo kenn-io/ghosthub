@@ -140,3 +140,38 @@ fn command_palette_shortcut_can_be_reassigned_cleared_and_restored() {
         "ctrl+shift+p"
     );
 }
+
+#[test]
+fn saved_shortcuts_take_priority_over_the_implicit_palette_default() {
+    let config =
+        ApplicationConfig::from_toml("[keyboard.shortcuts]\ntoggle-sidebar = 'ctrl+shift+p'")
+            .unwrap();
+    let mut keyboard = config.keyboard().clone();
+    assert_eq!(
+        keyboard
+            .binding(ShortcutAction::ToggleSidebar)
+            .unwrap()
+            .config_value(),
+        "ctrl+shift+p"
+    );
+    assert!(keyboard.binding(ShortcutAction::CommandPalette).is_none());
+    assert!(
+        keyboard
+            .set(ShortcutAction::CommandPalette, Some("ctrl+shift+p"))
+            .is_err()
+    );
+    keyboard
+        .set(ShortcutAction::CommandPalette, Some("alt+p"))
+        .unwrap();
+    keyboard.set(ShortcutAction::CommandPalette, None).unwrap();
+    assert!(keyboard.binding(ShortcutAction::CommandPalette).is_none());
+    keyboard.set(ShortcutAction::ToggleSidebar, None).unwrap();
+    assert_eq!(
+        keyboard
+            .binding(ShortcutAction::CommandPalette)
+            .unwrap()
+            .config_value(),
+        "ctrl+shift+p"
+    );
+    assert!(ApplicationConfig::from_toml("[keyboard.shortcuts]\ntoggle-sidebar = 'ctrl+shift+p'\ncommand-palette = 'ctrl+shift+p'").is_err());
+}

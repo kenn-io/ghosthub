@@ -229,7 +229,13 @@ impl KeyboardPreferences {
         match self.shortcuts.get(&action) {
             Some(Shortcut::Disabled) => None,
             Some(Shortcut::Binding(chord)) => Some(chord.clone()),
-            None => Some(action.default_binding()),
+            None => {
+                let default = action.default_binding();
+                // The new palette default yields to shortcuts the user already assigned.
+                let occupied = action == ShortcutAction::CommandPalette
+                    && self.shortcuts.values().any(|shortcut| matches!(shortcut, Shortcut::Binding(chord) if chord == &default));
+                (!occupied).then_some(default)
+            }
         }
     }
 

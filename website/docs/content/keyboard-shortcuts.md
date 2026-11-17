@@ -137,7 +137,12 @@ combination. **Escape** cancels recording. **Clear** disables the action, and
 and apply to every open window. Recording stops if you leave the window or
 choose another Settings pane.
 
-![Command Palette, session navigation, and font shortcuts in the Rust app](/docs/assets/guide-rust-keyboard.png)
+![Keyboard settings preserving a saved Ctrl+Shift+P sidebar shortcut](/docs/assets/guide-rust-keyboard.png)
+
+If another saved action uses **Ctrl+Shift+P**, it keeps that shortcut and the
+Command Palette starts unassigned. Choose another palette shortcut, or free
+**Ctrl+Shift+P** to restore its default. Explicit duplicate assignments are
+still rejected.
 
 Include **Ctrl** or **Alt** in each binding. The recorder keeps the previous
 binding when it reports a conflict with another action, Copy, Paste, or an
