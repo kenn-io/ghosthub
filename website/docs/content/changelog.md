@@ -30,6 +30,10 @@ test, and documentation-only changes are omitted.
   macOS PATH, so commands failed with "command not found". Zellij sessions
   that were already running keep their old PATH until you kill and recreate
   them.
+- A Ghosthub keyboard shortcut now runs once. Before, the key could also
+  reach the terminal after Ghosthub handled it, so **Split Down**
+  (`Cmd-Shift-D`) or **Split Right** (`Cmd-D`) sometimes split a tmux pane
+  twice.
 
 ## [0.13.1] - 2026-11-10
 
