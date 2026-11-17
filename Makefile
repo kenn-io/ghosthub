@@ -74,7 +74,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live test-ssh-authentication-docker build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test sandbox-image-check sandbox-image-prepare-candidate sandbox-image-refresh sandbox-image-vet sandbox-image-pin sandbox-image-promote sandbox-image-clean sandbox-image-status sandbox-image-authority-configure sandbox-image-authority-enable sandbox-image-authority-audit sandbox-image-python-lint sandbox-image-python-typecheck zizmor test rust-format-check rust-test rust-test-wsl-live rust-test-ssh-controller-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live test-ssh-authentication-docker build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test rust-format-check rust-test rust-test-wsl-live rust-test-ssh-controller-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -598,81 +598,6 @@ purge-test-tmux:
 python-test:
 	@$(UV) run --frozen --group dev pytest
 
-sandbox-image-check:
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py check
-
-sandbox-image-prepare-candidate:
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py prepare-candidate
-
-unexport VERSION IMAGE APP_ID CLIENT_ID PRIVATE_KEY
-override SANDBOX_IMAGE_VERSION_VALUE := $(value VERSION)
-override SANDBOX_IMAGE_REFERENCE_VALUE := $(value IMAGE)
-
-sandbox-image-refresh: export SANDBOX_IMAGE_VERSION_INPUT := $(SANDBOX_IMAGE_VERSION_VALUE)
-sandbox-image-refresh:
-	@test -n "$${SANDBOX_IMAGE_VERSION_INPUT:-}" || { echo 'Set VERSION=X.Y.Z' >&2; exit 2; }
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py refresh \
-		--version "$${SANDBOX_IMAGE_VERSION_INPUT}"
-
-sandbox-image-vet sandbox-image-pin sandbox-image-promote: export SANDBOX_IMAGE_REFERENCE_INPUT := $(SANDBOX_IMAGE_REFERENCE_VALUE)
-sandbox-image-vet:
-	@test -n "$${SANDBOX_IMAGE_REFERENCE_INPUT:-}" || { echo 'Set IMAGE=<candidate@digest>' >&2; exit 2; }
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py vet \
-		--image "$${SANDBOX_IMAGE_REFERENCE_INPUT}"
-
-sandbox-image-pin:
-	@test -n "$${SANDBOX_IMAGE_REFERENCE_INPUT:-}" || { echo 'Set IMAGE=<candidate@digest>' >&2; exit 2; }
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py pin \
-		--image "$${SANDBOX_IMAGE_REFERENCE_INPUT}"
-
-sandbox-image-promote: export SANDBOX_IMAGE_VERSION_INPUT := $(SANDBOX_IMAGE_VERSION_VALUE)
-sandbox-image-promote:
-	@test -n "$${SANDBOX_IMAGE_REFERENCE_INPUT:-}" || { echo 'Set IMAGE=<candidate@digest>' >&2; exit 2; }
-	@test -n "$${SANDBOX_IMAGE_VERSION_INPUT:-}" || { echo 'Set VERSION=X.Y.Z' >&2; exit 2; }
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py promote \
-		--image "$${SANDBOX_IMAGE_REFERENCE_INPUT}" \
-		--version "$${SANDBOX_IMAGE_VERSION_INPUT}"
-
-sandbox-image-clean:
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py clean
-
-sandbox-image-status:
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py status
-
-override SANDBOX_APP_ID_VALUE := $(value APP_ID)
-override SANDBOX_CLIENT_ID_VALUE := $(value CLIENT_ID)
-override SANDBOX_PRIVATE_KEY_VALUE := $(value PRIVATE_KEY)
-
-sandbox-image-authority-configure: export SANDBOX_APP_ID_INPUT := $(SANDBOX_APP_ID_VALUE)
-sandbox-image-authority-configure: export SANDBOX_CLIENT_ID_INPUT := $(SANDBOX_CLIENT_ID_VALUE)
-sandbox-image-authority-configure: export SANDBOX_PRIVATE_KEY_INPUT := $(SANDBOX_PRIVATE_KEY_VALUE)
-sandbox-image-authority-configure:
-	@test -n "$${SANDBOX_APP_ID_INPUT:-}" || { echo 'Set APP_ID=<numeric GitHub App ID>' >&2; exit 2; }
-	@test -n "$${SANDBOX_CLIENT_ID_INPUT:-}" || { echo 'Set CLIENT_ID=<GitHub App client ID>' >&2; exit 2; }
-	@test -n "$${SANDBOX_PRIVATE_KEY_INPUT:-}" || { echo 'Set PRIVATE_KEY=<PEM path>' >&2; exit 2; }
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py authority-configure \
-		--app-id "$${SANDBOX_APP_ID_INPUT}" \
-		--client-id "$${SANDBOX_CLIENT_ID_INPUT}" \
-		--private-key "$${SANDBOX_PRIVATE_KEY_INPUT}"
-
-sandbox-image-authority-enable:
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py authority-enable
-
-sandbox-image-authority-audit:
-	@$(UV) run --frozen $(PYTHON) tools/sandbox_image.py authority-audit
-
-sandbox-image-python-lint:
-	@$(UV) run --frozen --group dev ruff check \
-		tools/sandbox_image.py tools/sandbox_image tools/tests/test_sandbox_image_*.py
-
-sandbox-image-python-typecheck:
-	@$(UV) run --frozen --group dev ty check \
-		tools/sandbox_image.py tools/sandbox_image tools/tests/test_sandbox_image_*.py
-
-zizmor:
-	@$(UV) tool run --from zizmor==1.29.0 zizmor --pedantic \
-		.github/workflows/sandbox-image*.yml
-
 test: swift-test python-test
 
 .PHONY: rust-build bootstrap-libghostty-vt test-libghostty-vt-build
@@ -857,8 +782,8 @@ gh-actions-lock-install:
 		gh extension install github/gh-actions-lock --pin $(GH_ACTIONS_LOCK_VERSION); \
 	fi
 
-# Keep SHA uses intact: GitHub requires matching lockfile keys, and zizmor
-# requires SHA-pinned workflow actions. Tag-keyed aliases are insufficient.
+# Keep SHA uses intact: GitHub requires matching lockfile keys. Tag-keyed
+# aliases are insufficient.
 actions-lock: gh-actions-lock-install
 	gh actions-lock --no-interactive --no-narrow
 

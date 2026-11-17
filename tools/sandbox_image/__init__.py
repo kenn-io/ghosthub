@@ -1,1 +1,0 @@
-"""Ghosthub sandbox image lifecycle."""

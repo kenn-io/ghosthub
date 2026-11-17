@@ -162,10 +162,10 @@ def test_sensitive_jobs_cannot_run_in_forks() -> None:
             id="write-enabled-job-bypasses-skipped-dependency",
         ),
         pytest.param(
-            "sandbox-image-maintenance.yml",
-            "inspect",
+            "nightly.yml",
+            "eligibility",
             "negate",
-            "sandbox-image-maintenance.yml:inspect",
+            "nightly.yml:eligibility",
             id="scheduled-job-negates-guard",
         ),
         pytest.param(
@@ -174,20 +174,6 @@ def test_sensitive_jobs_cannot_run_in_forks() -> None:
             "unary-not-precedence",
             "nightly.yml:eligibility",
             id="unary-not-binds-before-equality",
-        ),
-        pytest.param(
-            "sandbox-image-publish.yml",
-            "prepare",
-            "override",
-            "sandbox-image-publish.yml:publish",
-            id="publishing-job-bypasses-skipped-dependency",
-        ),
-        pytest.param(
-            "sandbox-image-publish.yml",
-            "prepare",
-            "not-cancelled",
-            "sandbox-image-publish.yml:publish",
-            id="publishing-job-replaces-implicit-success-check",
         ),
         pytest.param(
             "website.yml",
@@ -231,8 +217,6 @@ def test_audit_catches_jobs_that_a_fork_could_run(
         job["if"] = "!(!github.repository == 'kenn-io/ghosthub')"
     elif mutation == "override":
         job["if"] = "always()"
-    elif mutation == "not-cancelled":
-        job["if"] = "!cancelled()"
     elif mutation == "workflow-secret-env":
         workflow["env"] = {"TEST_TOKEN": "${{ secrets.TEST_TOKEN }}"}
     elif mutation == "whole-secret-context":
@@ -250,15 +234,27 @@ def test_audit_catches_jobs_that_a_fork_could_run(
 
 
 def test_audit_checks_yaml_workflows(tmp_path: pathlib.Path) -> None:
-    workflow = load(WORKFLOWS / "sandbox-image-maintenance.yml")
-    workflow["jobs"]["inspect"].pop("if")
-    (tmp_path / "sandbox-image-maintenance.yaml").write_text(
-        yaml.safe_dump(workflow, sort_keys=False)
-    )
+    workflow = load(WORKFLOWS / "nightly.yml")
+    workflow["jobs"]["eligibility"].pop("if")
+    (tmp_path / "nightly.yaml").write_text(yaml.safe_dump(workflow, sort_keys=False))
 
-    assert fork_runnable_sensitive_jobs(tmp_path) == [
-        "sandbox-image-maintenance.yaml:inspect"
-    ]
+    assert fork_runnable_sensitive_jobs(tmp_path) == ["nightly.yaml:eligibility"]
+
+
+def test_job_is_guarded_only_while_its_guarded_dependency_must_succeed(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load(WORKFLOWS / "release.yml")
+    publish = workflow["jobs"]["publish-release"]
+    path = tmp_path / "release.yml"
+
+    publish.pop("if")
+    path.write_text(yaml.safe_dump(workflow, sort_keys=False))
+    assert fork_runnable_sensitive_jobs(tmp_path) == []
+
+    publish["if"] = "!cancelled()"
+    path.write_text(yaml.safe_dump(workflow, sort_keys=False))
+    assert fork_runnable_sensitive_jobs(tmp_path) == ["release.yml:publish-release"]
 
 
 @pytest.mark.parametrize(
@@ -266,7 +262,6 @@ def test_audit_checks_yaml_workflows(tmp_path: pathlib.Path) -> None:
     [
         pytest.param("ci-pr.yml", "run", id="pull-request-dispatch"),
         pytest.param("ci.yml", "macos-arm64", id="hosted-macos-validation"),
-        pytest.param("sandbox-image.yml", "check", id="sandbox-image-validation"),
     ],
 )
 def test_validation_entry_jobs_do_not_require_the_canonical_repository(
