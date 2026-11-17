@@ -152,6 +152,17 @@ fn matching<'a>(rows: &'a [Entry], query: &str) -> Vec<&'a Entry> {
         .collect()
 }
 
+// GPUI retains a mouse press by element ID between renders.
+fn result_id(entry: &Entry) -> gpui::ElementId {
+    gpui::ElementId::Name(
+        format!(
+            "palette-result:{:?}",
+            (&entry.action, &entry.title, &entry.subtitle)
+        )
+        .into(),
+    )
+}
+
 pub(super) struct Dialog {
     query: String,
     selected: Option<Action>,
@@ -346,12 +357,12 @@ impl RootView {
             .max_h(px(height))
             .overflow_y_scroll()
             .track_scroll(&dialog.scroll);
-        for (index, entry) in matches.iter().enumerate() {
+        for entry in &matches {
             let action = entry.action.clone();
             let selected = Some(&action) == dialog.selected.as_ref();
             results = results.child(
                 div()
-                    .id(("palette-result", index))
+                    .id(result_id(entry))
                     .h(px(44.0))
                     .px_4()
                     .flex()
@@ -669,5 +680,28 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn result_click_identity_follows_the_destination_across_reordering_and_replacement() {
+        let studio = Entry {
+            title: "Select Studio".into(),
+            subtitle: "studio.example".into(),
+            action: Action::Host("studio".into()),
+        };
+        let local = Entry {
+            title: "Select Local".into(),
+            subtitle: "Linux".into(),
+            action: Action::Host("local".into()),
+        };
+        let before: Vec<_> = [&studio, &local].into_iter().map(result_id).collect();
+        let after: Vec<_> = [&local, &studio].into_iter().map(result_id).collect();
+        assert_eq!(before[0], after[1]);
+        assert_ne!(before[0], after[0]);
+        let replacement = Entry {
+            action: Action::Host("replacement".into()),
+            ..studio.clone()
+        };
+        assert_ne!(result_id(&studio), result_id(&replacement));
     }
 }
