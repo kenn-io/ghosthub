@@ -74,7 +74,7 @@ KWT_SOURCE_REVISION ?= unpinned
 endif
 SWIFT_TEST_FILTER ?=
 
-.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-terminal-fallback test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live test-ssh-authentication-docker build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test rust-format-check rust-test rust-test-wsl-live rust-test-ssh-controller-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
+.PHONY: help ensure-go ensure-tmux bootstrap-kwt bootstrap-kwt-variants ensure-kwt ensure-kwt-variants bootstrap-libghostty bootstrap-libghostty-release check-libghostty check-libghostty-release test-libghostty-bootstrap test-stage-release-app-bundles test-assemble-app-bundle test-kwt-contract test-essential-workflows test-ssh-authentication-live test-ssh-authentication-docker build swift-warning-check build-release debug-app release-app release-dmg release-appcast nightly-app nightly-dmg nightly-appcast run-release-app run-app swift-test test-tmux-attach purge-test-tmux python-test test rust-format-check rust-test rust-test-wsl-live rust-test-ssh-controller-live rust-lint rust-deny rust-check smoke-test docs-build docs-serve site-docs-serve site-deploy reset-app-state install-hooks format format-check
 
 help:
 	@printf '%s\n' \
@@ -91,8 +91,6 @@ help:
 		'      Verify that the staged libghostty artifacts match the pinned Ghostty revision.' \
 		'  make test-libghostty-bootstrap' \
 		'      Run the bootstrap Python tests via uv-managed pytest.' \
-		'  make test-terminal-fallback' \
-		'      Compile the app with the libghostty-unavailable fallback target.' \
 		'  make test-stage-release-app-bundles' \
 		'      Run the Ghosthub.app SwiftPM resource-bundle staging tests.' \
 		'  make test-assemble-app-bundle' \
@@ -313,9 +311,6 @@ test-libghostty-bootstrap:
 test-dev-setup:
 	@$(UV) run --frozen --group dev pytest tools/tests/test_dev_setup_wizard.py
 
-test-terminal-fallback:
-	@GHOSTHUB_FORCE_TERMINAL_UNAVAILABLE=1 $(SWIFT) build --scratch-path .build/terminal-unavailable
-
 test-stage-release-app-bundles:
 	@$(UV) run --frozen --group dev pytest tools/tests/test_stage_release_app_bundles.py
 
@@ -331,7 +326,7 @@ ensure-tmux:
 		brew install tmux; \
 	}
 
-test-kwt-contract: ensure-kwt ensure-tmux
+test-kwt-contract: ensure-kwt ensure-tmux bootstrap-libghostty
 	@GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS=1 \
 		GHOSTHUB_KWT_CONTRACT_BINARY="$(KWT_BINARY_PATH)" \
 		sh tools/run_with_timeout.sh 600 sh tools/run_swift_tests.sh \
@@ -554,7 +549,7 @@ run-app: debug-app
 	printf 'Opening app bundle: %s\n' "$(DEBUG_APP_PATH)"; \
 	open -n "$(DEBUG_APP_PATH)"
 
-swift-test:
+swift-test: bootstrap-libghostty
 	@set -euo pipefail; \
 	cmd=(sh tools/run_swift_tests.sh $(SWIFT) test); \
 	if [[ -n "$(SWIFT_TEST_FILTER)" ]]; then \

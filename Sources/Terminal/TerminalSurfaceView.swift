@@ -2065,9 +2065,8 @@ extension TerminalSurfaceView {
 }
 
 extension TerminalSurfaceView {
-    /// Pure reservation logic, extracted for testability. Forwards to the
-    /// shared `TerminalApplicationShortcut` so the real and unavailable terminal
-    /// targets reserve identical shortcuts.
+    /// Pure reservation logic, extracted for testability. Forwards to
+    /// `TerminalApplicationShortcut`.
     nonisolated static func isReservedApplicationShortcut(
         flags: NSEvent.ModifierFlags,
         chars: String?,

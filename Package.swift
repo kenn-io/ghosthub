@@ -21,28 +21,30 @@ func loadJSONDictionary(at url: URL) -> [String: Any]? {
     return object
 }
 
-let hasBootstrappedLibghostty: Bool = {
-    guard ProcessInfo.processInfo.environment[
-        "GHOSTHUB_FORCE_TERMINAL_UNAVAILABLE"
-    ] != "1" else {
-        return false
-    }
+/// Why the built libghostty cannot be used, or nil when it matches the
+/// vendored Ghostty revision and Ghosthub's patch surface.
+let libghosttyProblem: String? = {
     let xcframeworkPath = libghosttyBuildRoot.appendingPathComponent("GhosttyKit.xcframework").path
     guard fileManager.fileExists(atPath: xcframeworkPath) else {
-        return false
+        return "has not been built"
     }
-
     guard let vendorMetadata = loadJSONDictionary(at: vendorMetadataPath),
           let manifest = loadJSONDictionary(at: libghosttyManifestPath),
           let vendorCommit = vendorMetadata["commit"] as? String,
           let builtCommit = manifest["ghosttyCommit"] as? String,
           let bootstrapVersion = manifest["ghosthubBootstrapVersion"] as? Int
     else {
-        return false
+        return "has no readable build manifest"
     }
-
-    return vendorCommit == builtCommit && bootstrapVersion == requiredLibghosttyBootstrapVersion
+    guard vendorCommit == builtCommit, bootstrapVersion == requiredLibghosttyBootstrapVersion else {
+        return "is out of date"
+    }
+    return nil
 }()
+
+if let libghosttyProblem {
+    fatalError("libghostty \(libghosttyProblem). Run `make bootstrap-libghostty`.")
+}
 
 var products: [Product] = [
     .library(
@@ -136,39 +138,26 @@ var targets: [Target] = [
     ),
 ]
 
-if hasBootstrappedLibghostty {
-    targets.append(
-        .binaryTarget(
-            name: "GhosttyKit",
-            path: ".build/libghostty/GhosttyKit.xcframework"
-        )
+targets.append(
+    .binaryTarget(
+        name: "GhosttyKit",
+        path: ".build/libghostty/GhosttyKit.xcframework"
     )
-    targets.append(
-        .target(
-            name: "GhosthubTerminal",
-            dependencies: [
-                "GhosthubTerminalSupport",
-                "GhosthubWorkspace",
-                "GhosttyKit",
-            ],
-            path: "Sources/Terminal",
-            linkerSettings: [
-                .linkedFramework("Carbon"),
-            ]
-        )
+)
+targets.append(
+    .target(
+        name: "GhosthubTerminal",
+        dependencies: [
+            "GhosthubTerminalSupport",
+            "GhosthubWorkspace",
+            "GhosttyKit",
+        ],
+        path: "Sources/Terminal",
+        linkerSettings: [
+            .linkedFramework("Carbon"),
+        ]
     )
-} else {
-    targets.append(
-        .target(
-            name: "GhosthubTerminal",
-            dependencies: [
-                "GhosthubTerminalSupport",
-                "GhosthubWorkspace",
-            ],
-            path: "Sources/TerminalUnavailable"
-        )
-    )
-}
+)
 
 targets.append(
     .target(
@@ -289,20 +278,17 @@ targets.append(
         path: "Tests/TerminalSupport"
     )
 )
-var terminalTestDependencies: [Target.Dependency] = [
-    "GhosthubTerminal",
-    "GhosthubTerminalSupport",
-    "GhosthubWorkspace",
-    "GhosthubTestSupport",
-]
-if hasBootstrappedLibghostty {
-    // AttachedTmuxInputTests imports the XCFramework's Clang module directly.
-    terminalTestDependencies.append("GhosttyKit")
-}
 targets.append(
     .testTarget(
         name: "GhosthubTerminalTests",
-        dependencies: terminalTestDependencies,
+        dependencies: [
+            "GhosthubTerminal",
+            "GhosthubTerminalSupport",
+            "GhosthubWorkspace",
+            "GhosthubTestSupport",
+            // AttachedTmuxInputTests imports the XCFramework's Clang module directly.
+            "GhosttyKit",
+        ],
         path: "Tests/Terminal"
     )
 )
@@ -358,27 +344,25 @@ targets.append(
         path: "Tests/Zellij"
     )
 )
-if hasBootstrappedLibghostty {
-    targets.append(
-        .testTarget(
-            name: "GhosthubTerminalSmokeTests",
-            dependencies: [
-                "GhosthubApp",
-                "GhosthubBackendTerminal",
-                "GhosthubHerdr",
-                "GhosthubTerminal",
-                "GhosthubTerminalSupport",
-                "GhosthubTestSupport",
-                "GhosthubTransport",
-                "GhosthubTmux",
-                "GhosthubUI",
-                "GhosthubWorkspace",
-                "GhosthubZellij",
-            ],
-            path: "Tests/TerminalSmoke"
-        )
+targets.append(
+    .testTarget(
+        name: "GhosthubTerminalSmokeTests",
+        dependencies: [
+            "GhosthubApp",
+            "GhosthubBackendTerminal",
+            "GhosthubHerdr",
+            "GhosthubTerminal",
+            "GhosthubTerminalSupport",
+            "GhosthubTestSupport",
+            "GhosthubTransport",
+            "GhosthubTmux",
+            "GhosthubUI",
+            "GhosthubWorkspace",
+            "GhosthubZellij",
+        ],
+        path: "Tests/TerminalSmoke"
     )
-}
+)
 
 let package = Package(
     name: "Ghosthub",
