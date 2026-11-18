@@ -27,13 +27,13 @@ reconnect is always a fresh attachment.
 - **Directory workspace:** one kwt-registered plain directory with an exact
   tmux session name and no Git children.
 - **Session:** an ordinary tmux session, running/stopped Herdr TUI session,
-  backend terminal (a live Herdr core terminal or Rex block), or active Zellij
+  backend terminal (a live Herdr core terminal or Rex window), or active Zellij
   session on a host. Backend terminal support is currently macOS-only.
 
 The sidebar is a host-wide session navigator. Hosts are its only grouping
 level. Under each host, one session list shows directly discovered tmux
 sessions, running or stopped Herdr TUI sessions, live Herdr core terminals, Rex
-blocks, and active Zellij sessions, including sessions that were not created by
+windows, and active Zellij sessions, including sessions that were not created by
 Ghosthub or kwt. A backend label on each row (a chip, colored text, or a dot) tells the
 backends apart. The options menu beside the sidebar title and **Settings →
 Sidebar** both set the label, sort, row height, and which worktree rows show. The list follows one saved
@@ -981,11 +981,11 @@ Ghosthub does not scan the host for repositories.
 | `Sources/UI/` | Reusable SwiftUI/AppKit presentation components |
 | `Sources/Settings/` | Native settings and preferences |
 | `Sources/Terminal/` | libghostty-backed terminal runtime and surface views |
-| `Sources/TerminalSupport/` | libghostty config/bootstrap support that can compile without the linked library |
+| `Sources/TerminalSupport/` | libghostty config/bootstrap support and the split-tree layout and container, which compile without the linked library |
 | `Sources/Transport/` | Shared local/SSH routing, quoting, and command execution primitives |
 | `Sources/Tmux/` | Native tmux discovery and attachment command model |
 | `Sources/Herdr/` | Native Herdr discovery and attachment command model |
-| `Sources/BackendTerminal/` | Herdr Core and Rex terminal discovery and attachment command model |
+| `Sources/BackendTerminal/` | Herdr Core and Rex discovery, attachment commands, and the Rex window layout model |
 | `Sources/Zellij/` | Native Zellij discovery and attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |

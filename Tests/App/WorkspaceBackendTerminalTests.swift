@@ -14,8 +14,13 @@ import Testing
 @Suite("Workspace backend terminals", .serialized)
 @MainActor
 struct WorkspaceBackendTerminalTests {
-    private nonisolated static let rexTerminal = BackendTerminalSummary(
-        kind: .rex, address: "block:01aa", title: "vim", detail: "work / editor"
+    /// A terminal Ghosthub attaches on its own. Rex windows have their own
+    /// tests, so these use a Herdr Core terminal.
+    private nonisolated static let attachedTerminal = BackendTerminalSummary(
+        kind: .herdrCore, address: "t9", title: "vim"
+    )
+    private nonisolated static let rexWindow = BackendTerminalSummary(
+        kind: .rex, address: "window:01aa", title: "vim", detail: "work · 1 pane"
     )
     private nonisolated static let coreTerminal = BackendTerminalSummary(
         kind: .herdrCore, address: "t7", title: "review"
@@ -33,7 +38,7 @@ struct WorkspaceBackendTerminalTests {
     }
 
     private func environment(
-        terminals: [BackendTerminalSummary] = [rexTerminal, coreTerminal],
+        terminals: [BackendTerminalSummary] = [attachedTerminal, coreTerminal],
         herdrSessions: [HerdrSessionSummary] = [],
         zellijSessions: [ZellijSessionSummary] = [],
         remote: Bool = false
@@ -138,6 +143,7 @@ struct WorkspaceBackendTerminalTests {
         zellijSessionDiscovery: @escaping WorkspaceSceneModel.ZellijSessionDiscovery = {
             _ in .unavailable
         },
+        rexChannels: RexChannels = RexChannels(),
         startServices: Bool = false
     ) throws -> WorkspaceSceneModel {
         let fake = fake ?? FakeHost(environment.host.backendTerminals)
@@ -157,6 +163,11 @@ struct WorkspaceBackendTerminalTests {
             nativeZellijSurfaceStore: store,
             nativeBackendTerminalSurfaceStore: store,
             nativeBackendTerminalExecutableProvider: { kind, _, _ in fake.executable(kind) },
+            rexControlChannelFactory: { command in
+                let channel = FakeRexControlChannel()
+                rexChannels.started.append((command, channel))
+                return channel
+            },
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             nativeHerdrPathProvider: { _ in .success("/opt/test/herdr") },
             nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
@@ -217,24 +228,6 @@ struct WorkspaceBackendTerminalTests {
         close(false, exitCode)
     }
 
-    @Test("a local Rex terminal attaches through Ghosthub's kwt in its own surface")
-    func localRexAttach() async throws {
-        let environment = try environment()
-        let store = RecordingNativeSessionSurfaceStore()
-        let model = try makeTerminalModel(environment, store: store)
-        let rex = environment.selection(Self.rexTerminal)
-
-        try await model.openBackendTerminal(rex)
-        await launchSurface(model, store: store)
-
-        #expect(model.activeBackendTerminalSelection == rex)
-        #expect(store.requestedKeys.last?.target == .backendTerminal)
-        let command = try #require(store.lastCommand)
-        #expect(command.contains("/opt/test/kwt"))
-        #expect(command.contains("block:01aa"))
-        await model.shutdown()
-    }
-
     @Test("a terminal the host does not list is not opened")
     func unlistedTerminal() async throws {
         let environment = try environment(terminals: [])
@@ -242,7 +235,7 @@ struct WorkspaceBackendTerminalTests {
         let model = try makeTerminalModel(environment, store: store)
 
         await #expect(throws: BackendTerminalPresentationError.self) {
-            try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+            try await model.openBackendTerminal(environment.selection(Self.attachedTerminal))
         }
 
         #expect(model.activeBackendTerminalSelection == nil)
@@ -284,17 +277,17 @@ struct WorkspaceBackendTerminalTests {
         let environment = try environment()
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeTerminalModel(environment, store: store)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
         let key = try #require(store.requestedKeys.last)
 
-        model.closeBackendTerminal(rex)
+        model.closeBackendTerminal(opened)
 
         #expect(model.activeBackendTerminalSelection == nil)
         #expect(store.removedKeys.contains(key))
         #expect(model.snapshot.host(id: environment.host.id)?.backendTerminals
-            .contains(Self.rexTerminal) == true)
+            .contains(Self.attachedTerminal) == true)
         await model.shutdown()
     }
 
@@ -302,29 +295,29 @@ struct WorkspaceBackendTerminalTests {
     func reconnect() async throws {
         let environment = try environment()
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         let model = try makeTerminalModel(environment, store: store, fake: fake)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
 
         // The attach client exits after a detach; the terminal still runs.
         var closed: Set<UUID> = []
         try closeNewestSurface(store, closed: &closed, exitCode: 0)
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         #expect(model.activeBorrowedBackendTerminalConnectionState != .connected)
         let attachments = store.requestedKeys.count
         model.reconnectActiveBackendTerminalNow()
         await launchSurface(model, store: store, after: attachments)
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
 
-        // The program ended, so Rex no longer lists the block.
+        // The program ended, so Herdr Core no longer lists it.
         try closeNewestSurface(store, closed: &closed, exitCode: 1)
         fake.terminals.withLock { $0 = [] }
         model.reconnectActiveBackendTerminalNow()
         await waitUntilMainActor { model.activeBackendTerminalSelection == nil }
         #expect(model.snapshot.host(id: environment.host.id)?.backendTerminals
-            .contains(Self.rexTerminal) == false)
+            .contains(Self.attachedTerminal) == false)
         await model.shutdown()
     }
 
@@ -339,7 +332,7 @@ struct WorkspaceBackendTerminalTests {
             }
             if call == 1 {
                 return [
-                    .rex: .available([Self.rexTerminal]),
+                    .rex: .available([Self.rexWindow]),
                     .herdrCore: .available([Self.coreTerminal]),
                 ]
             }
@@ -359,7 +352,7 @@ struct WorkspaceBackendTerminalTests {
         }
 
         #expect(model.snapshot.host(id: environment.host.id)?.backendTerminals
-            == [Self.rexTerminal])
+            == [Self.rexWindow])
         let warning = try #require(model.workspaceInventoryWarningsByHost[environment.host.id])
         #expect(warning.contains("server busy"))
         await model.shutdown()
@@ -370,22 +363,22 @@ struct WorkspaceBackendTerminalTests {
         let environment = try environment(terminals: [])
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeTerminalModel(
-            environment, store: store, fake: FakeHost([Self.rexTerminal])
+            environment, store: store, fake: FakeHost([Self.attachedTerminal])
         )
-        let rex = environment.selection(Self.rexTerminal)
+        let opened = environment.selection(Self.attachedTerminal)
         model.beginRestoration(WorkspaceWindowState(
             windowID: UUID(),
             navigation: .init(hostKey: "local", projectKey: nil, worktreeGeneration: nil),
             tmux: nil,
-            backendTerminal: .init(hostKey: "local", kind: .rex, address: rex.address)
+            backendTerminal: .init(hostKey: "local", kind: .herdrCore, address: opened.address)
         ))
         #expect(model.activeBackendTerminalSelection == nil)
 
         model.startHerdrSessionDiscovery()
         await launchSurface(model, store: store)
 
-        #expect(model.activeBackendTerminalSelection == rex)
-        #expect(model.restorationState(windowID: UUID()).backendTerminal?.address == rex.address)
+        #expect(model.activeBackendTerminalSelection == opened)
+        #expect(model.restorationState(windowID: UUID()).backendTerminal?.address == opened.address)
         await model.shutdown()
     }
 
@@ -393,10 +386,10 @@ struct WorkspaceBackendTerminalTests {
     func failedOpenKeepsCurrentView() async throws {
         let environment = try environment()
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal, Self.coreTerminal])
+        let fake = FakeHost([Self.attachedTerminal, Self.coreTerminal])
         let model = try makeTerminalModel(environment, store: store, fake: fake)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
         let key = try #require(store.requestedKeys.last)
 
@@ -407,7 +400,7 @@ struct WorkspaceBackendTerminalTests {
             try await model.openBackendTerminal(environment.selection(Self.coreTerminal))
         }
 
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         #expect(!store.removedKeys.contains(key))
         #expect(model.activeBorrowedBackendTerminalConnectionState == .connected)
         await model.shutdown()
@@ -418,15 +411,15 @@ struct WorkspaceBackendTerminalTests {
         let environment = try environment(remote: true)
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeTerminalModel(environment, store: store)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
 
         // OpenSSH exits with status 255 when the connection drops.
         var closed: Set<UUID> = []
         try closeNewestSurface(store, closed: &closed, exitCode: 255)
         await launchSurface(model, store: store, after: 1)
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
 
         try closeNewestSurface(store, closed: &closed, exitCode: 0)
         try await Task.sleep(for: .milliseconds(200))
@@ -489,7 +482,7 @@ struct WorkspaceBackendTerminalTests {
         let environment = try environment(terminals: [])
         let store = RecordingNativeSessionSurfaceStore()
         let cadence = AsyncGate()
-        let discovery = BlockingBackendDiscovery(listing: [.rex: .available([Self.rexTerminal])])
+        let discovery = BlockingBackendDiscovery(listing: [.rex: .available([Self.rexWindow])])
         let model = try makeTerminalModel(
             environment,
             store: store,
@@ -506,7 +499,7 @@ struct WorkspaceBackendTerminalTests {
 
         await waitUntilMainActor {
             model.snapshot.host(id: environment.host.id)?.backendTerminals
-                == [Self.rexTerminal]
+                == [Self.rexWindow]
         }
         #expect(discovery.starts == 1)
         await model.shutdown()
@@ -536,7 +529,7 @@ struct WorkspaceBackendTerminalTests {
         let environment = try environment()
         let store = RecordingNativeSessionSurfaceStore()
         let model = try makeTerminalModel(environment, store: store)
-        try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+        try await model.openBackendTerminal(environment.selection(Self.attachedTerminal))
         await launchSurface(model, store: store)
 
         var closed: Set<UUID> = []
@@ -550,16 +543,16 @@ struct WorkspaceBackendTerminalTests {
     func droppedExecutableLookupReconnects() async throws {
         let environment = try environment(remote: true)
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         fake.executableFailures.withLock {
             $0 = [.commandFailed(
-                .rex, status: 255,
+                .herdrCore, status: 255,
                 stderr: "ssh: connect to host builder port 22: Connection refused"
             )]
         }
         let model = try makeTerminalModel(environment, store: store, fake: fake)
 
-        try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+        try await model.openBackendTerminal(environment.selection(Self.attachedTerminal))
         await launchSurface(model, store: store)
 
         #expect(fake.attaches.withLock { $0 } == 2)
@@ -570,9 +563,9 @@ struct WorkspaceBackendTerminalTests {
     func restorationRetriesTransientFailure() async throws {
         let environment = try environment(terminals: [])
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         fake.validationFailures.withLock {
-            $0 = [.commandFailed(.rex, status: 1, stderr: "server busy")]
+            $0 = [.commandFailed(.herdrCore, status: 1, stderr: "server busy")]
         }
         // No scheduled refresh lists the host again, so the retry must.
         let model = try makeTerminalModel(
@@ -581,31 +574,31 @@ struct WorkspaceBackendTerminalTests {
             fake: fake,
             workspaceInventoryStore: makeCadenceInventoryStore(cadence: AsyncGate())
         )
-        let rex = environment.selection(Self.rexTerminal)
+        let opened = environment.selection(Self.attachedTerminal)
         let windowID = UUID()
         model.beginRestoration(WorkspaceWindowState(
             windowID: windowID,
             navigation: .init(hostKey: "local", projectKey: nil, worktreeGeneration: nil),
             tmux: nil,
-            backendTerminal: .init(hostKey: "local", kind: .rex, address: rex.address)
+            backendTerminal: .init(hostKey: "local", kind: .herdrCore, address: opened.address)
         ))
 
         model.startHerdrSessionDiscovery()
         await launchSurface(model, store: store)
 
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         #expect(model.restorationState(windowID: windowID).backendTerminal?.address
-            == rex.address)
+            == opened.address)
         await model.shutdown()
     }
 
     @Test("a restoration retry waits out a sweep still listing another host")
     func restorationRetryDuringSweep() async throws {
-        let environment = try environment(terminals: [Self.rexTerminal], remote: true)
+        let environment = try environment(terminals: [Self.attachedTerminal], remote: true)
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         fake.validationFailures.withLock {
-            $0 = [.commandFailed(.rex, status: 1, stderr: "server busy")]
+            $0 = [.commandFailed(.herdrCore, status: 1, stderr: "server busy")]
         }
         // This Mac's listing stays slow while the remote one is restored.
         let slowLocal = BlockingBackendDiscovery(listing: [:])
@@ -614,15 +607,15 @@ struct WorkspaceBackendTerminalTests {
             store: store,
             fake: fake,
             discovery: { host in
-                host == .local ? slowLocal.discover() : [.rex: fake.listing(.rex)]
+                host == .local ? slowLocal.discover() : [.herdrCore: fake.listing(.herdrCore)]
             }
         )
-        let rex = environment.selection(Self.rexTerminal)
+        let opened = environment.selection(Self.attachedTerminal)
         model.beginRestoration(WorkspaceWindowState(
             windowID: UUID(),
             navigation: .init(hostKey: "builder", projectKey: nil, worktreeGeneration: nil),
             tmux: nil,
-            backendTerminal: .init(hostKey: "builder", kind: .rex, address: rex.address)
+            backendTerminal: .init(hostKey: "builder", kind: .herdrCore, address: opened.address)
         ))
 
         model.startHerdrSessionDiscovery()
@@ -633,7 +626,7 @@ struct WorkspaceBackendTerminalTests {
         slowLocal.release()
         await launchSurface(model, store: store)
 
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         await model.shutdown()
     }
 
@@ -642,9 +635,9 @@ struct WorkspaceBackendTerminalTests {
         // Only fresh inventory can confirm the saved terminal on the remote.
         let environment = try environment(terminals: [], remote: true)
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         fake.validationFailures.withLock {
-            $0 = [.commandFailed(.rex, status: 1, stderr: "server busy")]
+            $0 = [.commandFailed(.herdrCore, status: 1, stderr: "server busy")]
         }
         // This Mac's listing keeps the sweep running after the remote one,
         // and no scheduled refresh lists the remote again.
@@ -654,16 +647,16 @@ struct WorkspaceBackendTerminalTests {
             store: store,
             fake: fake,
             discovery: { host in
-                host == .local ? slowLocal.discover() : [.rex: fake.listing(.rex)]
+                host == .local ? slowLocal.discover() : [.herdrCore: fake.listing(.herdrCore)]
             },
             workspaceInventoryStore: makeCadenceInventoryStore(cadence: AsyncGate())
         )
-        let rex = environment.selection(Self.rexTerminal)
+        let opened = environment.selection(Self.attachedTerminal)
         model.beginRestoration(WorkspaceWindowState(
             windowID: UUID(),
             navigation: .init(hostKey: "builder", projectKey: nil, worktreeGeneration: nil),
             tmux: nil,
-            backendTerminal: .init(hostKey: "builder", kind: .rex, address: rex.address)
+            backendTerminal: .init(hostKey: "builder", kind: .herdrCore, address: opened.address)
         ))
 
         model.startHerdrSessionDiscovery()
@@ -674,7 +667,7 @@ struct WorkspaceBackendTerminalTests {
         slowLocal.release()
         await launchSurface(model, store: store)
 
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         await model.shutdown()
     }
 
@@ -682,15 +675,15 @@ struct WorkspaceBackendTerminalTests {
     func reconnectNeedsApproval() async throws {
         let environment = try environment(remote: true)
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         let model = try makeTerminalModel(environment, store: store, fake: fake)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
 
         fake.validationFailures.withLock {
             $0 = [.commandFailed(
-                .rex, status: 255, stderr: "ghosthub-kwt-ssh-error:ssh_interaction_required"
+                .herdrCore, status: 255, stderr: "ghosthub-kwt-ssh-error:ssh_interaction_required"
             )]
         }
         var closed: Set<UUID> = []
@@ -709,7 +702,7 @@ struct WorkspaceBackendTerminalTests {
 
         model.resumeSessionReconnectAfterSSHRecovery(request)
         await launchSurface(model, store: store, after: 1)
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         #expect(model.activeBackendTerminalRecoveryState == nil)
         await model.shutdown()
     }
@@ -724,15 +717,15 @@ struct WorkspaceBackendTerminalTests {
             // The session ended after the sidebar listed it.
             zellijSessionDiscovery: { _ in .available([]) }
         )
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
         let key = try #require(store.requestedKeys.last)
 
         model.openBorrowedZellijSession(.init(hostID: environment.host.id, name: "work"))
         await waitUntilMainActor { model.pendingZellijPresentationSelection == nil }
 
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         #expect(model.activeBorrowedZellijSelection == nil)
         #expect(!store.removedKeys.contains(key))
         await model.shutdown()
@@ -741,7 +734,7 @@ struct WorkspaceBackendTerminalTests {
     @Test("repeated sibling shortcuts walk past a terminal that is still opening")
     func repeatedSiblingShortcuts() async throws {
         let terminals = ["01", "02", "03"].map {
-            BackendTerminalSummary(kind: .rex, address: "block:\($0)", title: "shell \($0)")
+            BackendTerminalSummary(kind: .herdrCore, address: "t\($0)", title: "shell \($0)")
         }
         let environment = try environment(terminals: terminals)
         let store = RecordingNativeSessionSurfaceStore()
@@ -769,7 +762,7 @@ struct WorkspaceBackendTerminalTests {
     @Test("navigating elsewhere cancels a terminal shortcut that has not opened yet")
     func navigationCancelsShortcut() async throws {
         let terminals = ["01", "02"].map {
-            BackendTerminalSummary(kind: .rex, address: "block:\($0)", title: "shell \($0)")
+            BackendTerminalSummary(kind: .herdrCore, address: "t\($0)", title: "shell \($0)")
         }
         let environment = try environment(terminals: terminals)
         let store = RecordingNativeSessionSurfaceStore()
@@ -798,22 +791,22 @@ struct WorkspaceBackendTerminalTests {
     func closeWithdrawsApprovalRequest() async throws {
         let environment = try environment(remote: true)
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         let model = try makeTerminalModel(environment, store: store, fake: fake)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
 
         fake.validationFailures.withLock {
             $0 = [.commandFailed(
-                .rex, status: 255, stderr: "ghosthub-kwt-ssh-error:ssh_interaction_required"
+                .herdrCore, status: 255, stderr: "ghosthub-kwt-ssh-error:ssh_interaction_required"
             )]
         }
         var closed: Set<UUID> = []
         try closeNewestSurface(store, closed: &closed, exitCode: 255)
         await waitUntilMainActor { model.sessionConnectionRecoveryRequest != nil }
 
-        model.closeBackendTerminal(rex)
+        model.closeBackendTerminal(opened)
 
         #expect(model.sessionConnectionRecoveryRequest == nil)
         await model.shutdown()
@@ -822,7 +815,7 @@ struct WorkspaceBackendTerminalTests {
     @Test("Cmd-W cancels a shortcut still checking the next terminal")
     func closeCancelsShortcut() async throws {
         let terminals = ["01", "02"].map {
-            BackendTerminalSummary(kind: .rex, address: "block:\($0)", title: "shell \($0)")
+            BackendTerminalSummary(kind: .herdrCore, address: "t\($0)", title: "shell \($0)")
         }
         let environment = try environment(terminals: terminals)
         let store = RecordingNativeSessionSurfaceStore()
@@ -875,13 +868,13 @@ struct WorkspaceBackendTerminalTests {
     @Test("a reconnect waits while another terminal is checked and resumes if it fails")
     func reconnectWaitsForOtherCheck() async throws {
         let environment = try environment(
-            terminals: [Self.rexTerminal, Self.coreTerminal], remote: true
+            terminals: [Self.attachedTerminal, Self.coreTerminal], remote: true
         )
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal, Self.coreTerminal])
+        let fake = FakeHost([Self.attachedTerminal, Self.coreTerminal])
         let model = try makeTerminalModel(environment, store: store, fake: fake)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
 
         let gate = AsyncGate()
@@ -897,30 +890,30 @@ struct WorkspaceBackendTerminalTests {
         #expect(fake.attaches.withLock { $0 } == 1)
 
         // The terminal being checked ended, so the open fails.
-        fake.terminals.withLock { $0 = [Self.rexTerminal] }
+        fake.terminals.withLock { $0 = [Self.attachedTerminal] }
         gate.open()
         await #expect(throws: BackendTerminalPresentationError.self) {
             try await opening.value
         }
         await launchSurface(model, store: store, after: 1)
 
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         #expect(fake.attaches.withLock { $0 } == 2)
         await model.shutdown()
     }
     @Test("Cmd-W from a terminal cancels a shortcut still checking a Herdr session")
     func closeCancelsHerdrShortcut() async throws {
         let environment = try environment(
-            terminals: [Self.rexTerminal],
+            terminals: [Self.attachedTerminal],
             herdrSessions: [.init(name: "work", isDefault: false, state: .running)]
         )
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         let model = try makeTerminalModel(environment, store: store, fake: fake)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         model.selection.select(
-            .backendTerminal(hostID: rex.hostID, kind: rex.kind, address: rex.address),
+            .backendTerminal(hostID: opened.hostID, kind: opened.kind, address: opened.address),
             in: environment.snapshot
         )
         model.isFocusedWindow = true
@@ -930,7 +923,7 @@ struct WorkspaceBackendTerminalTests {
         #expect(model.performApplicationShortcut(.nextSibling))
         #expect(model.pendingHerdrShortcutSelection?.name == "work")
         model.cancelPendingSessionOpens()
-        model.closeBackendTerminal(rex)
+        model.closeBackendTerminal(opened)
         gate.open()
         try await Task.sleep(for: .milliseconds(100))
 
@@ -942,15 +935,15 @@ struct WorkspaceBackendTerminalTests {
     @Test("a terminal's reconnect waits while a Herdr session is checked")
     func reconnectWaitsForHerdrCheck() async throws {
         let environment = try environment(
-            terminals: [Self.rexTerminal],
+            terminals: [Self.attachedTerminal],
             herdrSessions: [.init(name: "work", isDefault: false, state: .running)],
             remote: true
         )
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         let model = try makeTerminalModel(environment, store: store, fake: fake)
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
 
         let gate = AsyncGate()
@@ -974,7 +967,7 @@ struct WorkspaceBackendTerminalTests {
         await #expect(throws: (any Error).self) { try await opening.value }
         await launchSurface(model, store: store, after: 1)
 
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         #expect(fake.attaches.withLock { $0 } == 2)
         await model.shutdown()
     }
@@ -982,12 +975,12 @@ struct WorkspaceBackendTerminalTests {
     @Test("a terminal takes no input and holds its reconnect while a Zellij session is checked")
     func zellijCheckHoldsTerminal() async throws {
         let environment = try environment(
-            terminals: [Self.rexTerminal],
+            terminals: [Self.attachedTerminal],
             zellijSessions: [.init(name: "work")],
             remote: true
         )
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         let gate = AsyncGate()
         let gated = Mutex(false)
         let model = try makeTerminalModel(
@@ -1002,8 +995,8 @@ struct WorkspaceBackendTerminalTests {
                 return .available([])
             }
         )
-        let rex = environment.selection(Self.rexTerminal)
-        try await model.openBackendTerminal(rex)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
         await launchSurface(model, store: store)
 
         gated.withLock { $0 = true }
@@ -1020,7 +1013,7 @@ struct WorkspaceBackendTerminalTests {
         await waitUntilMainActor { model.pendingZellijPresentationSelection == nil }
         await launchSurface(model, store: store, after: 1)
 
-        #expect(model.activeBackendTerminalSelection == rex)
+        #expect(model.activeBackendTerminalSelection == opened)
         #expect(fake.attaches.withLock { $0 } == 2)
         #expect(!store.surface.isKeyboardInteractionSuspended)
         await model.shutdown()
@@ -1028,9 +1021,9 @@ struct WorkspaceBackendTerminalTests {
 
     @Test("a tmux session takes no input until the terminal replacing it is checked")
     func terminalCheckHoldsTmux() async throws {
-        let environment = try environment(terminals: [Self.rexTerminal])
+        let environment = try environment(terminals: [Self.attachedTerminal])
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         let model = try makeTerminalModel(environment, store: store, fake: fake)
         let tmux = WorkspaceTmuxSessionSelection(hostID: environment.host.id, name: "tmux-work")
         model.openBorrowedTmuxSession(tmux)
@@ -1042,7 +1035,7 @@ struct WorkspaceBackendTerminalTests {
         let gate = AsyncGate()
         fake.nextValidationGate.withLock { $0 = gate }
         let opening = Task { @MainActor in
-            try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+            try await model.openBackendTerminal(environment.selection(Self.attachedTerminal))
         }
         await waitUntilMainActor { fake.nextValidationGate.withLock { $0 == nil } }
         #expect(store.surface.isKeyboardInteractionSuspended)
@@ -1109,11 +1102,11 @@ struct WorkspaceBackendTerminalTests {
     @Test("a Zellij session takes no input until the terminal replacing it is checked")
     func terminalCheckHoldsZellij() async throws {
         let environment = try environment(
-            terminals: [Self.rexTerminal],
+            terminals: [Self.attachedTerminal],
             zellijSessions: [.init(name: "work")]
         )
         let store = RecordingNativeSessionSurfaceStore()
-        let fake = FakeHost([Self.rexTerminal])
+        let fake = FakeHost([Self.attachedTerminal])
         let model = try makeTerminalModel(
             environment,
             store: store,
@@ -1130,7 +1123,7 @@ struct WorkspaceBackendTerminalTests {
         let gate = AsyncGate()
         fake.nextValidationGate.withLock { $0 = gate }
         let opening = Task { @MainActor in
-            try await model.openBackendTerminal(environment.selection(Self.rexTerminal))
+            try await model.openBackendTerminal(environment.selection(Self.attachedTerminal))
         }
         await waitUntilMainActor { fake.nextValidationGate.withLock { $0 == nil } }
         #expect(store.surface.isKeyboardInteractionSuspended)
@@ -1141,6 +1134,218 @@ struct WorkspaceBackendTerminalTests {
 
         #expect(model.activeBorrowedZellijSelection == zellij)
         #expect(!store.surface.isKeyboardInteractionSuspended)
+        await model.shutdown()
+    }
+
+    // MARK: Rex windows
+
+    /// The `kwt rex control` channels the scene started, newest last.
+    @MainActor
+    final class RexChannels {
+        var started: [(command: String, channel: FakeRexControlChannel)] = []
+        var latest: FakeRexControlChannel? { started.last?.channel }
+    }
+
+    private static let twoPanes = #"""
+    {"split":{"split_id":"split:1","direction":"horizontal","ratio":0.5,
+     "before":{"block_id":"block:a"},"after":{"block_id":"block:b"}}}
+    """#
+
+    /// Opens the Rex window row and delivers a two-pane view.
+    private func openRexWindow(
+        _ model: WorkspaceSceneModel,
+        _ environment: Environment,
+        channels: RexChannels,
+        store: RecordingNativeSessionSurfaceStore
+    ) async throws -> FakeRexControlChannel {
+        try await model.openBackendTerminal(environment.selection(Self.rexWindow))
+        await waitUntilMainActor { channels.latest != nil }
+        let channel = try #require(channels.latest)
+        try channel.deliver(layout: Self.twoPanes, focused: "block:a", window: "window:01aa")
+        await waitUntilMainActor {
+            model.shownRexWindow != nil && store.requestedKeys.count == 2
+        }
+        model.shownRexWindow?.container.frame = CGRect(x: 0, y: 0, width: 1000, height: 600)
+        return channel
+    }
+
+    private func waitForRequest(
+        _ channel: FakeRexControlChannel,
+        count: Int
+    ) async -> (method: String, params: NSDictionary)? {
+        await waitUntilMainActor { channel.requests.count >= count }
+        return channel.requests.last
+    }
+
+    @Test("a Rex window row follows the window with kwt rex control and attaches each pane")
+    func rexWindowOpens() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let model = try makeTerminalModel(environment, store: store, rexChannels: channels)
+
+        _ = try await openRexWindow(model, environment, channels: channels, store: store)
+
+        let command = try #require(channels.started.first?.command)
+        #expect(command.contains("/opt/test/kwt"))
+        #expect(command.contains("control"))
+        #expect(command.contains("window:01aa"))
+        #expect(model.activeBorrowedBackendTerminalConnectionState == .connected)
+        #expect(store.requestedConfigurations.allSatisfy {
+            $0.command?.contains("attach") == true
+        })
+        #expect(store.requestedConfigurations.contains { $0.command?.contains("block:a") == true })
+        #expect(store.requestedConfigurations.contains { $0.command?.contains("block:b") == true })
+        await model.shutdown()
+    }
+
+    @Test("pane shortcuts reach Rex only while a Rex window is shown")
+    func rexWindowShortcuts() async throws {
+        let environment = try environment(terminals: [Self.rexWindow, Self.coreTerminal])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let model = try makeTerminalModel(environment, store: store, rexChannels: channels)
+        #expect(!model.performApplicationShortcut(.focusPaneRight, invocation: .menu))
+        #expect(!model.performApplicationShortcut(.zoomPane, invocation: .menu))
+
+        let channel = try await openRexWindow(model, environment, channels: channels, store: store)
+
+        #expect(model.performApplicationShortcut(.splitRight, invocation: .menu))
+        #expect(await waitForRequest(channel, count: 1)?.method == "session.new_split")
+        #expect(model.performApplicationShortcut(.focusPaneRight, invocation: .menu))
+        let focus = await waitForRequest(channel, count: 2)
+        #expect(focus?.method == "session.focus_block")
+        #expect(focus?.params == ["block_id": "block:b"] as NSDictionary)
+        #expect(!model.performApplicationShortcut(.focusPaneRight, invocation: .menu))
+        #expect(model.performApplicationShortcut(.zoomPane, invocation: .menu))
+        #expect(await waitForRequest(channel, count: 3)?.method == "session.zoom_block")
+
+        try await model.openBackendTerminal(environment.selection(Self.coreTerminal))
+        #expect(channel.isStopped)
+        #expect(!model.performApplicationShortcut(.focusPaneRight, invocation: .menu))
+        await model.shutdown()
+    }
+
+    @Test("a split key reaches Rex only from a Rex pane with keyboard focus")
+    func rexWindowSplitKeyNeedsFocus() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let model = try makeTerminalModel(environment, store: store, rexChannels: channels)
+        let channel = try await openRexWindow(model, environment, channels: channels, store: store)
+
+        // Typing elsewhere, such as in the Console Panel.
+        model.splitActivePane(.right, requiresKeyboardFocus: true)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(channel.requests.isEmpty)
+
+        let index = try #require(store.requestedConfigurations.firstIndex {
+            $0.command?.contains("block:b") == true
+        })
+        let pane = try #require(
+            store.paneSurfaceIfPresent(for: store.requestedKeys[index])
+                as? RecordingNativeSessionPaneSurface
+        )
+        pane.hasEffectiveKeyboardFocus = true
+        model.splitActivePane(.right, requiresKeyboardFocus: true)
+        #expect(await waitForRequest(channel, count: 1)?.method == "session.new_split")
+        await model.shutdown()
+    }
+
+    @Test("Close Pane asks first; closing the view leaves every pane running")
+    func rexWindowClose() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let model = try makeTerminalModel(environment, store: store, rexChannels: channels)
+        let channel = try await openRexWindow(model, environment, channels: channels, store: store)
+
+        #expect(model.performApplicationShortcut(.closePane, invocation: .menu))
+        let request = try #require(model.rexPaneCloseRequest)
+        #expect(request.blockID == "block:a")
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(channel.requests.isEmpty)
+        model.confirmRexPaneClose(request)
+        let close = await waitForRequest(channel, count: 1)
+        #expect(close?.method == "block.close")
+        #expect(close?.params == ["block_id": "block:a"] as NSDictionary)
+
+        model.closeBackendTerminal(environment.selection(Self.rexWindow))
+        #expect(channel.isStopped)
+        model.confirmRexPaneClose(request)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(channel.requests.count == 1)
+        #expect(store.removedKeys.count == 2)
+        await model.shutdown()
+    }
+
+    @Test("a Rex window's panes take no input while another session is checked")
+    func rexWindowHeldDuringCheck() async throws {
+        let environment = try environment(terminals: [Self.rexWindow, Self.coreTerminal])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let fake = FakeHost([Self.rexWindow, Self.coreTerminal])
+        let model = try makeTerminalModel(
+            environment, store: store, fake: fake, rexChannels: channels
+        )
+        _ = try await openRexWindow(model, environment, channels: channels, store: store)
+        let panes = store.requestedKeys.compactMap {
+            store.paneSurfaceIfPresent(for: $0) as? RecordingNativeSessionPaneSurface
+        }
+        #expect(panes.count == 2)
+
+        let gate = AsyncGate()
+        fake.nextValidationGate.withLock { $0 = gate }
+        let opening = Task { @MainActor in
+            try await model.openBackendTerminal(environment.selection(Self.coreTerminal))
+        }
+        await waitUntilMainActor { fake.nextValidationGate.withLock { $0 == nil } }
+        #expect(panes.allSatisfy { $0.isKeyboardInteractionSuspended })
+
+        // The terminal ended, so the open fails and the Rex window stays.
+        fake.terminals.withLock { $0 = [Self.rexWindow] }
+        gate.open()
+        await #expect(throws: (any Error).self) { try await opening.value }
+        #expect(model.shownRexWindow != nil)
+        #expect(panes.allSatisfy { !$0.isKeyboardInteractionSuspended })
+        await model.shutdown()
+    }
+
+    @Test("a Rex window reconnects when SSH drops while Ghosthub finds kwt")
+    func rexWindowDroppedLookupReconnects() async throws {
+        let environment = try environment(terminals: [Self.rexWindow], remote: true)
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let fake = FakeHost([Self.rexWindow])
+        fake.executableFailures.withLock {
+            $0 = [.commandFailed(
+                .rex, status: 255,
+                stderr: "ssh: connect to host builder port 22: Connection refused"
+            )]
+        }
+        let model = try makeTerminalModel(
+            environment, store: store, fake: fake, rexChannels: channels
+        )
+
+        try await model.openBackendTerminal(environment.selection(Self.rexWindow))
+
+        await waitUntilMainActor { channels.latest != nil }
+        #expect(channels.started.count == 1)
+        await model.shutdown()
+    }
+
+    @Test("a Rex window whose session ends closes")
+    func rexWindowEnds() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let model = try makeTerminalModel(environment, store: store, rexChannels: channels)
+        let channel = try await openRexWindow(model, environment, channels: channels, store: store)
+
+        channel.onExit?(.ended)
+
+        #expect(model.activeBackendTerminalSelection == nil)
+        #expect(store.removedKeys.count == 2)
         await model.shutdown()
     }
 }

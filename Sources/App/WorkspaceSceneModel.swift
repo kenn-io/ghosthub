@@ -425,6 +425,19 @@ final class WorkspaceSceneModel: ObservableObject {
     @Published private(set) var activeBackendTerminalRecoveryState:
         NativeSessionRecoveryState?
     private var activeBackendTerminalHandle: BorrowedBackendTerminalHandle?
+    /// The Rex window on screen. `activeBackendTerminalHandle` stands for the
+    /// whole window, and its connection state is the window's
+    /// `kwt rex control` channel.
+    private var activeRexWindow: RexWindowPresentation?
+    private var rexWindowLaunchTask: Task<Void, Never>?
+    /// A Rex pane the user asked to close, waiting for confirmation.
+    @Published var rexPaneCloseRequest: RexPaneCloseRequest?
+    private let rexControlChannelFactory: RexControlChannelFactory
+    private var backendTerminalExecutableProvider:
+        NativeBackendTerminalCoordinator.ExecutableProvider = { _, _, _ in
+            .failure(.unavailable(.rex))
+        }
+    private var backendTerminalSurfaceStore: (any NativeSessionSurfaceStoring)?
     var activeTerminalFindSurface:
         (any NativeSessionPaneSurfacing)? {
         let entries = terminalCoordinator.surfaceEntries()
@@ -794,7 +807,7 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     var canSplitActivePane: Bool {
-        canSplitActiveTmuxPane || canSplitActiveHerdrPane
+        canSplitActiveTmuxPane || canSplitActiveHerdrPane || shownRexWindow != nil
     }
 
     func splitActivePane(
@@ -814,6 +827,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 handle: handle,
                 requiresKeyboardFocus: requiresKeyboardFocus
             )
+        } else if let window = shownRexWindow,
+                  !requiresKeyboardFocus || window.hasKeyboardFocus {
+            window.split(shortcut)
         }
     }
 
@@ -1225,6 +1241,9 @@ final class WorkspaceSceneModel: ObservableObject {
         nativeBackendTerminalSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
         nativeBackendTerminalExecutableProvider:
         NativeBackendTerminalCoordinator.ExecutableProvider? = nil,
+        rexControlChannelFactory: @escaping RexControlChannelFactory = {
+            try RexControlChannel.started(command: $0)
+        },
         nativeTmuxPathProvider:
         (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
         nativeHerdrPathProvider: (@Sendable (CommandHost)
@@ -1692,6 +1711,7 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijSSHConnectionSnapshotProvider
         self.presentationSSHConnectionProvider =
             presentationSSHConnectionProvider
+        self.rexControlChannelFactory = rexControlChannelFactory
         self.presentationSSHAcquisitionCoordinator =
             presentationSSHAcquisitionCoordinator
         self.presentationSSHEnvironment = presentationSSHEnvironment
@@ -1924,15 +1944,17 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             }
         )
+        backendTerminalExecutableProvider = nativeBackendTerminalExecutableProvider
+            ?? { kind, host, arguments in
+                BackendTerminalInventoryClient().resolveExecutable(
+                    kind, on: host, sshConnectionArguments: arguments
+                )
+            }
+        backendTerminalSurfaceStore = nativeBackendTerminalSurfaceStore ?? terminalCoordinator
         nativeBackendTerminalCoordinatorBacking = NativeBackendTerminalCoordinator(
             terminalCoordinator: nativeBackendTerminalSurfaceStore
                 ?? terminalCoordinator,
-            executableProvider: nativeBackendTerminalExecutableProvider
-                ?? { kind, host, arguments in
-                    BackendTerminalInventoryClient().resolveExecutable(
-                        kind, on: host, sshConnectionArguments: arguments
-                    )
-                },
+            executableProvider: backendTerminalExecutableProvider,
             remoteConnectionProvider: { [weak self] hostID, info in
                 guard let self else { throw CancellationError() }
                 return try await acquirePresentationSSHConnection(
@@ -2840,6 +2862,11 @@ final class WorkspaceSceneModel: ObservableObject {
         backendTerminalReconnectSupervisor.cancel()
         activeBackendTerminalSelection = nil
         activeBackendTerminalHandle = nil
+        rexWindowLaunchTask?.cancel()
+        rexWindowLaunchTask = nil
+        let rexWindow = activeRexWindow
+        activeRexWindow = nil
+        await rexWindow?.shutdown()
         await withTaskGroup(of: Void.self) { group in
             if let coordinator = nativeTmuxSessionCoordinatorBacking {
                 group.addTask { await coordinator.shutdown() }
@@ -6693,6 +6720,7 @@ final class WorkspaceSceneModel: ObservableObject {
         if let active = activeBackendTerminalSelection,
            hostIDs.contains(active.hostID) {
             backendTerminalReconnectSupervisor.cancel()
+            stopRexWindow()
             activeBackendTerminalSelection = nil
             activeBackendTerminalHandle = nil
             activeBackendTerminalRouteIdentity = nil
@@ -15522,13 +15550,11 @@ extension WorkspaceSceneModel {
         }
         if activeBackendTerminalSelection == selection,
            let handle = activeBackendTerminalHandle,
-           nativeBackendTerminalCoordinator.attachmentClosure(handle) == nil {
+           !isBackendTerminalClosed(handle) {
             // Reselected while another open was checking: take input again.
             backendTerminalPresentationValidationID = nil
-            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
-                false, handle: handle
-            )
-            nativeBackendTerminalCoordinator.requestKeyboardFocus(handle: handle)
+            setBackendTerminalKeyboardSuspended(false, handle: handle)
+            requestBackendTerminalKeyboardFocus(handle)
             releaseSessionsAfterSessionCheck()
             return
         }
@@ -15682,7 +15708,7 @@ extension WorkspaceSceneModel {
         guard !isShutDown else { return }
         if activeBackendTerminalSelection == selection,
            let handle = activeBackendTerminalHandle,
-           nativeBackendTerminalCoordinator.attachmentClosure(handle) == nil {
+           !isBackendTerminalClosed(handle) {
             return
         }
         if let activeTmux = activeBorrowedTmuxSelection {
@@ -15697,15 +15723,16 @@ extension WorkspaceSceneModel {
         if let active = activeBackendTerminalSelection, active != selection {
             closeBackendTerminal(active)
         }
-        if let handle = activeBackendTerminalHandle,
-           nativeBackendTerminalCoordinator.attachmentClosure(handle) != nil {
+        if let handle = activeBackendTerminalHandle, isBackendTerminalClosed(handle) {
             // Reattaching replaces the closed client with a fresh one.
-            nativeBackendTerminalCoordinator.detach(selection)
+            detachBackendTerminal(selection)
             backendTerminalConnectionStates.removeValue(forKey: handle.id)
         }
-        let handle = nativeBackendTerminalCoordinator.attach(
-            selection, host: host, validated: validated
-        )
+        let handle = selection.kind == .rex
+            ? openRexWindow(selection, host: host, validated: validated)
+            : nativeBackendTerminalCoordinator.attach(
+                selection, host: host, validated: validated
+            )
         activeBackendTerminalSelection = selection
         activeBackendTerminalHandle = handle
         activeBackendTerminalRouteIdentity = validated.routeIdentity
@@ -15724,7 +15751,7 @@ extension WorkspaceSceneModel {
         activeBackendTerminalHandle = nil
         activeBackendTerminalRouteIdentity = nil
         clearBackendTerminalRecovery()
-        nativeBackendTerminalCoordinator.detach(selection)
+        detachBackendTerminal(selection)
     }
 
     /// Cmd-W cancels every open still checking its target, whatever its
@@ -15786,9 +15813,7 @@ extension WorkspaceSceneModel {
         }
         if let handle = activeBackendTerminalHandle {
             sessionCheckHold.backendTerminals.append(handle)
-            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
-                true, handle: handle
-            )
+            setBackendTerminalKeyboardSuspended(true, handle: handle)
         }
         workspaceWindow?.makeFirstResponder(nil)
     }
@@ -15810,9 +15835,7 @@ extension WorkspaceSceneModel {
             nativeZellijSessionCoordinator.setKeyboardInteractionSuspended(false, handle: handle)
         }
         for handle in hold.backendTerminals {
-            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
-                false, handle: handle
-            )
+            setBackendTerminalKeyboardSuspended(false, handle: handle)
         }
         if hold.navigationRevision == userNavigationRevision,
            let window = workspaceWindow, window.firstResponder === window {
@@ -15824,7 +15847,7 @@ extension WorkspaceSceneModel {
                 nativeZellijSessionCoordinator.requestKeyboardFocus(handle: handle)
             } else if let handle = activeBackendTerminalHandle,
                       hold.backendTerminals.contains(handle) {
-                nativeBackendTerminalCoordinator.requestKeyboardFocus(handle: handle)
+                requestBackendTerminalKeyboardFocus(handle)
             }
         }
         resumePausedBackendTerminalReconnect()
@@ -16018,14 +16041,245 @@ extension WorkspaceSceneModel {
               let host = snapshot.host(id: handle.hostID)
               .flatMap(CommandHostResolver.resolve)
         else { return }
-        switch nativeBackendTerminalCoordinator.attachmentClosure(handle) {
-        case .retryableTransportFailure, .surfaceUnavailable:
+        if nativeBackendTerminalCoordinator.reconnectsAutomatically(handle) {
             startBackendTerminalReconnect(selection, host: host, afterDelay: true)
-        case let .processExited(code) where code == 255 && host.isRemote:
-            startBackendTerminalReconnect(selection, host: host, afterDelay: true)
-        case .detached, .processExited, .launchFailed, nil:
-            break
         }
+    }
+
+    // MARK: Rex windows
+
+    /// The Rex window on screen with its layout, if any.
+    var shownRexWindow: RexWindowPresentation? {
+        guard let window = activeRexWindow, !window.isStopped, window.tree != nil,
+              activeBackendTerminalHandle?.selection == window.selection
+        else { return nil }
+        return window
+    }
+
+    /// Moves focus between the shown Rex window's panes. False when no Rex
+    /// window is shown or no pane lies that way, so the key reaches the
+    /// terminal.
+    func moveRexPaneFocus(_ move: TerminalSplitFocusMove) -> Bool {
+        shownRexWindow?.moveFocus(move) == true
+    }
+
+    func toggleRexPaneZoom() -> Bool {
+        guard let window = shownRexWindow else { return false }
+        window.toggleZoom()
+        return true
+    }
+
+    /// Asks to close the shown Rex window's focused pane.
+    func requestRexPaneClose() -> Bool {
+        guard let window = shownRexWindow, let blockID = window.focusedPaneID else {
+            return false
+        }
+        window.onCloseRequested?(blockID)
+        return true
+    }
+
+    func confirmRexPaneClose(_ request: RexPaneCloseRequest) {
+        if rexPaneCloseRequest == request {
+            rexPaneCloseRequest = nil
+        }
+        guard activeBackendTerminalHandle?.id == request.windowHandleID else { return }
+        activeRexWindow?.closePane(request.blockID)
+    }
+
+    /// Whether the terminal's attach client, or a Rex window's control
+    /// channel, has closed, so presenting it again starts a new one.
+    private func isBackendTerminalClosed(_ handle: BorrowedBackendTerminalHandle) -> Bool {
+        guard handle.selection.kind == .rex else {
+            return nativeBackendTerminalCoordinator.attachmentClosure(handle) != nil
+        }
+        guard activeBackendTerminalHandle == handle else { return true }
+        if rexWindowLaunchTask != nil {
+            return false
+        }
+        return activeRexWindow?.isStopped ?? true
+    }
+
+    private func detachBackendTerminal(_ selection: WorkspaceBackendTerminalSelection) {
+        if selection.kind == .rex {
+            stopRexWindow()
+        } else {
+            nativeBackendTerminalCoordinator.detach(selection)
+        }
+    }
+
+    private func setBackendTerminalKeyboardSuspended(
+        _ suspended: Bool,
+        handle: BorrowedBackendTerminalHandle
+    ) {
+        if handle.selection.kind == .rex {
+            if activeBackendTerminalHandle == handle {
+                activeRexWindow?.setKeyboardInteractionSuspended(suspended)
+            }
+        } else {
+            nativeBackendTerminalCoordinator.setKeyboardInteractionSuspended(
+                suspended, handle: handle
+            )
+        }
+    }
+
+    private func requestBackendTerminalKeyboardFocus(_ handle: BorrowedBackendTerminalHandle) {
+        if handle.selection.kind == .rex {
+            if activeBackendTerminalHandle == handle {
+                activeRexWindow?.requestKeyboardFocus()
+            }
+        } else {
+            nativeBackendTerminalCoordinator.requestKeyboardFocus(handle: handle)
+        }
+    }
+
+    private func stopRexWindow() {
+        rexWindowLaunchTask?.cancel()
+        rexWindowLaunchTask = nil
+        activeRexWindow?.stop()
+        activeRexWindow = nil
+        rexPaneCloseRequest = nil
+    }
+
+    /// Starts showing a Rex window. The returned handle stands for the
+    /// window; its state follows the window's control channel.
+    private func openRexWindow(
+        _ selection: WorkspaceBackendTerminalSelection,
+        host: CommandHost,
+        validated: SSHConnectionArgumentsSnapshot
+    ) -> BorrowedBackendTerminalHandle {
+        stopRexWindow()
+        let handle = BorrowedBackendTerminalHandle(
+            id: UUID(), selection: selection, surfaceID: UUID()
+        )
+        rexWindowLaunchTask = Task { [weak self] in
+            await self?.launchRexWindow(handle, host: host, validated: validated)
+        }
+        return handle
+    }
+
+    private func launchRexWindow(
+        _ handle: BorrowedBackendTerminalHandle,
+        host: CommandHost,
+        validated: SSHConnectionArgumentsSnapshot
+    ) async {
+        var sshConnection: KwtSSHConnection?
+        do {
+            var arguments: [String] = []
+            if case let .ssh(info) = host {
+                let connection = try await acquirePresentationSSHConnection(
+                    hostID: handle.hostID, info: info
+                )
+                sshConnection = connection
+                arguments = try await connection.snapshot(validating: validated).arguments
+            }
+            let provider = backendTerminalExecutableProvider
+            let path = try await BlockingTask.run(priority: .userInitiated) { [arguments] in
+                provider(.rex, host, arguments)
+            }.get()
+            try await sshConnection?.activateSessionReservation()
+            try Task.checkCancellation()
+            guard !isShutDown, activeBackendTerminalHandle == handle else {
+                throw CancellationError()
+            }
+            let command = try BackendTerminalAttachmentInfo(
+                terminal: BackendTerminalSummary(kind: .rex, address: handle.selection.address),
+                host: host
+            ).controlCommand(executablePath: path, sshConnectionArguments: arguments)
+            let presentation = try RexWindowPresentation(
+                selection: handle.selection,
+                host: host,
+                validated: validated,
+                channel: rexControlChannelFactory(command),
+                coordinator: makeRexPaneCoordinator(),
+                sshConnection: sshConnection
+            )
+            sshConnection = nil
+            observeRexWindow(presentation, handle: handle, host: host)
+            activeRexWindow = presentation
+            rexWindowLaunchTask = nil
+            if sessionCheckHold.backendTerminals.contains(handle) {
+                presentation.setKeyboardInteractionSuspended(true)
+            }
+        } catch {
+            let commandError = error as? BackendTerminalCommandError
+            if commandError?.leftConnectionUnusable == true {
+                await sshConnection?.invalidate()
+            }
+            try? await sshConnection?.release()
+            guard !(error is CancellationError), activeBackendTerminalHandle == handle else {
+                return
+            }
+            rexWindowLaunchTask = nil
+            rexWindowFailed(
+                handle,
+                host: host,
+                reason: error.localizedDescription,
+                retryable: SSHConnectionFailure.retryableTransportFailure(error) != nil
+                    || host.isRemote && commandError?.isDroppedConnection == true
+            )
+        }
+    }
+
+    private func observeRexWindow(
+        _ presentation: RexWindowPresentation,
+        handle: BorrowedBackendTerminalHandle,
+        host: CommandHost
+    ) {
+        presentation.onChange = { [weak self] in
+            guard let self, activeBackendTerminalHandle == handle,
+                  backendTerminalConnectionStates[handle.id] != .connected
+            else { return }
+            backendTerminalConnectionStates[handle.id] = .connected
+            clearBackendTerminalRecovery()
+        }
+        presentation.onWindowClosed = { [weak self] in
+            guard let self, activeBackendTerminalHandle == handle else { return }
+            closeBackendTerminal(handle.selection)
+            backendTerminalFreshHostIDs.remove(handle.hostID)
+            scheduleBackendTerminalDiscovery(rerunAfterCurrent: true)
+        }
+        presentation.onChannelFailed = { [weak self] message in
+            guard let self, activeBackendTerminalHandle == handle else { return }
+            rexWindowFailed(handle, host: host, reason: message, retryable: host.isRemote)
+        }
+        presentation.onCloseRequested = { [weak self, weak presentation] blockID in
+            guard let self, let presentation, activeBackendTerminalHandle == handle else {
+                return
+            }
+            rexPaneCloseRequest = RexPaneCloseRequest(
+                windowHandleID: handle.id,
+                blockID: blockID,
+                title: presentation.title(ofPane: blockID)
+            )
+        }
+    }
+
+    /// A lost SSH connection reconnects by itself; any other failure waits
+    /// for Retry.
+    private func rexWindowFailed(
+        _ handle: BorrowedBackendTerminalHandle,
+        host: CommandHost,
+        reason: String,
+        retryable: Bool
+    ) {
+        backendTerminalConnectionStates[handle.id] = .disconnected(reason: reason)
+        if retryable {
+            startBackendTerminalReconnect(handle.selection, host: host, afterDelay: true)
+        }
+    }
+
+    private func makeRexPaneCoordinator() -> NativeBackendTerminalCoordinator {
+        NativeBackendTerminalCoordinator(
+            terminalCoordinator: backendTerminalSurfaceStore ?? terminalCoordinator,
+            executableProvider: backendTerminalExecutableProvider,
+            remoteConnectionProvider: { [weak self] hostID, info in
+                guard let self else { throw CancellationError() }
+                return try await acquirePresentationSSHConnection(
+                    hostID: hostID,
+                    info: info
+                )
+            }
+        )
     }
 
     func borrowedBackendTerminalView(
@@ -16051,37 +16305,57 @@ extension WorkspaceSceneModel {
         else { return nil }
         let title = host.backendTerminals.first { $0.matches(terminal) }?.title
             ?? terminal.address
-        return AnyView(
-            BorrowedSessionView(
-                sessionName: title,
-                disconnectedMessage: "The terminal disconnected.",
-                hostName: host.name,
-                isRemoteHost: host.kind == .remote,
-                connectionState: backendTerminalConnectionStates[handle.id],
-                recoveryState: activeBackendTerminalRecoveryState,
-                attachmentClosure:
-                nativeBackendTerminalCoordinator.attachmentClosure(handle),
-                defersTerminalResize: defersTerminalResize,
-                surface: { [weak self] in
-                    self?.nativeBackendTerminalCoordinator.surface(handle: handle)
-                },
-                onCloseRequest: { [weak self] in
-                    guard let self else { return }
-                    NotificationCenter.default.post(
-                        name: .ghosthubCloseTab,
-                        object: self
-                    )
-                },
-                onRetryRequest: { [weak self] in
-                    self?.reconnectBackendTerminal(terminal)
-                },
-                onReconnectNow: onReconnectNow,
-                onReviewConnection: onReviewConnection,
-                onHostSettingsRequest: { [weak self] in
-                    SettingsStore.shared.selectedDomain = .hosts
-                    self?.isSettingsPresented = true
-                }
-            )
+        let session = BorrowedSessionView(
+            sessionName: title,
+            disconnectedMessage: "The terminal disconnected.",
+            hostName: host.name,
+            isRemoteHost: host.kind == .remote,
+            connectionState: backendTerminalConnectionStates[handle.id],
+            recoveryState: activeBackendTerminalRecoveryState,
+            attachmentClosure:
+            nativeBackendTerminalCoordinator.attachmentClosure(handle),
+            defersTerminalResize: defersTerminalResize,
+            surface: { [weak self] in
+                self?.nativeBackendTerminalCoordinator.surface(handle: handle)
+            },
+            onCloseRequest: { [weak self] in
+                guard let self else { return }
+                NotificationCenter.default.post(
+                    name: .ghosthubCloseTab,
+                    object: self
+                )
+            },
+            onRetryRequest: { [weak self] in
+                self?.reconnectBackendTerminal(terminal)
+            },
+            onReconnectNow: onReconnectNow,
+            onReviewConnection: onReviewConnection,
+            onHostSettingsRequest: { [weak self] in
+                SettingsStore.shared.selectedDomain = .hosts
+                self?.isSettingsPresented = true
+            }
         )
+        guard terminal.kind == .rex else { return AnyView(session) }
+        let window = backendTerminalConnectionStates[handle.id] == .connected
+            ? shownRexWindow : nil
+        return AnyView(RexWindowContentView(
+            container: window?.container,
+            fallback: session,
+            defersTerminalResize: defersTerminalResize,
+            closeRequest: Binding(
+                get: { [weak self] in self?.rexPaneCloseRequest },
+                set: { [weak self] in self?.rexPaneCloseRequest = $0 }
+            ),
+            onConfirmClose: { [weak self] request in self?.confirmRexPaneClose(request) }
+        ))
     }
+}
+
+/// A Rex pane the user asked to close. Closing ends the pane's program, so
+/// it waits for confirmation.
+struct RexPaneCloseRequest: Identifiable, Equatable {
+    let id = UUID()
+    let windowHandleID: UUID
+    let blockID: String
+    let title: String
 }

@@ -56,6 +56,41 @@ public struct BackendTerminalAttachmentInfo: Equatable, Sendable {
         }
     }
 
+    /// Runs `kwt rex control WINDOW_ID` on the host, for `/bin/sh -c`.
+    /// The terminal's address is the Rex window ID. Its standard input and
+    /// output carry JSON lines, so SSH gets no terminal. Its output starts
+    /// with `RexInventory.controlMarker`, after anything login files print.
+    public func controlCommand(
+        executablePath: String,
+        sshConnectionArguments: [String] = []
+    ) throws -> String {
+        guard terminal.kind == .rex, RexInventory.isWindowID(terminal.address) else {
+            throw BackendTerminalCommandError.invalidAddress(
+                terminal.kind, address: terminal.address
+            )
+        }
+        let control = shellCommand([
+            "/bin/sh", "-c",
+            "printf '%s\\n' '\(RexInventory.controlMarker)'; exec "
+                + [executablePath, "rex", "control", terminal.address]
+                .map(shellQuotedCommandArgument).joined(separator: " "),
+        ])
+        switch host {
+        case .local:
+            return surfaceAccountLoginShellCommand(control)
+        case let .ssh(info):
+            guard info.platform == .posix else {
+                throw BackendTerminalCommandError.unsupportedPlatform(terminal.kind)
+            }
+            return surfaceAccountLoginShellCommand(shellCommand(sshArguments(
+                info: info,
+                terminal: false,
+                remoteCommand: accountLoginShellCommand(control),
+                sshConnectionArguments: sshConnectionArguments
+            )))
+        }
+    }
+
     private func localAttachCommand(executablePath: String) throws -> String {
         let arguments: [String]
         let prefix: String
@@ -79,11 +114,12 @@ public struct BackendTerminalAttachmentInfo: Equatable, Sendable {
 
     private func sshArguments(
         info: SSHHostInfo,
+        terminal: Bool = true,
         remoteCommand: String,
         sshConnectionArguments: [String]
     ) -> [String] {
         var arguments = [
-            "/usr/bin/ssh", "-tt",
+            "/usr/bin/ssh", terminal ? "-tt" : "-T",
             "-o", "BatchMode=yes",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",

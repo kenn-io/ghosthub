@@ -17,6 +17,15 @@ protocol NativeSessionPaneSurfacing: AnyObject {
     var hasEffectiveKeyboardFocus: Bool { get }
     /// Keeps the surface on screen but stops it taking keystrokes or focus.
     var isKeyboardInteractionSuspended: Bool { get set }
+    /// Stops the surface taking keyboard focus by itself when it appears or
+    /// its window becomes key. A request still focuses it.
+    var suppressAutoFocus: Bool { get set }
+    /// Tells the terminal whether it has focus, which sets how its cursor
+    /// draws and whether the program gets a focus report.
+    func focusDidChange(_ focused: Bool)
+    /// Gives up keyboard focus if the surface holds it, so typing does not
+    /// reach it, and draws it unfocused.
+    func resignKeyboardFocus()
     var launchError: Error? { get }
     /// True when `launchError` describes a transient condition that a later
     /// attach can recover from, rather than a rejected launch.
@@ -62,6 +71,15 @@ extension NativeSessionPaneSurfacing {
         set {}
     }
 
+    var suppressAutoFocus: Bool {
+        get { false }
+        set {}
+    }
+
+    func focusDidChange(_: Bool) {}
+
+    func resignKeyboardFocus() {}
+
     var launchFailureIsRetryable: Bool { false }
 
     func requestKeyboardFocus() {}
@@ -81,6 +99,13 @@ extension NativeSessionPaneSurfacing {
 
 extension TerminalSurfaceView: NativeSessionPaneSurfacing {
     var launchError: Error? { error }
+
+    func resignKeyboardFocus() {
+        if let window, window.firstResponder === self {
+            window.makeFirstResponder(nil)
+        }
+        focusDidChange(false)
+    }
 
     func registerSurfaceCloseObserver(
         id: UUID,

@@ -136,6 +136,22 @@ extension WorkspaceSceneModel {
                 requiresKeyboardFocus: invocation == .keyEvent
             )
             return true
+        case .focusPaneLeft:
+            return moveRexPaneFocus(.left)
+        case .focusPaneRight:
+            return moveRexPaneFocus(.right)
+        case .focusPaneUp:
+            return moveRexPaneFocus(.up)
+        case .focusPaneDown:
+            return moveRexPaneFocus(.down)
+        case .focusNextPane:
+            return moveRexPaneFocus(.next)
+        case .focusPreviousPane:
+            return moveRexPaneFocus(.previous)
+        case .zoomPane:
+            return toggleRexPaneZoom()
+        case .closePane:
+            return requestRexPaneClose()
         case .reloadConfiguration:
             reloadTerminalConfig()
             return true
@@ -263,6 +279,9 @@ extension WorkspaceSceneModel {
         var actions = availableSiblingShortcuts
         if canSplitActivePane {
             actions.formUnion([.splitRight, .splitDown])
+        }
+        if shownRexWindow != nil {
+            actions.formUnion([.zoomPane, .closePane])
         }
         if let controller = activeTerminalFindController,
            controller.isAvailable {

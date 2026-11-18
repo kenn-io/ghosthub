@@ -1,0 +1,460 @@
+import AppKit
+import Foundation
+import GhosthubBackendTerminal
+import GhosthubTerminal
+import GhosthubTerminalSupport
+import GhosthubTransport
+import GhosthubWorkspace
+
+/// Shows one Rex window: follows its layout through `kwt rex control`,
+/// attaches each pane with `kwt rex attach`, and sends the user's layout
+/// changes to Rex. Rex owns the layout; a change shows once Rex reports it.
+@MainActor
+final class RexWindowPresentation {
+    /// The window. Its address is the Rex window ID.
+    let selection: WorkspaceBackendTerminalSelection
+    let container: TerminalSplitContainerView
+    private(set) var tree: TerminalSplitTree?
+    private(set) var paneHandles: [String: BorrowedBackendTerminalHandle] = [:]
+    private(set) var isStopped = false
+
+    /// The window or its session is gone.
+    var onWindowClosed: (() -> Void)?
+    /// kwt rex control stopped without the session ending.
+    var onChannelFailed: ((String) -> Void)?
+    /// The user asked to close a pane. The caller confirms, then calls
+    /// `closePane`.
+    var onCloseRequested: ((String) -> Void)?
+    /// The panes, names, or focus changed.
+    var onChange: (() -> Void)?
+
+    private let host: CommandHost
+    private let validated: SSHConnectionArgumentsSnapshot
+    private let channel: any RexControlChannelling
+    private let coordinator: NativeBackendTerminalCoordinator
+    /// The SSH session that carries `kwt rex control`, if the host is remote.
+    private let sshConnection: KwtSSHConnection?
+    private var sessionID: String?
+    private var paneNames: [String: String] = [:]
+    private var paneStates: [String: ConnectionState] = [:]
+    private var paneContents: [String: TerminalSurfaceView] = [:]
+    private var keyboardSuspended = false
+    /// The pane the user last chose, until Rex shows the session at or
+    /// after the revision its focus request produced. Views and replies
+    /// arrive in no fixed order, so an older view must not move keyboard
+    /// focus back to an earlier choice. kwt sends requests to Rex in order,
+    /// so a view that includes the latest one includes them all.
+    private var requestedFocus: String?
+    private var focusRequestCount = 0
+    private var requestedFocusRevision: Int?
+    /// The revision of the last view from Rex.
+    private var viewRevision: Int?
+    /// Panes waiting to attach again after a lost connection.
+    private var reconnectTasks: [String: Task<Void, Never>] = [:]
+    private var reconnectAttempts: [String: Int] = [:]
+    private let reconnectDelay: (Int) -> Duration
+
+    init(
+        selection: WorkspaceBackendTerminalSelection,
+        host: CommandHost,
+        validated: SSHConnectionArgumentsSnapshot,
+        channel: any RexControlChannelling,
+        coordinator: NativeBackendTerminalCoordinator,
+        sshConnection: KwtSSHConnection? = nil,
+        container: TerminalSplitContainerView = TerminalSplitContainerView(),
+        reconnectDelay: @escaping (Int) -> Duration = { .seconds(min(30, 1 << min($0, 5))) }
+    ) {
+        self.selection = selection
+        self.host = host
+        self.validated = validated
+        self.channel = channel
+        self.coordinator = coordinator
+        self.sshConnection = sshConnection
+        self.container = container
+        self.reconnectDelay = reconnectDelay
+        channel.onView = { [weak self] view in self?.show(view) }
+        channel.onExit = { [weak self] exit in self?.channelExited(exit) }
+        coordinator.onStateChanged = { [weak self] handle, state in
+            self?.paneStateChanged(handle, state)
+        }
+        coordinator.onSurfaceReady = { [weak self] handle in
+            self?.paneReady(handle)
+        }
+        container.onResizeCommitted = { [weak self] divider, ratio in
+            self?.resize(divider, to: ratio)
+        }
+        container.onPaneClicked = { [weak self] blockID in
+            self?.paneFocused(blockID)
+        }
+        container.onHeaderAction = { [weak self] blockID, action in
+            self?.headerAction(action, blockID: blockID)
+        }
+        container.onPaneReconnect = { [weak self] blockID in
+            self?.reconnectPane(blockID)
+        }
+    }
+
+    /// The pane that has, or is about to get, focus: the user's latest
+    /// choice, else the one Rex reports.
+    var focusedPaneID: String? { requestedFocus ?? tree?.focusedPaneID }
+
+    /// The tree as shown, with the user's latest focus choice.
+    private var shownTree: TerminalSplitTree? {
+        guard var tree else { return nil }
+        tree.focusedPaneID = focusedPaneID
+        return tree
+    }
+
+    /// True when one of this window's panes takes the keystrokes.
+    var hasKeyboardFocus: Bool {
+        paneHandles.values.contains { coordinator.hasKeyboardFocus(handle: $0) }
+    }
+
+    func title(ofPane blockID: String) -> String {
+        paneNames[blockID] ?? blockID
+    }
+
+    // MARK: Requests
+
+    /// Splits the focused pane, as ⌘D and ⇧⌘D do in Rex.app.
+    func split(_ direction: TerminalPaneSplitShortcut, from blockID: String? = nil) {
+        guard let anchor = blockID ?? focusedPaneID else { return }
+        request("session.new_split", [
+            "anchor_id": anchor,
+            "direction": direction == .right ? "horizontal" : "vertical",
+            "side": "after",
+            "focus": true,
+            "layout": ["block": ["flavor": "com.superlogical.terminal.shell"]],
+        ])
+    }
+
+    /// Moves focus within this window. Rex's own focus moves act on the
+    /// session's active window, which may be another one, so the target
+    /// comes from this window's layout.
+    @discardableResult
+    func moveFocus(_ move: TerminalSplitFocusMove) -> Bool {
+        guard let tree = shownTree,
+              let target = TerminalSplitLayout.pane(
+                  move, from: tree, in: container.bounds, metrics: container.metrics
+              )
+        else { return false }
+        paneFocused(target)
+        return true
+    }
+
+    func toggleZoom(_ blockID: String? = nil) {
+        guard let block = blockID ?? focusedPaneID else { return }
+        request("session.zoom_block", ["block_id": block])
+    }
+
+    /// Ends the pane's program. The caller has confirmed.
+    func closePane(_ blockID: String) {
+        request("block.close", ["block_id": blockID])
+    }
+
+    /// A pane took keyboard focus or its header was clicked.
+    func paneFocused(_ blockID: String) {
+        guard paneHandles[blockID] != nil else { return }
+        guard blockID != focusedPaneID else {
+            // Already chosen, but another control may hold the keyboard.
+            requestKeyboardFocus()
+            return
+        }
+        requestedFocus = blockID
+        requestedFocusRevision = nil
+        focusRequestCount += 1
+        let serial = focusRequestCount
+        render()
+        requestKeyboardFocus()
+        request(
+            "session.focus_block", ["block_id": blockID],
+            onFailure: { [weak self] in
+                guard let self, focusRequestCount == serial else { return }
+                updateFocus { $0.requestedFocus = nil }
+            },
+            onSuccess: { [weak self] revision in
+                guard let self, focusRequestCount == serial else { return }
+                // Rex always reports one; without it, Rex's focus is current.
+                updateFocus {
+                    $0.requestedFocusRevision = revision ?? 0
+                    $0.settleRequestedFocus()
+                }
+            }
+        )
+    }
+
+    private func updateFocus(_ change: (RexWindowPresentation) -> Void) {
+        let previousFocus = focusedPaneID
+        change(self)
+        if focusedPaneID != previousFocus {
+            render()
+            requestKeyboardFocus()
+        }
+    }
+
+    /// Hands focus back to Rex once its view includes the latest request.
+    private func settleRequestedFocus() {
+        guard let revision = requestedFocusRevision, let viewRevision,
+              viewRevision >= revision
+        else { return }
+        requestedFocus = nil
+        requestedFocusRevision = nil
+    }
+
+    /// Keeps the panes on screen but stops them taking keystrokes, such as
+    /// while Ghosthub checks a session that may replace this window.
+    func setKeyboardInteractionSuspended(_ suspended: Bool) {
+        keyboardSuspended = suspended
+        for handle in paneHandles.values {
+            coordinator.setKeyboardInteractionSuspended(suspended, handle: handle)
+        }
+    }
+
+    func requestKeyboardFocus() {
+        guard !keyboardSuspended, let focused = focusedPaneID,
+              let handle = paneHandles[focused]
+        else { return }
+        coordinator.requestKeyboardFocus(handle: handle)
+    }
+
+    /// Closes the view. The panes keep running in Rex.
+    func stop() {
+        guard !isStopped else { return }
+        isStopped = true
+        channel.stop()
+        reconnectTasks.values.forEach { $0.cancel() }
+        reconnectTasks.removeAll()
+        for handle in paneHandles.values {
+            coordinator.detach(handle.selection)
+        }
+        paneHandles.removeAll()
+        paneContents.removeAll()
+        // The cards hold the terminal views; dropping them ends each pane's
+        // attach client.
+        container.apply(tree: nil, panes: [])
+        let connection = sshConnection
+        Task { try? await connection?.release() }
+    }
+
+    /// Stops the view and waits for its terminals and connections to close,
+    /// as the scene does when it shuts down.
+    func shutdown() async {
+        let surfaces = Array(paneContents.values)
+        stop()
+        for surface in surfaces {
+            await surface.shutdown()
+        }
+        await coordinator.shutdown()
+        try? await sshConnection?.release()
+    }
+
+    // MARK: Views from Rex
+
+    private func show(_ view: RexControlView) {
+        guard !isStopped else { return }
+        sessionID = view.sessionID
+        guard let window = view.windows.first(where: { $0.id == selection.address }),
+              let newTree = window.tree
+        else {
+            stop()
+            onWindowClosed?()
+            return
+        }
+        let previousFocus = focusedPaneID
+        tree = newTree
+        viewRevision = view.revision
+        paneNames = view.paneNames
+        let blockIDs = Set(newTree.paneIDs)
+        if let requested = requestedFocus, !blockIDs.contains(requested) {
+            requestedFocus = nil
+            requestedFocusRevision = nil
+        }
+        settleRequestedFocus()
+        for (blockID, handle) in paneHandles where !blockIDs.contains(blockID) {
+            coordinator.detach(handle.selection)
+            paneHandles[blockID] = nil
+            paneStates[blockID] = nil
+            paneContents[blockID] = nil
+            reconnectTasks.removeValue(forKey: blockID)?.cancel()
+            reconnectAttempts[blockID] = nil
+        }
+        for blockID in newTree.paneIDs where paneHandles[blockID] == nil {
+            attach(blockID)
+        }
+        render()
+        if focusedPaneID != previousFocus {
+            requestKeyboardFocus()
+        }
+        onChange?()
+    }
+
+    private func attach(_ blockID: String) {
+        let handle = coordinator.attach(
+            WorkspaceBackendTerminalSelection(
+                hostID: selection.hostID, kind: .rex, address: blockID
+            ),
+            host: host,
+            validated: validated
+        )
+        paneHandles[blockID] = handle
+        paneStates[blockID] = .connecting
+        if keyboardSuspended {
+            coordinator.setKeyboardInteractionSuspended(true, handle: handle)
+        }
+    }
+
+    private func render() {
+        guard let tree = shownTree else { return }
+        // Only the focused pane may take keyboard focus as it appears or
+        // its window becomes key; any other would report itself to Rex.
+        for (blockID, handle) in paneHandles {
+            coordinator.setAutoFocusSuppressed(blockID != tree.focusedPaneID, handle: handle)
+        }
+        container.apply(tree: tree, panes: tree.paneIDs.map { blockID in
+            var pane = TerminalSplitContainerView.Pane(
+                id: blockID, title: title(ofPane: blockID), content: paneContents[blockID]
+            )
+            if case let .disconnected(reason) = paneStates[blockID] {
+                if reconnectTasks[blockID] != nil {
+                    pane.overlayMessage = "Reconnecting…"
+                } else {
+                    pane.overlayMessage = reason ?? "This pane is no longer attached."
+                    pane.offersReconnect = true
+                }
+            }
+            return pane
+        })
+    }
+
+    // MARK: Pane attachments
+
+    private func paneReady(_ handle: BorrowedBackendTerminalHandle) {
+        guard let blockID = blockID(of: handle) else { return }
+        if let surface = coordinator.surface(handle: handle) {
+            surface.paneSplitShortcutHandler = { [weak self] direction in
+                self?.split(direction, from: blockID)
+            }
+            surface.registerPaneFocusObserver(
+                id: UUID(),
+                onFocusChange: { [weak self] focused in
+                    if focused {
+                        self?.paneFocused(blockID)
+                    }
+                },
+                onPrimaryInteraction: {}
+            )
+            paneContents[blockID] = surface
+        }
+        render()
+        if blockID == focusedPaneID, !keyboardSuspended {
+            coordinator.requestKeyboardFocus(handle: handle)
+        }
+    }
+
+    private func paneStateChanged(
+        _ handle: BorrowedBackendTerminalHandle,
+        _ state: ConnectionState
+    ) {
+        guard let blockID = blockID(of: handle) else { return }
+        paneStates[blockID] = state
+        switch state {
+        case .connected:
+            reconnectAttempts[blockID] = nil
+        case .disconnected:
+            paneContents[blockID] = nil
+            if coordinator.reconnectsAutomatically(handle) {
+                scheduleReconnect(blockID)
+            }
+        default:
+            break
+        }
+        render()
+    }
+
+    /// Attaches a pane again after a delay that grows with each attempt.
+    private func scheduleReconnect(_ blockID: String) {
+        let attempt = reconnectAttempts[blockID, default: 0]
+        reconnectAttempts[blockID] = attempt + 1
+        let delay = reconnectDelay(attempt)
+        reconnectTasks[blockID]?.cancel()
+        reconnectTasks[blockID] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.reconnectPane(blockID)
+        }
+    }
+
+    /// Replaces a pane's lost attachment with a new one. Rex still has the
+    /// pane, so its program and screen are as it left them.
+    func reconnectPane(_ blockID: String) {
+        reconnectTasks.removeValue(forKey: blockID)?.cancel()
+        guard !isStopped, tree?.paneIDs.contains(blockID) == true,
+              let old = paneHandles[blockID]
+        else { return }
+        coordinator.detach(old.selection)
+        paneContents[blockID] = nil
+        attach(blockID)
+        render()
+    }
+
+    private func blockID(of handle: BorrowedBackendTerminalHandle) -> String? {
+        let blockID = handle.selection.address
+        return paneHandles[blockID] == handle ? blockID : nil
+    }
+
+    // MARK: Helpers
+
+    private func headerAction(_ action: TerminalSplitHeaderAction, blockID: String) {
+        switch action {
+        case .splitRight: split(.right, from: blockID)
+        case .splitDown: split(.down, from: blockID)
+        case .zoom: toggleZoom(blockID)
+        case .close: onCloseRequested?(blockID)
+        }
+    }
+
+    private func resize(_ divider: TerminalSplitDivider, to ratio: Double) {
+        request("session.resize_pane", [
+            "before_block_id": divider.firstPaneID,
+            "after_block_id": divider.secondPaneID,
+            "direction": divider.axis == .horizontal ? "horizontal" : "vertical",
+            "ratio": ratio,
+        ]) { [weak self] in
+            self?.container.discardCommittedRatio(splitID: divider.splitID)
+        }
+    }
+
+    private func request(
+        _ method: String,
+        _ params: [String: any Sendable],
+        onFailure: (@MainActor () -> Void)? = nil,
+        onSuccess: (@MainActor (Int?) -> Void)? = nil
+    ) {
+        guard !isStopped else { return }
+        let channel = channel
+        Task { @MainActor in
+            do {
+                let revision = try await channel.send(method: method, params: params)
+                onSuccess?(revision)
+            } catch is CancellationError {
+                return
+            } catch {
+                AppLogger.shared.error(
+                    "Rex \(method) failed: \(error)", context: "rex-window"
+                )
+                onFailure?()
+            }
+        }
+    }
+
+    private func channelExited(_ exit: RexControlChannelExit) {
+        guard !isStopped else { return }
+        stop()
+        switch exit {
+        case .ended:
+            onWindowClosed?()
+        case let .failed(message):
+            onChannelFailed?(message)
+        }
+    }
+}

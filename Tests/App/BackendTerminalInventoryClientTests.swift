@@ -99,7 +99,7 @@ struct BackendTerminalInventoryClientTests {
         } else {
             #expect(rex == .available([
                 BackendTerminalSummary(
-                    kind: .rex, address: "block:01aa", title: "vim", detail: "work"
+                    kind: .rex, address: "window:1", title: "editor", detail: "work · 1 pane"
                 ),
             ]))
         }

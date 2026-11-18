@@ -20,7 +20,7 @@ sources:
 - **Herdr sessions:** running and stopped sessions returned by `herdr session list --json`
   on the local Mac and remote POSIX hosts.
 - **Backend terminals (macOS app):** live terminals returned by
-  `herdr-core ls --json` and Rex blocks returned by Ghosthub's pinned
+  `herdr-core ls --json` and Rex windows returned by Ghosthub's pinned
   `kwt rex ls --json` on each of those hosts. See
   [Backend terminals](#backend-terminals).
 - **Zellij sessions:** active sessions returned by `zellij list-sessions
@@ -249,13 +249,14 @@ Windows sessions.
 
 ## Backend Terminals
 
-Herdr Core and Rex leave pane layout to their own client apps and offer one
-terminal at a time to attach to. Ghosthub lists those terminals per host and
-attaches each one in its own libghostty surface. The backend owns creation,
-program lifetime, and layout; closing the surface only detaches.
+Herdr Core and Rex offer one terminal at a time to attach to. Ghosthub lists
+Herdr Core terminals and Rex windows per host. A Herdr Core terminal attaches
+in its own libghostty surface; a Rex window shows all of its panes, each in its
+own surface (see [Rex windows](#rex-windows)). The backend owns creation,
+program lifetime, and layout; closing the view only detaches.
 
 A backend terminal's identity is its host, kind (`core` or `rex`), and address:
-a Herdr Core address such as `t7` or a Rex block ID. Titles and details are
+a Herdr Core address such as `t7` or a Rex window ID. Titles and details are
 display text. A Herdr TUI session with the same name is a separate target.
 Selection, reconnect, sibling navigation, and restoration use that identity.
 
@@ -296,10 +297,10 @@ lists the host again and retries; a terminal that ended is not restored.
 
 Ghosthub 0.13 saved a Herdr desktop terminal as a Herdr session. Restoration
 drops such an entry rather than attach a TUI session with the same name.
-Backend terminals have no Ghosthub create, stop, or split controls.
+Herdr Core terminals have no Ghosthub create, stop, or split controls.
 
 Backend terminals join the host's one session list. Herdr desktop terminals
-carry a **herdr** label, Rex terminals a **rex** label, and Herdr TUI sessions
+carry a **herdr** label, Rex windows a **rex** label, and Herdr TUI sessions
 a **herdr tui** label. Each backend terminal row shows its address or Rex
 detail as quiet text after the title. Sibling navigation walks the host's
 whole session list in sidebar order and skips stopped Herdr sessions.
@@ -335,28 +336,60 @@ verify discovery, keyboard input, detach, and reattachment through libghostty.
 The test confines core state, configuration, and sockets to a temporary fixture
 and stops that fixture's core during teardown.
 
-### Rex terminals
+### Rex windows
 
 [Rex](https://www.superlogical.com/rex/docs) has no terminal client of its own,
-so Ghosthub attaches through kwt. The local Mac uses the kwt bundled with
+so Ghosthub reaches it through kwt. The local Mac uses the kwt bundled with
 Ghosthub; SSH hosts use the managed kwt for the bundled revision
 (`$HOME/.ghosthub/helpers/kwt/<revision>/kwt`). Neither falls back to a `kwt`
-on `PATH`. `kwt rex ls --json` lists the account's running Rex server's blocks;
-`kwt rex attach <block-id>` presents one block. kwt finds the server through
-`REX_SERVER` or `rex whoami --autostart=false`, so discovery never starts a Rex
-server. A host with Rex stopped or absent lists no Rex terminals.
+on `PATH`. kwt finds the server through `REX_SERVER` or
+`rex whoami --autostart=false`, so Ghosthub never starts a Rex server. A host
+with Rex stopped or absent lists no Rex windows.
 
-The row title is the name Rex shows: the program's title, or else its
-foreground program and directory, such as `zsh ~`. The detail places the block:
-its session, its window when the session has several, and its pane number when
-the window has several. Rex's automatic `Window <id>` labels read as
-`window <position>`. Only block IDs of the form
-`block:<id>` reach kwt. Rex keeps the block's size in step with the Ghosthub
-surface while it is attached, and a fresh attachment repaints the current
-screen. When the block's program exits, kwt exits with its status.
+`kwt rex ls --json` lists the account's windows, one sidebar row each. The
+title is the window's label. Rex's automatic `Window <id>` labels are replaced
+by the name of the window's focused pane: its program's title, or else its
+foreground program and directory, such as `zsh ~`. The detail is the session
+and pane count. Only window IDs of the form `window:<id>` reach kwt.
 
-Run `make test-rex REX_BINARY=/absolute/path/to/rex` to verify discovery,
-keyboard input, detach, and reattachment through libghostty. The test starts a
+Opening a window starts one `kwt rex control <window-id>`, which writes the
+session view as a JSON line at the start and after each change, and carries
+Ghosthub's layout requests and Rex's replies. Over SSH it runs without a TTY.
+Ghosthub shows the window's tiled layer as a split tree of pane cards, and
+attaches each pane with `kwt rex attach <block-id>` in its own surface. A pane
+that stays in the layout keeps its attachment. Rex keeps each block's size in
+step with its surface; a divider drag holds terminal resizes until release.
+
+Rex owns the layout, and a change shows once Rex reports it:
+
+- Split Right and Split Down (++cmd+d++, ++shift+cmd+d++, or the focused pane's
+  header) send `session.new_split` beside the focused pane, with a new shell
+  that takes focus.
+- Releasing a divider sends one `session.resize_pane`. If Rex refuses, the
+  divider returns to Rex's ratio.
+- Clicking a pane or the focus shortcuts send `session.focus_block`. Rex's own
+  directional focus acts on the session's active window, which may be another
+  one, so Ghosthub picks the neighbor from the layout it draws.
+- Zoom sends `session.zoom_block`; the zoomed pane fills the window.
+- Close Pane asks first, then sends `block.close`, which ends the pane's
+  program.
+
+++cmd+w++ closes the view and leaves every pane running. Closing the window
+or ending its session in Rex closes the view. If `kwt rex control` stops
+otherwise, the view shows the error; an SSH host reconnects with backoff, and
+the local Mac waits for **Retry**. A single pane whose attachment is lost
+follows the same rule as a backend terminal: a dropped connection attaches
+again with backoff, and any other ending shows **Reconnect** on the pane.
+
+Ghosthub's pane focus can run ahead of Rex's view. A click or focus shortcut
+takes effect at once and is kept until Rex reports it, so a view that lags
+behind several quick choices does not pull keyboard focus back. Only the
+focused pane may take keyboard focus by itself as it appears or its window
+becomes key.
+
+Run `make test-rex REX_BINARY=/absolute/path/to/rex` to verify listing, the
+control channel, pane attachment and keyboard input, and splitting, resizing,
+focus, zoom, and closing through libghostty. The test starts a
 private Rex server with its own socket and state directory, and stops it during
 teardown. `REX_BINARY` is the `rex` command inside Rex Server (on macOS,
 `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).

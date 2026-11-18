@@ -119,7 +119,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
     /// Attaches to a block on a private Rex server through `kwt rex attach`,
     /// types into it, detaches, and reattaches to the same running program.
-    func testRexTerminalAttachment() async throws {
+    func testRexWindowSplitView() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let rex = environment["GHOSTHUB_TEST_REX_BINARY"],
               let kwt = environment["GHOSTHUB_TEST_KWT_BINARY"]
@@ -198,42 +198,89 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             "/bin/sh", "-c", "printf 'REX_READY\\n'; exec /bin/cat",
         ])
         XCTAssertEqual(created.status, 0, created.stderr)
-        let terminal = try XCTUnwrap(listedTerminals().first, "Rex block was not listed")
-        XCTAssertEqual(terminal.detail, "live")
+        let row = try XCTUnwrap(listedTerminals().first, "Rex window was not listed")
+        XCTAssertEqual(row.detail, "live · 1 pane")
 
-        let command = try BackendTerminalAttachmentInfo(terminal: terminal, host: .local)
-            .attachCommand(executablePath: wrapper.path)
-        let view = makeSurface(app: try requireAppHandle(), configuration: .init(command: command))
-        let window = hostInWindow(view)
-        await waitForViewportTextYielding("REX_READY", in: view)
-        XCTAssertTrue(readViewportText(from: view).contains("REX_READY"))
-        typeText("rex-input\r", into: view, window: window)
-        await waitForViewportTextYielding("rex-input", in: view)
-        let captured = rexCommand(["capture", "-b", terminal.address])
+        // Build the window's view as the app does: kwt rex control for the
+        // layout, kwt rex attach for each pane, all against this server.
+        let presentation = try RexWindowPresentation(
+            selection: WorkspaceBackendTerminalSelection(
+                hostID: UUID(), kind: .rex, address: row.address
+            ),
+            host: .local,
+            validated: SSHConnectionArgumentsSnapshot(arguments: []),
+            channel: RexControlChannel.started(
+                command: BackendTerminalAttachmentInfo(terminal: row, host: .local)
+                    .controlCommand(executablePath: wrapper.path)
+            ),
+            coordinator: NativeBackendTerminalCoordinator(
+                terminalCoordinator: TerminalSurfaceCoordinator(runtime: retainedRuntime()),
+                executableProvider: { _, _, _ in .success(wrapper.path) }
+            )
+        )
+        addTeardownBlock { @MainActor in await presentation.shutdown() }
+        let window = makeTestWindow(
+            contentView: presentation.container,
+            size: CGSize(width: 1000, height: 640)
+        )
+        defer { window.orderOut(nil) }
+        func waitFor(_ what: String, _ condition: () -> Bool) async {
+            let deadline = ContinuousClock.now + .seconds(20)
+            while !condition(), ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            XCTAssertTrue(
+                condition(),
+                "Timed out waiting for \(what): \(String(describing: presentation.tree))"
+            )
+        }
+        func surface(_ blockID: String) -> TerminalSurfaceView? {
+            presentation.container.paneViews[blockID]?.content as? TerminalSurfaceView
+        }
+
+        await waitFor("the first pane") { presentation.tree?.paneIDs.count == 1 }
+        let first = try XCTUnwrap(presentation.tree?.paneIDs.first)
+        await waitFor("the first pane's terminal") { surface(first) != nil }
+        let firstSurface = try XCTUnwrap(surface(first))
+        await waitForViewportTextYielding("REX_READY", in: firstSurface)
+        // A test window may not be key, which keyboard focus requests need.
+        window.makeFirstResponder(firstSurface)
+        typeText("rex-input\r", into: firstSurface, window: window)
+        await waitForViewportTextYielding("rex-input", in: firstSurface)
+        let captured = rexCommand(["capture", "-b", first])
         XCTAssertEqual(captured.status, 0, captured.stderr)
-        XCTAssertTrue(
-            captured.stdout.contains("rex-input"),
-            "Rex capture: \(captured.stdout); rendered: \(readViewportText(from: view))"
-        )
+        XCTAssertTrue(captured.stdout.contains("rex-input"), captured.stdout)
 
-        await view.shutdown()
-        window.orderOut(nil)
+        presentation.split(.right)
+        await waitFor("the split") { presentation.tree?.paneIDs.count == 2 }
+        let second = try XCTUnwrap(presentation.tree?.paneIDs.last)
+        XCTAssertEqual(presentation.tree?.focusedPaneID, second)
+        await waitFor("the second pane's terminal") { surface(second) != nil }
+        let frames = presentation.container.paneViews.mapValues(\.frame)
+        XCTAssertLessThan(try XCTUnwrap(frames[first]).maxX, try XCTUnwrap(frames[second]).minX)
+
+        let divider = try XCTUnwrap(presentation.container.dividers.first)
+        presentation.container.onResizeCommitted?(divider, 0.3)
+        await waitFor("Rex to report the new ratio") {
+            guard case let .split(_, _, ratio, _, _) = presentation.tree?.root else { return false }
+            return abs(ratio - 0.3) < 0.02
+        }
+
+        XCTAssertTrue(presentation.moveFocus(.left))
+        await waitFor("focus on the first pane") { presentation.tree?.focusedPaneID == first }
+        presentation.toggleZoom()
+        await waitFor("the zoom") { presentation.tree?.zoomedPaneID == first }
+        presentation.toggleZoom()
+        await waitFor("the unzoom") { presentation.tree?.zoomedPaneID == nil }
+
+        presentation.closePane(second)
+        await waitFor("the close") { presentation.tree?.paneIDs == [first] }
+
+        presentation.stop()
         XCTAssertEqual(
-            listedTerminals().map(\.address), [terminal.address],
-            "Closing the view must leave the block running"
+            listedTerminals().map(\.address), [row.address],
+            "Closing the view must leave the window running"
         )
-        let reopened = makeSurface(
-            app: try requireAppHandle(),
-            configuration: .init(command: command)
-        )
-        let reopenedWindow = hostInWindow(reopened)
-        await waitForViewportTextYielding("rex-input", in: reopened)
-        XCTAssertTrue(
-            readViewportText(from: reopened).contains("rex-input"),
-            readViewportText(from: reopened)
-        )
-        await reopened.shutdown()
-        reopenedWindow.orderOut(nil)
     }
 
     // Retained across the entire test suite so ghostty_app_free is
@@ -1310,6 +1357,42 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         }
 
         XCTAssertEqual(shortcuts, [.right, .down])
+    }
+
+    func testKeyEquivalentFocusRecoverySkipsSuppressedSurface() throws {
+        let appHandle = try requireAppHandle()
+        let view = makeSurface(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration()
+        )
+        // Reports itself key, so the test does not depend on taking the
+        // user's active application.
+        final class KeyWindow: NSWindow {
+            override var isKeyWindow: Bool { true }
+        }
+        let window = KeyWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = view
+        defer { window.contentView = nil }
+        let paste = makeKeyEvent(
+            characters: "v",
+            charactersIgnoringModifiers: "v",
+            modifiers: .command,
+            keyCode: 9,
+            windowNumber: window.windowNumber
+        )
+
+        // A pane the user moved away from gave up focus.
+        view.suppressAutoFocus = true
+        window.makeFirstResponder(nil)
+        _ = view.performKeyEquivalent(with: paste)
+        XCTAssertFalse(window.firstResponder === view)
+
+        view.suppressAutoFocus = false
+        _ = view.performKeyEquivalent(with: paste)
+        XCTAssertTrue(window.firstResponder === view)
     }
 
     func testTmuxSplitShortcutRepeatIsConsumedWithoutSplitting() throws {
@@ -3626,6 +3709,37 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             readViewportText(from: view).contains("<RAW:\(expectedRaw)>"),
             "Cmd-V must retain libghostty's bracketed-paste fenceposts."
         )
+    }
+
+    func testDeclinedPaneShortcutReachesTerminalBinding() throws {
+        // Ghosthub reserves ⌘] for Rex pane focus. Outside a Rex window the
+        // app declines it, and the user's terminal binding must still run.
+        let runtime = try runtimeWithTerminalConfig("keybind = super+]=text:Z")
+        let appHandle = try requireAppHandle(from: runtime)
+        let view = makeSurface(
+            app: appHandle,
+            configuration: TerminalSurfaceConfiguration(
+                command: try pythonCommand(makeRawInputProbeScript(readBytes: 1).path)
+            )
+        )
+        let window = hostInWindow(view)
+        waitUntil(timeout: 5.0) { view.error == nil }
+        waitForProbeReady(in: view)
+        let event = makeKeyEvent(
+            characters: "]",
+            charactersIgnoringModifiers: "]",
+            modifiers: [.command],
+            keyCode: 30,
+            windowNumber: window.windowNumber
+        )
+        XCTAssertTrue(TerminalSurfaceView.isReservedApplicationShortcut(
+            flags: .command, chars: "]", keyCode: 30, hasPaneCloseHandler: false
+        ))
+
+        dispatch(event, to: window, route: .application)
+
+        waitForViewportText("<RAW:5a>", in: view)
+        XCTAssertTrue(readViewportText(from: view).contains("<RAW:5a>"))
     }
 
     func testPasteboardRemotePasteFollowsReboundSemanticShortcut() throws {

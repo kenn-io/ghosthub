@@ -366,7 +366,7 @@ public enum WorkspaceSidebarSessionBackend: Int, CaseIterable, Comparable, Senda
         case .zellij: "Zellij session"
         case .herdrTerminal: "Herdr terminal"
         case .herdrTUI: "Herdr TUI session"
-        case .rex: "Rex terminal"
+        case .rex: "Rex window"
         }
     }
 }
@@ -404,7 +404,7 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
 
     /// Quiet text after a session's name. Herdr desktop panes in one tab
     /// share a `space / tab` title, so their address tells them apart; a
-    /// Rex terminal shows its session and window.
+    /// Rex window shows its session and pane count.
     public var sessionDetail: String? {
         guard sessionBackend == .herdrTerminal || sessionBackend == .rex,
               let subtitle, subtitle != title

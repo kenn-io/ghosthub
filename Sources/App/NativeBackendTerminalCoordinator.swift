@@ -184,21 +184,14 @@ final class NativeBackendTerminalCoordinator {
             onSurfaceReady?(handle)
         case let .failure(error):
             Task {
-                if case let .commandFailed(_, status, stderr) = error,
-                   SSHConnectionFailure.indicatesUnusableConnection(
-                       status: status,
-                       output: stderr
-                   ) {
+                if error.leftConnectionUnusable {
                     await sshConnection?.invalidate()
                 }
                 try? await sshConnection?.release()
             }
             // A connection that dropped during the lookup recovers like any
             // other transport failure. A missing program does not.
-            if host.isRemote, case let .commandFailed(_, status, stderr) = error,
-               status == 255,
-               SSHConnectionFailure.classify(status: status, output: stderr).kind
-               == .transport {
+            if host.isRemote, error.isDroppedConnection {
                 attachmentClosures[handle.id] = .retryableTransportFailure
             } else {
                 attachmentClosures[handle.id] = .launchFailed
@@ -266,6 +259,26 @@ final class NativeBackendTerminalCoordinator {
             .requestKeyboardFocus()
     }
 
+    func hasKeyboardFocus(handle: BorrowedBackendTerminalHandle) -> Bool {
+        terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))?
+            .hasEffectiveKeyboardFocus == true
+    }
+
+    /// Lets a terminal take keyboard focus by itself, or not, such as when
+    /// only one pane of several should. A terminal that may not also gives
+    /// up keyboard focus and draws as unfocused. Otherwise typing could stay
+    /// with it while the chosen pane is still attaching or its window is
+    /// not key, and libghostty starts every terminal focused, so each
+    /// pane's cursor would blink.
+    func setAutoFocusSuppressed(_ suppressed: Bool, handle: BorrowedBackendTerminalHandle) {
+        guard let surface = terminalCoordinator.paneSurfaceIfPresent(for: surfaceKey(handle))
+        else { return }
+        surface.suppressAutoFocus = suppressed
+        if suppressed {
+            surface.resignKeyboardFocus()
+        }
+    }
+
     /// Keeps a terminal on screen but stops it taking keystrokes, such as
     /// while Ghosthub checks the terminal that will replace it.
     func setKeyboardInteractionSuspended(
@@ -285,6 +298,19 @@ final class NativeBackendTerminalCoordinator {
         _ handle: BorrowedBackendTerminalHandle
     ) -> BorrowedSessionAttachmentClosure? {
         attachmentClosures[handle.id]
+    }
+
+    /// True when the terminal's connection was lost rather than closed, so
+    /// attaching again can bring it back without the user.
+    func reconnectsAutomatically(_ handle: BorrowedBackendTerminalHandle) -> Bool {
+        switch attachmentClosures[handle.id] {
+        case .retryableTransportFailure, .surfaceUnavailable:
+            true
+        case let .processExited(code):
+            code == 255 && targetHostsByHandle[handle.id]?.isRemote == true
+        case .detached, .launchFailed, nil:
+            false
+        }
     }
 
     func hasLaunched(_ handle: BorrowedBackendTerminalHandle) -> Bool {
@@ -473,5 +499,22 @@ final class NativeBackendTerminalCoordinator {
             target: .backendTerminal,
             leafID: handle.surfaceID
         )
+    }
+}
+
+extension BackendTerminalCommandError {
+    /// OpenSSH lost the connection while the command ran (status 255 with a
+    /// transport diagnostic), as opposed to a missing or failing program.
+    var isDroppedConnection: Bool {
+        guard case let .commandFailed(_, status, stderr) = self, status == 255 else {
+            return false
+        }
+        return SSHConnectionFailure.classify(status: status, output: stderr).kind == .transport
+    }
+
+    /// The shared SSH master is gone and must be rebuilt before reuse.
+    var leftConnectionUnusable: Bool {
+        guard case let .commandFailed(_, status, stderr) = self else { return false }
+        return SSHConnectionFailure.indicatesUnusableConnection(status: status, output: stderr)
     }
 }

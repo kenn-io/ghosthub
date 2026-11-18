@@ -83,7 +83,7 @@ enum WorkspaceAccessibilityModel {
             hint = "Attach to this tmux session."
         case let .backendTerminal(_, kind, _):
             hint = kind == .rex
-                ? "Attach to this Rex terminal."
+                ? "Open this Rex window."
                 : "Attach to this Herdr terminal."
         case .herdrSession:
             hint = row.herdrSessionState == .stopped

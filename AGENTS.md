@@ -10,8 +10,9 @@ fleets** on macOS. It gives equal status to four ways of working:
 - Create or attach to any tmux session on a configured host.
 - Create, attach to, stop, restart, or delete Herdr TUI sessions on a supported
   host. On macOS, also discover and attach to backend terminals on local and
-  remote POSIX hosts: live Herdr desktop/core terminals and Rex terminal blocks.
-  The backend owns their creation, lifetime, and layout.
+  remote POSIX hosts: live Herdr desktop/core terminals and Rex windows. The
+  backend owns their creation, lifetime, and layout; Ghosthub draws a Rex
+  window's split layout and sends the user's layout changes to Rex.
 - Create, attach to, or kill active Zellij sessions on a supported host.
 - Create tmux sessions bound to git worktrees and manage the worktree lifecycle,
   including imports from branches and GitHub pull requests.
@@ -35,15 +36,18 @@ Worktrees are optional; Ghosthub remains fully useful without them.
 - **Middleman:** Sessions created by Middleman remain discoverable because they are ordinary sessions on a host tmux server. Ghosthub does not use Middleman as session authority.
 - **Console Panel:** A host-scoped persistent terminal area (e.g., for `roborev`) that is independent of the active worktree.
 
-Herdr Core and Rex terminals share one backend-terminal model
-(`Sources/BackendTerminal/`): each terminal is a host, kind, and address
-attached in its own surface. The sidebar lists every session on a host in one
+Herdr Core terminals and Rex windows share one backend-terminal model
+(`Sources/BackendTerminal/`): each is a host, kind, and address. A Herdr Core
+terminal attaches in its own surface. A Rex window follows its layout through
+one `kwt rex control` channel and attaches each pane with `kwt rex attach`, in
+the split container from `Sources/TerminalSupport/`. The sidebar lists every session on a host in one
 list, with a backend label on each row: **herdr** for Herdr desktop terminals,
-**herdr tui** for Herdr TUI sessions, and **rex** for Rex terminals. Display
-names never identify a terminal. Creation, lifecycle, and split controls belong
-to the Herdr TUI. Sibling navigation walks the host's whole session list in
+**herdr tui** for Herdr TUI sessions, and **rex** for Rex windows. Display
+names never identify a terminal. Herdr Core creation, lifecycle, and split
+controls belong to the Herdr TUI; Rex owns its layout, and a change shows once
+Rex reports it. Sibling navigation walks the host's whole session list in
 sidebar order and skips stopped Herdr sessions. Rex attachment runs Ghosthub's
-pinned kwt (`kwt rex attach`), never a `rex` client. See
+pinned kwt, never a `rex` client. See
 [Backend terminals](docs/terminal-sessions.md#backend-terminals).
 
 Ghosthub is alpha software. Treat the entire app, including its persistence
@@ -356,13 +360,14 @@ Use non-interactive shell flags so agents do not hang on prompts: `cp -f`,
 - `Sources/Workspace/`: Pure workspace, host, project, worktree, and session models.
 - `Sources/Settings/`: Native settings and preferences.
 - `Sources/Terminal/`: `libghostty` integration and surface management.
-- `Sources/TerminalSupport/`: libghostty config/bootstrap support that can compile without the linked library.
+- `Sources/TerminalSupport/`: libghostty config/bootstrap support and the
+  split-tree layout and container, which compile without the linked library.
 - `Sources/Persistence/`: Database schema, models, and GRDB repositories.
 - `Sources/Transport/`: Shared local/SSH command routing and shell helpers.
 - `Sources/Tmux/`: Native tmux attachment command model.
 - `Sources/Herdr/`: Native Herdr discovery and attachment command model.
-- `Sources/BackendTerminal/`: Herdr Core and Rex terminal discovery and
-  attachment command model.
+- `Sources/BackendTerminal/`: Herdr Core and Rex discovery, attachment
+  commands, and the Rex window layout model.
 - `Sources/Zellij/`: Native Zellij discovery and attachment command model.
 - `tools/`: Python-based build, bootstrap (including `libghostty`), and
   packaging automation.
