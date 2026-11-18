@@ -118,6 +118,30 @@ struct TerminalSplitContainerViewTests {
         #expect(abs(ratio - (310.0 - 4) / 992) < 1e-9)
     }
 
+    @Test("an outside hold, such as the sidebar animating, holds every pane's resizing")
+    func outsideHold() {
+        let view = container()
+        let a = RecordingContent()
+        view.apply(tree: tree(), panes: panes(["A": a]))
+        view.defersContentResize = true
+        #expect(a.deferrals == [true])
+
+        // A pane that attaches during the hold waits too.
+        let b = RecordingContent()
+        view.apply(tree: tree(), panes: panes(["A": a, "B": b]))
+        #expect(b.deferrals == [true])
+
+        // A drag that ends during the hold does not release it.
+        view.layoutSubtreeIfNeeded()
+        #expect(view.beginDrag(at: CGPoint(x: 500, y: 300)))
+        view.endDrag()
+        #expect(a.deferrals == [true])
+
+        view.defersContentResize = false
+        #expect(a.deferrals == [true, false])
+        #expect(b.deferrals == [true, false])
+    }
+
     @Test("a reported ratio stays until the backend reports a different one")
     func committedRatio() throws {
         let view = container()

@@ -34,6 +34,16 @@ public final class TerminalSplitContainerView: NSView {
         didSet { needsLayout = true }
     }
 
+    /// Holds terminal resizing while something outside the container
+    /// animates its size, such as the sidebar.
+    public var defersContentResize = false {
+        didSet {
+            if defersContentResize != oldValue, drag == nil {
+                setContentResizeDeferred(defersContentResize)
+            }
+        }
+    }
+
     /// A drag ended at a new ratio.
     public var onResizeCommitted: ((TerminalSplitDivider, Double) -> Void)?
     /// A pane's header was clicked.
@@ -73,6 +83,9 @@ public final class TerminalSplitContainerView: NSView {
             view.overlayMessage = pane.overlayMessage
             view.offersReconnect = pane.offersReconnect && pane.overlayMessage != nil
             view.isFocused = pane.id == tree?.focusedPaneID
+            if view.content !== pane.content, defersContentResize || drag != nil {
+                pane.content?.setResizeDeferred(true)
+            }
             view.setContent(pane.content)
         }
         needsLayout = true
@@ -148,8 +161,8 @@ public final class TerminalSplitContainerView: NSView {
               let divider = dividers.last(where: { $0.hitRect.contains(point) })
         else { return false }
         drag = (divider, divider.ratio)
-        for view in paneViews.values {
-            view.content?.setResizeDeferred(true)
+        if !defersContentResize {
+            setContentResizeDeferred(true)
         }
         return true
     }
@@ -170,11 +183,17 @@ public final class TerminalSplitContainerView: NSView {
         }
         needsLayout = true
         layoutSubtreeIfNeeded()
-        for view in paneViews.values {
-            view.content?.setResizeDeferred(false)
+        if !defersContentResize {
+            setContentResizeDeferred(false)
         }
         if ratio != divider.ratio {
             onResizeCommitted?(divider, ratio)
+        }
+    }
+
+    private func setContentResizeDeferred(_ deferred: Bool) {
+        for view in paneViews.values {
+            view.content?.setResizeDeferred(deferred)
         }
     }
 

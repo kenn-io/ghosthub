@@ -8,6 +8,7 @@ import SwiftUI
 struct RexWindowContentView: View {
     var container: TerminalSplitContainerView?
     var fallback: BorrowedSessionView
+    var defersTerminalResize: Bool
     @Binding var closeRequest: RexPaneCloseRequest?
     var onConfirmClose: (RexPaneCloseRequest) -> Void
     @Environment(\.terminalBackgroundAppearance) private var backgroundAppearance
@@ -17,7 +18,7 @@ struct RexWindowContentView: View {
             if let container {
                 // A new presentation brings a new container; its own
                 // identity makes SwiftUI show it instead of the old one.
-                SplitContainer(container: container)
+                SplitContainer(container: container, defersResize: defersTerminalResize)
                     .id(ObjectIdentifier(container))
                     .padding(6)
                     .background(WorkspaceSurfaceColor.chrome(backgroundAppearance))
@@ -49,11 +50,15 @@ struct RexWindowContentView: View {
 
     private struct SplitContainer: NSViewRepresentable {
         let container: TerminalSplitContainerView
+        let defersResize: Bool
 
         func makeNSView(context _: Context) -> TerminalSplitContainerView {
-            container
+            container.defersContentResize = defersResize
+            return container
         }
 
-        func updateNSView(_: TerminalSplitContainerView, context _: Context) {}
+        func updateNSView(_ view: TerminalSplitContainerView, context _: Context) {
+            view.defersContentResize = defersResize
+        }
     }
 }

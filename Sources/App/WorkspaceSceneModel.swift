@@ -16341,6 +16341,7 @@ extension WorkspaceSceneModel {
         return AnyView(RexWindowContentView(
             container: window?.container,
             fallback: session,
+            defersTerminalResize: defersTerminalResize,
             closeRequest: Binding(
                 get: { [weak self] in self?.rexPaneCloseRequest },
                 set: { [weak self] in self?.rexPaneCloseRequest = $0 }
