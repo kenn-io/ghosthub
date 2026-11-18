@@ -419,6 +419,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var backendTerminals: [BackendTerminalSummary]
     public var zellijSessions: [ZellijSessionSummary]
     public var zellijAvailable: Bool
+    /// A Rex server answers on the host, so windows can be created.
+    public var rexAvailable: Bool
     public var decodedConnectionState: HostConnectionState?
     public var transientOverride: HostConnectionState?
     public var operationAvailability:
@@ -449,6 +451,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         backendTerminals: [BackendTerminalSummary] = [],
         zellijSessions: [ZellijSessionSummary] = [],
         zellijAvailable: Bool = false,
+        rexAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
@@ -478,6 +481,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.backendTerminals = backendTerminals
         self.zellijSessions = zellijSessions
         self.zellijAvailable = zellijAvailable
+        self.rexAvailable = rexAvailable
         self.decodedConnectionState = decodedConnectionState
         self.transientOverride = transientOverride
         self.operationAvailability = operationAvailability

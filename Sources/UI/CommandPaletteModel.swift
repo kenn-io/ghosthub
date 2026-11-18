@@ -10,6 +10,7 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case newTmuxSession(UUID)
     case newHerdrSession(UUID)
     case newZellijSession(UUID)
+    case newRexSession(UUID)
     case addProject(UUID)
     case openTmuxSession(WorkspaceTmuxSessionSelection)
     case openHerdrSession(WorkspaceHerdrSessionSelection)
@@ -244,6 +245,15 @@ public enum CommandPaletteModel {
                 shortcutAction: .minimizeFloatingWindow,
                 shortcut: shortcuts[.minimizeFloatingWindow],
                 action: .applicationShortcut(.minimizeFloatingWindow)
+            ),
+            WorkspaceCommandItem(
+                id: "new-rex-window",
+                title: "New Rex Window",
+                subtitle: "Open a shell in a new window of the shown Rex session.",
+                keywords: ["new", "window", "rex", "shell"],
+                shortcutAction: .newRexWindow,
+                shortcut: shortcuts[.newRexWindow],
+                action: .applicationShortcut(.newRexWindow)
             ),
         ]
 
@@ -505,6 +515,18 @@ public enum CommandPaletteModel {
                         host.name, host.sshDestination ?? "",
                     ],
                     action: .newZellijSession(host.id)
+                ))
+            }
+            if host.rexAvailable {
+                commands.append(WorkspaceCommandItem(
+                    id: "new-rex-session-\(host.id.uuidString)",
+                    title: "New Rex session on \(host.name)",
+                    subtitle: "Open a shell in a new Rex session on \(host.commandPaletteSubtitle)",
+                    keywords: [
+                        "new", "create", "rex", "session", "window",
+                        host.name, host.sshDestination ?? "",
+                    ],
+                    action: .newRexSession(host.id)
                 ))
             }
             if host.canRegisterProjects {

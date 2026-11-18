@@ -147,6 +147,9 @@ struct WorkspaceBackendTerminalTests {
         herdrTabChannelFactory: @escaping HerdrTabChannelFactory = { _, _, _ in
             FakeRexControlChannel()
         },
+        rexWindowCreation: @escaping WorkspaceSceneModel.RexWindowCreation = { _, _, _ in
+            .failure(.unavailable(.rex))
+        },
         startServices: Bool = false
     ) throws -> WorkspaceSceneModel {
         let fake = fake ?? FakeHost(environment.host.backendTerminals)
@@ -188,6 +191,7 @@ struct WorkspaceBackendTerminalTests {
                 [.rex: fake.listing(.rex), .herdrCore: fake.listing(.herdrCore)]
             },
             backendTerminalValidationDiscovery: { _, kind, _ in await fake.validate(kind) },
+            rexWindowCreation: rexWindowCreation,
             zellijSessionDiscovery: zellijSessionDiscovery,
             presentationSSHConnectionProvider: { _, _ in
                 fake.attaches.withLock { $0 += 1 }
@@ -1231,6 +1235,83 @@ struct WorkspaceBackendTerminalTests {
         })
         #expect(store.requestedConfigurations.contains { $0.command?.contains("block:a") == true })
         #expect(store.requestedConfigurations.contains { $0.command?.contains("block:b") == true })
+        await model.shutdown()
+    }
+
+    @Test("a new Rex session's window is listed for the sidebar to open")
+    func rexSessionCreation() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let fake = FakeHost([Self.rexWindow])
+        let created = BackendTerminalSummary(
+            kind: .rex, address: "window:02bb", title: "zsh ~", detail: "work · 1 pane"
+        )
+        let requests = Mutex<[RexWindowRequest]>([])
+        let model = try makeTerminalModel(
+            environment, store: store, fake: fake,
+            rexWindowCreation: { _, request, _ in
+                requests.withLock { $0.append(request) }
+                fake.terminals.withLock { $0.append(created) }
+                return .success(created.address)
+            }
+        )
+
+        let selection = try await model.createRexWindow(
+            RexWindowRequest(label: "work"), hostID: environment.host.id
+        )
+
+        #expect(selection == environment.selection(created))
+        #expect(requests.withLock { $0 } == [RexWindowRequest(label: "work")])
+        #expect(model.snapshot.host(id: environment.host.id)?.backendTerminals
+            .contains(created) == true)
+        #expect(model.snapshot.host(id: environment.host.id)?.rexAvailable == true)
+
+        fake.failure.withLock { $0 = .commandFailed(.rex, status: 1, stderr: "no server") }
+        await #expect(throws: BackendTerminalCommandError.self) {
+            _ = try await model.createRexWindow(RexWindowRequest(), hostID: environment.host.id)
+        }
+        await model.shutdown()
+    }
+
+    @Test("Rex refusing a new window reports its message")
+    func rexCreationFailure() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let model = try makeTerminalModel(
+            environment, store: RecordingNativeSessionSurfaceStore(),
+            rexWindowCreation: { _, _, _ in
+                .failure(.commandFailed(.rex, status: 1, stderr: "the Rex server is not running"))
+            }
+        )
+        await #expect {
+            _ = try await model.createRexWindow(RexWindowRequest(), hostID: environment.host.id)
+        } throws: { error in
+            error.localizedDescription.contains("the Rex server is not running")
+        }
+        await model.shutdown()
+    }
+
+    @Test("New Rex Window opens in the shown window's session, where its focused pane is")
+    func rexNewWindowBesideShown() async throws {
+        let environment = try environment(terminals: [Self.rexWindow, Self.coreTerminal])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let model = try makeTerminalModel(environment, store: store, rexChannels: channels)
+        #expect(model.newRexWindowRequest == nil)
+        #expect(!model.performApplicationShortcut(.newRexWindow, invocation: .menu))
+
+        let channel = try await openRexWindow(model, environment, channels: channels, store: store)
+        try channel.deliver(
+            layout: Self.twoPanes, focused: "block:b", window: "window:01aa",
+            terminals: #"{"block:b":{"name":"zsh ~/src","cwd":"/home/user-a/src"}}"#
+        )
+
+        let pending = try #require(model.newRexWindowRequest)
+        #expect(pending.hostID == environment.host.id)
+        #expect(pending.request == RexWindowRequest(
+            sessionID: "session:s", cwd: "/home/user-a/src"
+        ))
+        #expect(model.availablePaletteApplicationShortcuts.contains(.newRexWindow))
+        #expect(model.performApplicationShortcut(.newRexWindow, invocation: .menu))
         await model.shutdown()
     }
 

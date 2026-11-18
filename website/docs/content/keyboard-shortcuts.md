@@ -61,10 +61,11 @@ numbered sibling navigation instead.
 | Find previous, toward newer history | ++shift+cmd+g++ |
 | Hide the Find bar | ++shift+cmd+f++ |
 
-New tmux Session, New Herdr TUI Session, New Zellij Session, and Close Pane…
-remain available in menus or the Command Palette but are unbound by default.
-The Rex commands New Floating Pane, Float or Tile Pane, and Minimize Floating
-Window are in the Command Palette and are unbound by default too.
+New tmux Session, New Herdr TUI Session, New Zellij Session, New Rex Window,
+and Close Pane… remain available in menus or the Command Palette but are
+unbound by default. The Rex commands New Floating Pane, Float or Tile Pane, and
+Minimize Floating Window are in the Command Palette and are unbound by default
+too.
 The Rex focus and zoom shortcuts act only while a Rex window is shown;
 otherwise the keys go to the terminal.
 

@@ -126,6 +126,47 @@ struct RexInventoryTests {
         #expect(result.status == 127)
     }
 
+    @Test("a new window runs kwt rex new with each option quoted")
+    func newWindowCommand() throws {
+        let command = RexInventory.newWindowCommand(
+            kwtPrelude: "ghosthub_kwt_path=/bin/echo; ",
+            label: "it's work",
+            sessionID: "session:01a1-aa",
+            cwd: "/home/user-a/my src"
+        )
+        // echo stands in for kwt, so the output shows the arguments it got.
+        let result = try runShell(command)
+        #expect(result.status == 0)
+        #expect(result.stdout == """
+        GHOSTHUB_REX_JSON
+        rex new --label it's work --session session:01a1-aa --cwd /home/user-a/my src
+
+        """)
+        let bare = try runShell(RexInventory.newWindowCommand(
+            kwtPrelude: "ghosthub_kwt_path=/bin/echo; ", label: nil, sessionID: nil, cwd: nil
+        ))
+        #expect(bare.stdout.hasSuffix("\nrex new\n"))
+    }
+
+    @Test("kwt rex new reports the new window, or why Rex refused")
+    func newWindowResult() {
+        let created = #"{"session_id":"session:01a1-aa","window_id":"window:01a1-bb"}"#
+        #expect(RexInventory.parseNewWindow(
+            status: 0, stdout: "motd\nGHOSTHUB_REX_JSON\n\(created)\n", stderr: ""
+        ) == .success("window:01a1-bb"))
+        #expect(RexInventory.parseNewWindow(status: 127, stdout: "", stderr: "")
+            == .failure(.unavailable(.rex)))
+        #expect(RexInventory.parseNewWindow(
+            status: 1, stdout: "GHOSTHUB_REX_JSON\n",
+            stderr: "Error: the Rex server is not running"
+        ) == .failure(.commandFailed(
+            .rex, status: 1, stderr: "Error: the Rex server is not running"
+        )))
+        #expect(RexInventory.parseNewWindow(
+            status: 0, stdout: #"GHOSTHUB_REX_JSON\#n{"window_id":"--help"}"#, stderr: ""
+        ) == .failure(.malformedJSON(.rex)))
+    }
+
     private func runShell(_ command: String) throws -> (status: Int32, stdout: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

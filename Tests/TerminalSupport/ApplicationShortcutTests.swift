@@ -82,6 +82,7 @@ struct ApplicationShortcutTests {
             .newFloatingPane: nil,
             .toggleFloatingPane: nil,
             .minimizeFloatingWindow: nil,
+            .newRexWindow: nil,
             .reloadConfiguration: "cmd+shift+,",
             .openApplicationLog: "cmd+opt+l",
         ]

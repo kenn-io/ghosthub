@@ -123,15 +123,17 @@ struct WorkspaceSidebarModelTests {
         let entries = WorkspaceSidebarHostMenuModel.entries(for: bare)
         #expect(entries.count == 1)
         #expect(entries[0].map(\.item) == [
-            .newTmuxSession, .newZellijSession, .newHerdrSession,
+            .newTmuxSession, .newZellijSession, .newHerdrSession, .newRexSession,
         ])
-        #expect(entries[0].map(\.isEnabled) == [true, false, false])
+        #expect(entries[0].map(\.isEnabled) == [true, false, false, false])
         #expect(entries[0][1].help?.contains("Zellij") == true)
+        #expect(entries[0][3].help?.contains("No Rex server is running") == true)
 
         let full = HostSummary.fixture(
             platform: .macOS,
             herdrAvailable: true,
-            zellijAvailable: true
+            zellijAvailable: true,
+            rexAvailable: true
         )
         let fullEntries = WorkspaceSidebarHostMenuModel.entries(for: full)
         #expect(fullEntries.flatMap { $0 }.allSatisfy { $0.isEnabled })

@@ -210,6 +210,13 @@ Rex can also float panes in windows over the split layout:
 
 These commands have no default shortcut. Assign one in Settings → **Keyboard**.
 
+To start a Rex session from Ghosthub, choose **New Rex Session…** from the
+host's **+** menu or the Command Palette. The name is optional; Rex picks one
+if you leave it empty. While a Rex window is shown, **New Rex Window** in the
+Command Palette opens another window in the same session, with a shell in the
+focused pane's directory. Either one opens the new window right away. The host
+offers these only while its Rex server is running.
+
 Switching away or pressing ++cmd+w++ detaches and leaves every pane running.
 Press ++ctrl+tab++ or ++ctrl+shift+tab++ to move to the next or previous session
 in the host's list. Closing the window in Rex closes it in Ghosthub. If one

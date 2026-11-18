@@ -246,6 +246,7 @@ struct WorkspaceSidebarView: View {
     let onNewTmuxSession: (HostSummary) -> Void
     let onNewHerdrSession: (HostSummary) -> Void
     let onNewZellijSession: (HostSummary) -> Void
+    let onNewRexSession: (HostSummary) -> Void
     let onAddProject: (HostSummary) -> Void
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
@@ -361,6 +362,7 @@ struct WorkspaceSidebarView: View {
         onNewTmuxSession: @escaping (HostSummary) -> Void = { _ in },
         onNewHerdrSession: @escaping (HostSummary) -> Void = { _ in },
         onNewZellijSession: @escaping (HostSummary) -> Void = { _ in },
+        onNewRexSession: @escaping (HostSummary) -> Void = { _ in },
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
@@ -425,6 +427,7 @@ struct WorkspaceSidebarView: View {
         self.onNewTmuxSession = onNewTmuxSession
         self.onNewHerdrSession = onNewHerdrSession
         self.onNewZellijSession = onNewZellijSession
+        self.onNewRexSession = onNewRexSession
         self.onAddProject = onAddProject
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
@@ -698,6 +701,7 @@ struct WorkspaceSidebarView: View {
         switch item {
         case .newTmuxSession: onNewTmuxSession(host)
         case .newZellijSession: onNewZellijSession(host)
+        case .newRexSession: onNewRexSession(host)
         case .newHerdrSession: onNewHerdrSession(host)
         case .addProject: onAddProject(host)
         }

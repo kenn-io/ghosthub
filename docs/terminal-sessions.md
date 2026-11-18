@@ -411,6 +411,16 @@ Rex owns the layout, and a change shows once Rex reports it:
 The palette lists New Floating Pane, Float or Tile Pane, and Minimize Floating
 Window. They have no default shortcut; Settings → **Keyboard** can assign one.
 
+**New Rex Session…** (the host's + menu or the palette) and **New Rex Window**
+(the palette, while a Rex window is shown) run `kwt rex new` on the host. It
+opens a shell in a new window and prints the window's ID. A new session takes
+the optional name from the sheet; a new window joins the shown window's
+session, with its shell in the focused pane's directory. Ghosthub lists the
+host's Rex windows again and opens the new one like a listed row. The command
+runs once, without the retry that listings get, because a retry after a lost
+reply could open a second window. A host offers New Rex Session only while its
+last Rex listing found a running server, since Ghosthub never starts one.
+
 ++cmd+w++ closes the view and leaves every pane running. Closing the window
 or ending its session in Rex closes the view. If `kwt rex control` stops
 otherwise, the view shows the error; an SSH host reconnects with backoff, and
@@ -426,7 +436,8 @@ becomes key.
 
 Run `make test-rex REX_BINARY=/absolute/path/to/rex` to verify listing, the
 control channel, pane attachment and keyboard input, and splitting, resizing,
-focus, zoom, floating windows, and closing through libghostty. The test starts a
+focus, zoom, floating windows, and closing through libghostty, and `kwt rex new`
+for a new session and a new window in the shown session. The test starts a
 private Rex server with its own socket and state directory, and stops it during
 teardown. `REX_BINARY` is the `rex` command inside Rex Server (on macOS,
 `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).

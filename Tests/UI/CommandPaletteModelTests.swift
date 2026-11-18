@@ -801,6 +801,14 @@ struct CommandPaletteModelTests {
         #expect(commands.contains {
             $0.action == .newZellijSession(host.id)
         })
+        // No Rex server answers on this host.
+        #expect(!commands.contains { $0.action == .newRexSession(host.id) })
+        var rexHost = host
+        rexHost.rexAvailable = true
+        #expect(makeCommandPaletteCommands(
+            snapshot: .fixture(hosts: [rexHost]),
+            selection: WorkspaceSelection(selectedHostID: host.id)
+        ).contains { $0.action == .newRexSession(host.id) })
         #expect(commands.contains {
             $0.action == .openZellijSession(selection)
         })

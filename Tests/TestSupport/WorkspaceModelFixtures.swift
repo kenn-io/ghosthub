@@ -137,6 +137,7 @@ public extension HostSummary {
         backendTerminals: [BackendTerminalSummary] = [],
         zellijSessions: [ZellijSessionSummary] = [],
         zellijAvailable: Bool = false,
+        rexAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
@@ -163,6 +164,7 @@ public extension HostSummary {
             backendTerminals: backendTerminals,
             zellijSessions: zellijSessions,
             zellijAvailable: zellijAvailable,
+            rexAvailable: rexAvailable,
             decodedConnectionState:
             decodedConnectionState,
             transientOverride: transientOverride,
