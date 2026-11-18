@@ -128,24 +128,35 @@ struct RexInventoryTests {
 
     @Test("a new window runs kwt rex new with each option quoted")
     func newWindowCommand() throws {
-        let command = RexInventory.newWindowCommand(
-            kwtPrelude: "ghosthub_kwt_path=/bin/echo; ",
+        // A stand-in kwt prints each argument it gets on its own line.
+        let recorder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kwt-args-\(UUID().uuidString)")
+        try "#!/bin/sh\nprintf '[%s]\\n' \"$@\"\n".write(
+            to: recorder, atomically: true, encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: recorder.path
+        )
+        defer { try? FileManager.default.removeItem(at: recorder) }
+        let prelude = "ghosthub_kwt_path=\(shellQuotedCommandArgument(recorder.path)); "
+
+        let result = try runShell(RexInventory.newWindowCommand(
+            kwtPrelude: prelude,
             label: "it's work",
             sessionID: "session:01a1-aa",
             cwd: "/home/user-a/my src"
-        )
-        // echo stands in for kwt, so the output shows the arguments it got.
-        let result = try runShell(command)
-        #expect(result.status == 0)
-        #expect(result.stdout == """
-        GHOSTHUB_REX_JSON
-        rex new --label it's work --session session:01a1-aa --cwd /home/user-a/my src
-
-        """)
-        let bare = try runShell(RexInventory.newWindowCommand(
-            kwtPrelude: "ghosthub_kwt_path=/bin/echo; ", label: nil, sessionID: nil, cwd: nil
         ))
-        #expect(bare.stdout.hasSuffix("\nrex new\n"))
+        #expect(result.status == 0)
+        #expect(result.stdout.components(separatedBy: "\n") == [
+            "GHOSTHUB_REX_JSON", "[rex]", "[new]", "[--label]", "[it's work]",
+            "[--session]", "[session:01a1-aa]", "[--cwd]", "[/home/user-a/my src]", "",
+        ])
+        let bare = try runShell(RexInventory.newWindowCommand(
+            kwtPrelude: prelude, label: nil, sessionID: nil, cwd: nil
+        ))
+        #expect(bare.stdout.components(separatedBy: "\n") == [
+            "GHOSTHUB_REX_JSON", "[rex]", "[new]", "",
+        ])
     }
 
     @Test("kwt rex new reports the new window, or why Rex refused")

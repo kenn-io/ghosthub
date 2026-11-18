@@ -349,6 +349,7 @@ public struct RootView: View {
                 cancelHerdrPresentationIntents()
                 cancelHerdrCreation()
                 cancelZellijCreation()
+                cancelRexCreation()
                 cancelHerdrLifecyclePreparation()
                 cancelZellijKillPreparation()
             }

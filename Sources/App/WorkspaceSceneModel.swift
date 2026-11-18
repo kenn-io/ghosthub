@@ -15602,11 +15602,21 @@ extension WorkspaceSceneModel {
 
     /// Opens a shell in a new Rex window on the host, then lists the host's
     /// Rex windows again so the new one can be opened like any listed one.
+    /// Navigating elsewhere first cancels it: before the request, nothing is
+    /// created; after it, the window is listed but not returned to open.
     func createRexWindow(
         _ request: RexWindowRequest,
         hostID: UUID
     ) async throws -> WorkspaceBackendTerminalSelection {
         let activityGeneration = try captureSceneActivity()
+        let navigationRevision = userNavigationRevision
+        func requireNoNavigation() throws {
+            try Task.checkCancellation()
+            try requireActiveScene(activityGeneration)
+            guard navigationRevision == userNavigationRevision else {
+                throw CancellationError()
+            }
+        }
         guard let hostSummary = snapshot.host(id: hostID) else {
             throw BackendTerminalCommandError.unavailable(.rex)
         }
@@ -15614,19 +15624,20 @@ extension WorkspaceSceneModel {
             throw BackendTerminalPresentationError.hostUnavailable(hostSummary.name)
         }
         let connection = await herdrConnectionSnapshot(on: host)
+        try requireNoNavigation()
         let result = await rexWindowCreation(host, request, connection.arguments)
         if case let .failure(.commandFailed(_, status, stderr)) = result,
            SSHConnectionFailure.indicatesUnusableConnection(status: status, output: stderr) {
             await connection.invalidate()
         }
-        try Task.checkCancellation()
-        try requireActiveScene(activityGeneration)
         let selection = try WorkspaceBackendTerminalSelection(
             hostID: hostID, kind: .rex, address: result.get()
         )
+        // List the new window even if the user moved on, so its row shows.
         _ = try await validatedBackendTerminal(
             selection, title: request.label ?? selection.address, on: host
         )
+        try requireNoNavigation()
         return selection
     }
 

@@ -96,6 +96,8 @@ struct WorkspaceBackendTerminalTests {
         let herdrSessions = Mutex<[HerdrSessionSummary]?>(nil)
         /// Holds only the next Herdr session check until opened.
         let nextHerdrValidationGate = Mutex<AsyncGate?>(nil)
+        /// Holds only the next SSH connection a command borrows until opened.
+        let nextConnectionGate = Mutex<AsyncGate?>(nil)
 
         init(_ terminals: [BackendTerminalSummary]) {
             self.terminals = Mutex(terminals)
@@ -181,7 +183,13 @@ struct WorkspaceBackendTerminalTests {
             herdrPaneSplitCapabilityProvider: { _, _, _, _ in .success(nil) },
             kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
             herdrSSHConnectionSnapshotProvider: { _ in
-                SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
+                if let gate = fake.nextConnectionGate.withLock({ gate in
+                    defer { gate = nil }
+                    return gate
+                }) {
+                    await gate.wait()
+                }
+                return SSHConnectionArgumentsSnapshot(testKwtSSHAttachment(
                     routeIdentity: fake.validationRoute.withLock { $0 }
                 ))
             },
@@ -1270,6 +1278,60 @@ struct WorkspaceBackendTerminalTests {
         await #expect(throws: BackendTerminalCommandError.self) {
             _ = try await model.createRexWindow(RexWindowRequest(), hostID: environment.host.id)
         }
+        await model.shutdown()
+    }
+
+    @Test("navigating away while a Rex window is created keeps it listed but does not open it")
+    func rexCreationThenNavigation() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let fake = FakeHost([Self.rexWindow])
+        let created = BackendTerminalSummary(kind: .rex, address: "window:02bb", title: "zsh ~")
+        let gate = AsyncGate()
+        let model = try makeTerminalModel(
+            environment, store: RecordingNativeSessionSurfaceStore(), fake: fake,
+            rexWindowCreation: { _, _, _ in
+                await gate.wait()
+                fake.terminals.withLock { $0.append(created) }
+                return .success(created.address)
+            }
+        )
+        let creating = Task {
+            try await model.createRexWindow(RexWindowRequest(), hostID: environment.host.id)
+        }
+        await gate.waitUntilWaiting()
+        // Cmd-W while Rex creates the window.
+        model.cancelPendingSessionOpens()
+        gate.open()
+
+        await #expect(throws: CancellationError.self) { try await creating.value }
+        #expect(model.snapshot.host(id: environment.host.id)?.backendTerminals
+            .contains(created) == true)
+        await model.shutdown()
+    }
+
+    @Test("navigating away before a remote connection is ready sends nothing")
+    func rexCreationCancelledBeforeSending() async throws {
+        let environment = try environment(terminals: [Self.rexWindow], remote: true)
+        let fake = FakeHost([Self.rexWindow])
+        let gate = AsyncGate()
+        fake.nextConnectionGate.withLock { $0 = gate }
+        let sent = Mutex(0)
+        let model = try makeTerminalModel(
+            environment, store: RecordingNativeSessionSurfaceStore(), fake: fake,
+            rexWindowCreation: { _, _, _ in
+                sent.withLock { $0 += 1 }
+                return .success("window:02bb")
+            }
+        )
+        let creating = Task {
+            try await model.createRexWindow(RexWindowRequest(), hostID: environment.host.id)
+        }
+        await gate.waitUntilWaiting()
+        model.selectFromUser(WorkspaceSelection(selectedHostID: environment.localHostID))
+        gate.open()
+
+        await #expect(throws: CancellationError.self) { try await creating.value }
+        #expect(sent.withLock { $0 } == 0)
         await model.shutdown()
     }
 
