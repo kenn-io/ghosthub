@@ -135,7 +135,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700]
         )
-        for directory in ["state", "data", "config"] {
+        for directory in ["state", "data", "config", "work"] {
             try FileManager.default.createDirectory(
                 at: root.appendingPathComponent(directory),
                 withIntermediateDirectories: false
@@ -194,7 +194,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             FileManager.default.fileExists(atPath: root.path + "/rex.sock")
         }
         let created = rexCommand([
-            "new", "live", "--shell=none", "--",
+            "new", "live", "--shell=none", "-c", root.path + "/work", "--",
             "/bin/sh", "-c", "printf 'REX_READY\\n'; exec /bin/cat",
         ])
         XCTAssertEqual(created.status, 0, created.stderr)
@@ -256,6 +256,20 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         let second = try XCTUnwrap(presentation.tree?.paneIDs.last)
         XCTAssertEqual(presentation.tree?.focusedPaneID, second)
         await waitFor("the second pane's terminal") { surface(second) != nil }
+        // The new shell starts where the first pane's program runs.
+        // Rex starts the shell through login, which reports no directory.
+        var process = ""
+        await waitFor("the second pane's shell") {
+            process = rexCommand([
+                "api", "call", "-s", "live", "com.superlogical.terminal.process",
+                #"{"block_id":"\#(second)"}"#,
+            ]).stdout
+            return process.contains(#""cwd""#)
+        }
+        XCTAssertTrue(
+            process.contains(#"/work""#),
+            "The split must start in the anchor pane's directory: \(process)"
+        )
         let frames = presentation.container.paneViews.mapValues(\.frame)
         XCTAssertLessThan(try XCTUnwrap(frames[first]).maxX, try XCTUnwrap(frames[second]).minX)
 

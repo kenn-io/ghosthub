@@ -364,7 +364,8 @@ Rex owns the layout, and a change shows once Rex reports it:
 
 - Split Right and Split Down (++cmd+d++, ++shift+cmd+d++, or the focused pane's
   header) send `session.new_split` beside the focused pane, with a new shell
-  that takes focus.
+  that takes focus. The shell starts in the directory of the pane's
+  foreground program, as kwt reports it.
 - Releasing a divider sends one `session.resize_pane`. If Rex refuses, the
   divider returns to Rex's ratio.
 - Clicking a pane or the focus shortcuts send `session.focus_block`. Rex's own
