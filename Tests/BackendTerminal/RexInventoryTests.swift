@@ -14,48 +14,66 @@ struct RexInventoryTests {
         """
     }
 
-    @Test("Rex terminal blocks become attachable terminals named as Rex names them")
-    func runningServer() {
-        let result = RexInventory.parse(status: 0, stdout: listing("""
-        {"session_id":"session:a","session_label":"work","window_id":"window:1",
-         "window_label":"editor","window_index":1,"block_id":"block:01a1-aa",
-         "label":"shell","title":"vim main.go","name":"vim main.go","focused":true},
-        {"session_id":"session:b","session_label":"logs","window_id":"window:2",
-         "window_label":"Window 8be734c2","window_index":1,"block_id":"block:01a1-bb",
-         "label":"shell","name":""}
-        """), stderr: "")
+    private func pane(
+        _ block: String,
+        window: String = "window:1",
+        windowLabel: String = "Window 7fca5d29",
+        session: String = "session:a",
+        sessionLabel: String = "work",
+        name: String = "zsh ~",
+        focused: Bool = false
+    ) -> String {
+        """
+        {"session_id":"\(session)","session_label":"\(sessionLabel)","window_id":"\(window)",
+         "window_label":"\(windowLabel)","window_index":1,"block_id":"\(block)",
+         "label":"shell","name":"\(name)","focused":\(focused)}
+        """
+    }
+
+    @Test("each Rex window is one row addressed by its window ID")
+    func windows() {
+        let result = RexInventory.parse(status: 0, stdout: listing([
+            pane("block:aa", window: "window:1", windowLabel: "editor"),
+            pane("block:bb", window: "window:1", windowLabel: "editor"),
+            pane(
+                "block:cc",
+                window: "window:2",
+                windowLabel: "Window 8be734c2",
+                sessionLabel: "logs",
+                name: "tail -f app.log"
+            ),
+        ].joined(separator: ",")), stderr: "")
         #expect(result == .available([
             BackendTerminalSummary(
-                kind: .rex, address: "block:01a1-aa", title: "vim main.go", detail: "work"
+                kind: .rex, address: "window:1", title: "editor", detail: "work · 2 panes"
             ),
             BackendTerminalSummary(
-                kind: .rex, address: "block:01a1-bb", title: "shell", detail: "logs"
+                kind: .rex, address: "window:2", title: "tail -f app.log",
+                detail: "logs · 1 pane"
             ),
         ]))
     }
 
-    @Test("panes that share a name are placed by window and pane number")
-    func panesShareAName() {
-        func pane(_ block: String, window: String, label: String, index: Int) -> String {
-            """
-            {"session_id":"session:a","session_label":"work","window_id":"\(window)",
-             "window_label":"\(label)","window_index":\(index),"block_id":"\(block)",
-             "label":"shell","name":"zsh ~"}
-            """
-        }
+    @Test("a window with Rex's default label is named for its focused pane")
+    func defaultLabel() {
         let result = RexInventory.parse(status: 0, stdout: listing([
-            pane("block:aa", window: "window:1", label: "Window 7fca5d29", index: 1),
-            pane("block:bb", window: "window:1", label: "Window 7fca5d29", index: 1),
-            pane("block:cc", window: "window:2", label: "build", index: 2),
+            pane("block:aa", name: "zsh ~"),
+            pane("block:bb", name: "vim main.go", focused: true),
         ].joined(separator: ",")), stderr: "")
-        guard case let .available(terminals) = result else {
-            Issue.record("expected terminals, got \(result)")
-            return
-        }
-        #expect(terminals.map(\.title) == ["zsh ~", "zsh ~", "zsh ~"])
-        #expect(terminals.map(\.detail) == [
-            "work / window 1 / pane 1", "work / window 1 / pane 2", "work / build",
-        ])
+        #expect(result == .available([
+            BackendTerminalSummary(
+                kind: .rex, address: "window:1", title: "vim main.go", detail: "work · 2 panes"
+            ),
+        ]))
+    }
+
+    @Test("a window ID listed under two sessions is rejected")
+    func windowInTwoSessions() {
+        let result = RexInventory.parse(status: 0, stdout: listing([
+            pane("block:aa", session: "session:a"),
+            pane("block:bb", session: "session:b"),
+        ].joined(separator: ",")), stderr: "")
+        #expect(result == .failure(.malformedJSON(.rex)))
     }
 
     @Test("a host without Rex, or with its server stopped, is silent", arguments: [
@@ -71,10 +89,12 @@ struct RexInventoryTests {
         #expect(RexInventory.parse(status: 127, stdout: "", stderr: "") == .unavailable)
     }
 
-    @Test("block IDs that could act as options or repeat are rejected", arguments: [
-        #"{"block_id":"--help"}"#,
-        #"{"block_id":"block:a b"}"#,
-        #"{"block_id":"block:aa"},{"block_id":"block:aa"}"#,
+    @Test("block and window IDs that could act as options or repeat are rejected", arguments: [
+        #"{"window_id":"window:1","block_id":"--help"}"#,
+        #"{"window_id":"window:1","block_id":"block:a b"}"#,
+        #"{"window_id":"window:1","block_id":"block:aa"},{"window_id":"window:1","block_id":"block:aa"}"#,
+        #"{"window_id":"--help","block_id":"block:aa"}"#,
+        #"{"block_id":"block:aa"}"#,
     ])
     func invalidBlocks(_ terminals: String) {
         #expect(RexInventory.parse(status: 0, stdout: listing(terminals), stderr: "")
@@ -180,6 +200,61 @@ struct BackendTerminalAttachmentInfoTests {
             decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
         )
         #expect(output == "attach t7\n")
+    }
+
+    @Test("a local Rex window is followed through kwt rex control from the login shell")
+    func localControl() throws {
+        let command = try BackendTerminalAttachmentInfo(
+            terminal: BackendTerminalSummary(kind: .rex, address: "window:01a1-aa"),
+            host: .local
+        ).controlCommand(executablePath: "/bin/echo")
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ["SHELL": "/bin/sh", "HOME": home.path, "PATH": "/usr/bin:/bin"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        process.waitUntilExit()
+        let output = String(
+            decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
+        )
+        #expect(output == "GHOSTHUB_REX_CONTROL\nrex control window:01a1-aa\n")
+    }
+
+    @Test("a remote Rex window is followed over ssh without a terminal")
+    func remoteControl() throws {
+        let host = CommandHost.ssh(SSHHostInfo(user: "me", hostname: "devbox", port: 2222))
+        let command = try BackendTerminalAttachmentInfo(
+            terminal: BackendTerminalSummary(kind: .rex, address: "window:01a1-aa"),
+            host: host
+        ).controlCommand(
+            executablePath: "/home/me/.ghosthub/helpers/kwt/abc/kwt",
+            sshConnectionArguments: ["-o", "ControlPath=/tmp/c"]
+        )
+        #expect(command.contains("/usr/bin/ssh"))
+        #expect(!command.contains("-tt"))
+        #expect(command.contains("me@devbox"))
+        #expect(command.contains("2222"))
+        #expect(command.contains("ControlPath=/tmp/c"))
+        #expect(command.contains("control"))
+        #expect(command.contains("window:01a1-aa"))
+    }
+
+    @Test("an address that is not a Rex window never reaches kwt rex control", arguments: [
+        "--help", "block:01a1-aa", "window:a b",
+    ])
+    func invalidRexWindow(_ address: String) {
+        #expect(throws: BackendTerminalCommandError.invalidAddress(.rex, address: address)) {
+            try BackendTerminalAttachmentInfo(
+                terminal: BackendTerminalSummary(kind: .rex, address: address),
+                host: .local
+            ).controlCommand(executablePath: "/kwt")
+        }
     }
 
     @Test("an address that is not a Rex block never reaches kwt")

@@ -159,31 +159,47 @@ Use Herdr desktop to view or change the split layout. Ghosthub's **Split Right**
 and **Split Down** actions are unavailable for desktop terminals. Older
 Herdr TUI sessions open as a whole session, including their visible splits.
 
-## Rex terminals
+## Rex windows
 
-Ghosthub on macOS can open terminals from a running
+Ghosthub on macOS can open windows from a running
 [Rex](https://www.superlogical.com/rex/docs) server on your Mac or an SSH host.
-Each Rex terminal block opens on its own, at the size of the Ghosthub window.
-Ghosthub does not display Rex's windows or split layout.
+A Rex window opens with all of its panes, in the split layout Rex keeps.
 
 1. Install Rex Server and start it, for example by opening Rex. Ghosthub never
    starts a stopped Rex server.
-2. Start a terminal in Rex, or run `rex run -- htop`.
-3. Expand the host in Ghosthub and select the terminal's **rex** row. The row
-   shows the name Rex shows, such as `zsh ~`, followed by its Rex session and,
-   when needed, its window and pane number. You can
-   also press ++shift+cmd+p++ and search for it.
+2. Open a window in Rex, or run `rex run -- htop`.
+3. Expand the host in Ghosthub and select the window's **rex** row. The row
+   shows the window's name, or the name of its focused pane such as `zsh ~`,
+   followed by its Rex session and pane count. You can also press
+   ++shift+cmd+p++ and search for it.
 
-Switching away or pressing ++cmd+w++ detaches and leaves the program running.
+Each pane has a header with its name. Click a pane to focus it. In the focused
+pane:
+
+| Action | Shortcut |
+| --- | --- |
+| Split right | ++cmd+d++ |
+| Split down | ++shift+cmd+d++ |
+| Focus the pane to the left, right, above, or below | ++option+cmd+left++, ++option+cmd+right++, ++option+cmd+up++, ++option+cmd+down++ |
+| Focus the next or previous pane | <kbd>⌘</kbd><kbd>&#93;</kbd>, <kbd>⌘</kbd><kbd>&#91;</kbd> |
+| Zoom or unzoom the pane | ++shift+cmd+enter++ |
+
+Drag the space between panes to resize them. The focused pane's header also
+has split, zoom, and close buttons. **Close Pane…** in the Command Palette or
+the header asks first, because it ends the pane's program. Changes go to Rex,
+so Rex.app and other clients show them too, and changes made in Rex show in
+Ghosthub.
+
+Switching away or pressing ++cmd+w++ detaches and leaves every pane running.
 Press ++ctrl+tab++ or ++ctrl+shift+tab++ to move to the next or previous session
-in the host's list. If the program exits, **Reconnect** closes the terminal's page
-instead of reopening it.
+in the host's list. Closing the window in Rex closes it in Ghosthub. If one
+pane loses its connection, Ghosthub attaches it again, or shows **Reconnect**
+on the pane.
 
 Ghosthub reaches Rex through its own copy of kwt, so you do not need to install
 anything else. On an SSH host, it uses the
 [managed kwt helper](remote-hosts.md#managed-kwt-helper) that Ghosthub keeps up
-to date there. Create, split, and close Rex terminals in Rex or with the `rex`
-command.
+to date there.
 
 ## Attach and detach
 

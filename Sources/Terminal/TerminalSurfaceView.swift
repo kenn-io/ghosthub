@@ -1355,7 +1355,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
 
     override public func keyDown(with event: NSEvent) {
         guard acceptsFirstResponder else { return }
-        if !hasEffectiveKeyboardFocus,
+        // A key can recover lost focus, but not for a surface that must
+        // not take focus by itself, such as a pane the user moved away from.
+        if !hasEffectiveKeyboardFocus, !suppressAutoFocus,
            !isCompetingFirstResponder(window?.firstResponder) {
             ensureFirstResponder()
         }
@@ -1453,7 +1455,9 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
     ) -> Bool {
         guard acceptsFirstResponder else { return false }
         guard event.type == .keyDown else { return false }
-        if !hasEffectiveKeyboardFocus,
+        // A key can recover lost focus, but not for a surface that must
+        // not take focus by itself, such as a pane the user moved away from.
+        if !hasEffectiveKeyboardFocus, !suppressAutoFocus,
            !isCompetingFirstResponder(window?.firstResponder) {
             ensureFirstResponder()
         }
@@ -2185,5 +2189,13 @@ enum TerminalSurfaceError: LocalizedError {
                 ? "Surface closed while process is still running"
                 : "Surface closed after process exited"
         }
+    }
+}
+
+extension TerminalSurfaceView: TerminalSplitPaneContent {
+    public var view: NSView { self }
+
+    public func setResizeDeferred(_ deferred: Bool) {
+        setPresentationResizeDeferred(deferred)
     }
 }

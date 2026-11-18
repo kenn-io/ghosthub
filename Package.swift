@@ -90,6 +90,7 @@ var targets: [Target] = [
         name: "GhosthubBackendTerminal",
         dependencies: [
             "GhosthubHerdr",
+            "GhosthubTerminalSupport",
             "GhosthubTransport",
             "GhosthubWorkspace",
         ],
@@ -308,6 +309,7 @@ targets.append(
         name: "GhosthubBackendTerminalTests",
         dependencies: [
             "GhosthubBackendTerminal",
+            "GhosthubTerminalSupport",
             "GhosthubTransport",
             "GhosthubWorkspace",
         ],

@@ -4,11 +4,15 @@ import GhosthubWorkspace
 
 /// Rex has no client that runs inside a terminal, so Ghosthub uses its
 /// pinned kwt: `kwt rex ls --json` lists the terminal blocks on the host
-/// account's Rex server and `kwt rex attach BLOCK_ID` shows one. Neither
-/// starts a Rex server.
+/// account's Rex server, which Ghosthub shows as one row per Rex window.
+/// `kwt rex control WINDOW_ID` follows a window's layout and
+/// `kwt rex attach BLOCK_ID` shows one of its panes. None of them starts a
+/// Rex server.
 public enum RexInventory {
     public static let marker = "GHOSTHUB_REX_JSON"
     public static let pathMarker = "GHOSTHUB_KWT_PATH"
+    /// `kwt rex control` output starts after this line.
+    public static let controlMarker = "GHOSTHUB_REX_CONTROL"
 
     /// `kwtPrelude` sets `ghosthub_kwt_path` to the host's pinned kwt, or
     /// exits 127 when there is none.
@@ -51,49 +55,53 @@ public enum RexInventory {
             return .failure(.malformedJSON(.rex))
         }
         var blocks = Set<String>()
+        var sessionByWindow: [String: String] = [:]
         for terminal in listing.terminals {
-            guard isBlockID(terminal.blockID), blocks.insert(terminal.blockID).inserted else {
+            guard isBlockID(terminal.blockID), blocks.insert(terminal.blockID).inserted,
+                  let windowID = terminal.windowID, isWindowID(windowID)
+            else {
                 return .failure(.malformedJSON(.rex))
             }
+            // A row opens its window by ID alone, so the ID must name one
+            // window on the server.
+            let session = sessionByWindow[windowID, default: terminal.sessionKey]
+            guard session == terminal.sessionKey else {
+                return .failure(.malformedJSON(.rex))
+            }
+            sessionByWindow[windowID] = session
         }
         return .available(summaries(listing.terminals))
     }
 
-    /// Panes in one Rex window often share a name, such as `zsh ~`, so the
-    /// detail places each one: its session, its window when the session has
-    /// several, and its pane number when the window has several.
+    /// One row per Rex window, in the order Rex lists them. Rex names an
+    /// unnamed window `Window` and an ID fragment, so such a window takes
+    /// its focused pane's name instead.
     private static func summaries(_ terminals: [Terminal]) -> [BackendTerminalSummary] {
-        let windowsBySession = Dictionary(grouping: terminals, by: \.sessionKey)
-            .mapValues { Set($0.map(\.windowKey)).count }
-        let panesByWindow = Dictionary(grouping: terminals, by: \.windowKey)
-            .mapValues(\.count)
-        var paneNumbers: [String: Int] = [:]
-        return terminals.map { terminal in
-            paneNumbers[terminal.windowKey, default: 0] += 1
-            var place = [terminal.sessionLabel].compactMap(nonBlank)
-            if windowsBySession[terminal.sessionKey, default: 0] > 1 {
-                place.append(windowName(terminal))
+        var order: [String] = []
+        var panes: [String: [Terminal]] = [:]
+        for terminal in terminals {
+            let windowID = terminal.windowID ?? ""
+            if panes[windowID] == nil {
+                order.append(windowID)
             }
-            if panesByWindow[terminal.windowKey, default: 0] > 1 {
-                place.append("pane \(paneNumbers[terminal.windowKey, default: 0])")
+            panes[windowID, default: []].append(terminal)
+        }
+        return order.compactMap { windowID in
+            guard let window = panes[windowID], let first = window.first else { return nil }
+            let focused = window.first(where: { $0.focused == true }) ?? first
+            let label = nonBlank(first.windowLabel).flatMap {
+                $0.range(of: "^Window [0-9a-f]{8}$", options: .regularExpression) == nil
+                    ? $0 : nil
             }
+            let count = window.count == 1 ? "1 pane" : "\(window.count) panes"
             return BackendTerminalSummary(
                 kind: .rex,
-                address: terminal.blockID,
-                title: [terminal.name, terminal.label].compactMap(nonBlank).first,
-                detail: place.isEmpty ? nil : place.joined(separator: " / ")
+                address: windowID,
+                title: label ?? [focused.name, focused.label].compactMap(nonBlank).first,
+                detail: ([nonBlank(first.sessionLabel)].compactMap(\.self) + [count])
+                    .joined(separator: " · ")
             )
         }
-    }
-
-    /// Rex labels an unnamed window `Window` and an ID fragment; its
-    /// position reads better.
-    private static func windowName(_ terminal: Terminal) -> String {
-        if let label = nonBlank(terminal.windowLabel),
-           label.range(of: "^Window [0-9a-f]{8}$", options: .regularExpression) == nil {
-            return label
-        }
-        return terminal.windowIndex.map { "window \($0)" } ?? "window"
     }
 
     private static func nonBlank(_ value: String?) -> String? {
@@ -109,6 +117,11 @@ public enum RexInventory {
         value.range(of: "^block:[0-9A-Za-z-]+$", options: .regularExpression) != nil
     }
 
+    /// Rex window IDs look like `window:01a1c874-d309-72f9-b5e6-8ef31add4481`.
+    public static func isWindowID(_ value: String) -> Bool {
+        value.range(of: "^window:[0-9A-Za-z-]+$", options: .regularExpression) != nil
+    }
+
     private struct Listing: Decodable {
         var status: String
         var terminals: [Terminal]
@@ -122,10 +135,9 @@ public enum RexInventory {
         var sessionLabel: String?
         var windowID: String?
         var windowLabel: String?
-        var windowIndex: Int?
+        var focused: Bool?
 
         var sessionKey: String { sessionID ?? "" }
-        var windowKey: String { "\(sessionKey) \(windowID ?? "")" }
 
         enum CodingKeys: String, CodingKey {
             case blockID = "block_id"
@@ -135,7 +147,7 @@ public enum RexInventory {
             case sessionLabel = "session_label"
             case windowID = "window_id"
             case windowLabel = "window_label"
-            case windowIndex = "window_index"
+            case focused
         }
     }
 }

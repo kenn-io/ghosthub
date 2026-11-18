@@ -12,10 +12,11 @@ test, and documentation-only changes are omitted.
 
 ### Added
 
-- Open terminals from a running [Rex](https://www.superlogical.com/rex/docs)
-  server on your Mac or an SSH host. They appear in the host's session list
-  with a **rex** label, and in the Command Palette. Closing one in Ghosthub leaves its
-  program running in Rex.
+- Open windows from a running [Rex](https://www.superlogical.com/rex/docs)
+  server on your Mac or an SSH host, with their split panes. They appear in the
+  host's session list with a **rex** label, and in the Command Palette. Split,
+  resize, focus, zoom, and close panes in Ghosthub; Rex keeps the layout.
+  Closing a window in Ghosthub leaves its panes running in Rex.
 
 ### Changed
 

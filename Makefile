@@ -570,7 +570,7 @@ test-rex: bootstrap-libghostty ensure-kwt
 	@test -x "$(REX_BINARY)" || { echo 'Set REX_BINARY to the rex command from Rex Server.' >&2; exit 1; }
 	@GHOSTHUB_TEST_REX_BINARY="$(REX_BINARY)" GHOSTHUB_TEST_KWT_BINARY="$(KWT_BINARY_PATH)" \
 		sh tools/run_with_timeout.sh 180 sh tools/run_swift_tests.sh \
-		$(SWIFT) test --filter TerminalSurfaceViewInputTests/testRexTerminalAttachment
+		$(SWIFT) test --filter TerminalSurfaceViewInputTests/testRexWindowSplitView
 
 test-tmux-attach: bootstrap-libghostty
 	@set -euo pipefail; \

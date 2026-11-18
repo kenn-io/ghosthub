@@ -11,7 +11,7 @@ struct CommandPaletteModelTests {
         arguments: [BackendTerminalKind.herdrCore, .rex]
     )
     func backendTerminalCommands(_ kind: BackendTerminalKind) throws {
-        let address = kind == .rex ? "block:aa" : "t7"
+        let address = kind == .rex ? "window:aa" : "t7"
         let host = HostSummary.fixture(
             herdrAvailable: false,
             backendTerminals: [.init(kind: kind, address: address, title: "review")]
@@ -24,7 +24,7 @@ struct CommandPaletteModelTests {
         )
         let open = try #require(commands.first { $0.action == .openBackendTerminal(terminal) })
         #expect(open.title == (kind == .rex
-                ? "Open Rex terminal: review" : "Open Herdr terminal: review"))
+                ? "Open Rex window: review" : "Open Herdr terminal: review"))
         #expect(!commands.contains { $0.action == .newHerdrSession(host.id) })
         #expect(!commands.contains {
             if case .stopHerdrSession = $0.action {

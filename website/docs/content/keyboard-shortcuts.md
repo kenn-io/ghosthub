@@ -49,8 +49,11 @@ numbered sibling navigation instead.
 | Hide or show the sidebar | ++cmd+b++ |
 | Create a worktree | ++shift+cmd+n++ |
 | Import a pull request | ++shift+cmd+i++ |
-| Split the active tmux or Herdr TUI pane right | ++cmd+d++ |
-| Split the active tmux or Herdr TUI pane down | ++shift+cmd+d++ |
+| Split the active tmux, Herdr TUI, or Rex pane right | ++cmd+d++ |
+| Split the active tmux, Herdr TUI, or Rex pane down | ++shift+cmd+d++ |
+| Focus the Rex pane to the left, right, above, or below | ++option+cmd+left++, ++option+cmd+right++, ++option+cmd+up++, ++option+cmd+down++ |
+| Focus the next or previous Rex pane | <kbd>⌘</kbd><kbd>&#93;</kbd>, <kbd>⌘</kbd><kbd>&#91;</kbd> |
+| Zoom or unzoom the focused Rex pane | ++shift+cmd+enter++ |
 | Reload configuration | ++shift+cmd+comma++ |
 | Open application log | ++option+cmd+l++ |
 | Find in the active terminal | ++cmd+f++ |
@@ -58,8 +61,10 @@ numbered sibling navigation instead.
 | Find previous, toward newer history | ++shift+cmd+g++ |
 | Hide the Find bar | ++shift+cmd+f++ |
 
-New tmux Session, New Herdr TUI Session, and New Zellij Session remain available
-in menus and the Command Palette but are unbound by default.
+New tmux Session, New Herdr TUI Session, New Zellij Session, and Close Pane…
+remain available in menus or the Command Palette but are unbound by default.
+The Rex focus and zoom shortcuts act only while a Rex window is shown;
+otherwise the keys go to the terminal.
 
 Herdr desktop terminals do not support Ghosthub's Split actions. See
 [Herdr desktop splits](sessions.md#herdr-desktop-splits) for how existing panes

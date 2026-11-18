@@ -334,6 +334,9 @@ func makeModel(
     nativeBackendTerminalSurfaceStore: (any NativeSessionSurfaceStoring)? = nil,
     nativeBackendTerminalExecutableProvider:
     NativeBackendTerminalCoordinator.ExecutableProvider? = nil,
+    rexControlChannelFactory: @escaping RexControlChannelFactory = { _ in
+        FakeRexControlChannel()
+    },
     nativeTmuxPathProvider:
     (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
     nativeHerdrPathProvider: (@Sendable (CommandHost)
@@ -622,6 +625,7 @@ func makeModel(
         nativeZellijSurfaceStore: nativeZellijSurfaceStore,
         nativeBackendTerminalSurfaceStore: nativeBackendTerminalSurfaceStore,
         nativeBackendTerminalExecutableProvider: nativeBackendTerminalExecutableProvider,
+        rexControlChannelFactory: rexControlChannelFactory,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
         nativeHerdrPathProvider: nativeHerdrPathProvider,
         nativeZellijPathProvider: nativeZellijPathProvider,
@@ -815,6 +819,9 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
     var terminalFindController = TerminalFindController.unavailable
     var hasEffectiveKeyboardFocus = false
     var isKeyboardInteractionSuspended = false
+    var suppressAutoFocus = false
+    /// Focus states sent to the terminal, oldest first.
+    private(set) var focusStates: [Bool] = []
     var paneSplitShortcutHandler: ((TerminalPaneSplitShortcut) -> Void)?
     /// Mutable so a test can fail one attach and let the next succeed, which is
     /// how a transient surface failure behaves in practice.
@@ -855,6 +862,15 @@ final class RecordingNativeSessionPaneSurface: NativeSessionPaneSurfacing {
 
     func requestKeyboardFocus() {
         keyboardFocusRequestCount += 1
+    }
+
+    func focusDidChange(_ focused: Bool) {
+        focusStates.append(focused)
+    }
+
+    func resignKeyboardFocus() {
+        hasEffectiveKeyboardFocus = false
+        focusStates.append(false)
     }
 
     @discardableResult

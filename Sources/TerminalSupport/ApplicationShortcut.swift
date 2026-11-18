@@ -24,6 +24,14 @@ public enum ApplicationShortcutAction: String, CaseIterable, Sendable {
     case hideFindBar = "hide-find-bar"
     case splitRight = "split-right"
     case splitDown = "split-down"
+    case focusPaneLeft = "focus-pane-left"
+    case focusPaneRight = "focus-pane-right"
+    case focusPaneUp = "focus-pane-up"
+    case focusPaneDown = "focus-pane-down"
+    case focusNextPane = "focus-next-pane"
+    case focusPreviousPane = "focus-previous-pane"
+    case zoomPane = "zoom-pane"
+    case closePane = "close-pane"
     case reloadConfiguration = "reload-configuration"
     case openApplicationLog = "open-application-log"
 
@@ -423,6 +431,14 @@ public enum ApplicationShortcutCatalog {
         definition(.hideFindBar, "Hide Find Bar", .application, "cmd+shift+f"),
         definition(.splitRight, "Split Right", .multiplexer, "cmd+d"),
         definition(.splitDown, "Split Down", .multiplexer, "cmd+shift+d"),
+        definition(.focusPaneLeft, "Focus Pane Left", .multiplexer, "cmd+opt+left"),
+        definition(.focusPaneRight, "Focus Pane Right", .multiplexer, "cmd+opt+right"),
+        definition(.focusPaneUp, "Focus Pane Up", .multiplexer, "cmd+opt+up"),
+        definition(.focusPaneDown, "Focus Pane Down", .multiplexer, "cmd+opt+down"),
+        definition(.focusNextPane, "Focus Next Pane", .multiplexer, "cmd+]"),
+        definition(.focusPreviousPane, "Focus Previous Pane", .multiplexer, "cmd+["),
+        definition(.zoomPane, "Zoom Pane", .multiplexer, "cmd+shift+return"),
+        definition(.closePane, "Close Pane…", .multiplexer, nil),
         definition(.reloadConfiguration, "Reload Configuration", .application, "cmd+shift+,"),
         definition(.openApplicationLog, "Open Application Log", .application, "cmd+opt+l"),
     ]

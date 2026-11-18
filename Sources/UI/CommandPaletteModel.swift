@@ -187,7 +187,7 @@ public enum CommandPaletteModel {
             WorkspaceCommandItem(
                 id: "split-right",
                 title: "Split Right",
-                subtitle: "Split the active tmux or Herdr TUI pane to the right.",
+                subtitle: "Split the active tmux, Herdr TUI, or Rex pane to the right.",
                 shortcutAction: .splitRight,
                 shortcut: shortcuts[.splitRight],
                 action: .applicationShortcut(.splitRight)
@@ -195,10 +195,28 @@ public enum CommandPaletteModel {
             WorkspaceCommandItem(
                 id: "split-down",
                 title: "Split Down",
-                subtitle: "Split the active tmux or Herdr TUI pane downward.",
+                subtitle: "Split the active tmux, Herdr TUI, or Rex pane downward.",
                 shortcutAction: .splitDown,
                 shortcut: shortcuts[.splitDown],
                 action: .applicationShortcut(.splitDown)
+            ),
+            WorkspaceCommandItem(
+                id: "zoom-pane",
+                title: "Zoom Pane",
+                subtitle: "Show the focused Rex pane over its window, or show every pane again.",
+                keywords: ["zoom", "pane", "rex", "maximize"],
+                shortcutAction: .zoomPane,
+                shortcut: shortcuts[.zoomPane],
+                action: .applicationShortcut(.zoomPane)
+            ),
+            WorkspaceCommandItem(
+                id: "close-pane",
+                title: "Close Pane…",
+                subtitle: "End the program in the focused Rex pane and remove the pane.",
+                keywords: ["close", "pane", "rex", "kill"],
+                shortcutAction: .closePane,
+                shortcut: shortcuts[.closePane],
+                action: .applicationShortcut(.closePane)
             ),
         ]
 
@@ -747,12 +765,13 @@ public enum CommandPaletteModel {
                         hostID: hostID, kind: kind, address: address
                     )
                     let backend = kind == .rex ? "Rex" : "Herdr"
+                    let noun = kind == .rex ? "window" : "terminal"
                     return WorkspaceCommandItem(
                         id: "open-backend-terminal-\(terminal.id)",
-                        title: "Open \(backend) terminal: \(row.title)",
+                        title: "Open \(backend) \(noun): \(row.title)",
                         subtitle: "\(row.subtitle ?? address) on \(section.host.name)",
                         keywords: [
-                            backend.lowercased(), "terminal", "open", "attach",
+                            backend.lowercased(), noun, "terminal", "open", "attach",
                             row.title, address, section.host.name, section.row.title,
                         ],
                         action: .openBackendTerminal(terminal)

@@ -1,0 +1,189 @@
+import Foundation
+import GhosthubTerminalSupport
+
+/// One line from `kwt rex control WINDOW_ID`.
+public enum RexControlMessage: Equatable, Sendable {
+    /// The session's layout, written at start and after each change.
+    case view(RexControlView)
+    /// The answer to the request with this ID, with the session's revision
+    /// after it when Rex reports one.
+    case reply(id: Int, revision: Int?, error: RexControlError?)
+    /// The session is gone.
+    case ended
+
+    public static func decode(line: Data) throws -> RexControlMessage {
+        let wire = try JSONDecoder().decode(Wire.self, from: line)
+        switch wire.type {
+        case "view":
+            guard let view = wire.view else { throw RexControlError.malformed }
+            return try .view(RexControlView(view, terminals: wire.terminals ?? [:]))
+        case "reply":
+            guard let id = wire.id else { throw RexControlError.malformed }
+            return .reply(id: id, revision: wire.result?.revision, error: wire.error)
+        case "ended":
+            return .ended
+        default:
+            throw RexControlError.malformed
+        }
+    }
+
+    private struct Wire: Decodable {
+        var type: String
+        var id: Int?
+        var error: RexControlError?
+        var result: Result?
+        var view: SessionView?
+        var terminals: [String: Terminal]?
+    }
+
+    struct Terminal: Decodable {
+        var name: String
+    }
+
+    struct Result: Decodable {
+        var revision: Int?
+    }
+}
+
+public struct RexControlError: Error, Equatable, Sendable, Decodable {
+    public var code: String
+    public var message: String
+
+    public init(code: String, message: String) {
+        self.code = code
+        self.message = message
+    }
+
+    static let malformed = RexControlError(
+        code: "malformed_line",
+        message: "kwt rex control wrote a line Ghosthub cannot read"
+    )
+}
+
+/// A Rex session's windows, as `kwt rex control` reports them.
+public struct RexControlView: Equatable, Sendable {
+    public struct Window: Equatable, Sendable {
+        public var id: String
+        public var label: String
+        /// The window's tiled panes, or nil when it has none.
+        public var tree: TerminalSplitTree?
+    }
+
+    public var revision: Int
+    public var sessionID: String
+    public var sessionLabel: String
+    public var windows: [Window]
+    /// Each pane's display name by block ID: the terminal's name from kwt,
+    /// else the block's Rex label.
+    public var paneNames: [String: String]
+
+    fileprivate init(
+        _ view: SessionView,
+        terminals: [String: RexControlMessage.Terminal]
+    ) throws {
+        revision = view.revision
+        sessionID = view.sessionID
+        sessionLabel = view.label ?? ""
+        var names: [String: String] = [:]
+        windows = try view.windows.map { window in
+            let tiled = window.layers.first { $0.kind == "tiled" }
+            for block in tiled?.blocks ?? [] {
+                names[block.blockID] = terminals[block.blockID]?.name ?? block.label
+            }
+            return try Window(
+                id: window.windowID,
+                label: window.label ?? "",
+                tree: tiled?.layout.map { layout in
+                    try TerminalSplitTree(
+                        root: layout.node(),
+                        focusedPaneID: window.focusedBlockID,
+                        zoomedPaneID: window.zoomedBlockID
+                    )
+                }
+            )
+        }
+        paneNames = names
+    }
+}
+
+private struct SessionView: Decodable {
+    var revision: Int
+    var sessionID: String
+    var label: String?
+    var windows: [Window]
+
+    struct Window: Decodable {
+        var windowID: String
+        var label: String?
+        var focusedBlockID: String?
+        var zoomedBlockID: String?
+        var layers: [Layer]
+
+        enum CodingKeys: String, CodingKey {
+            case windowID = "window_id"
+            case label
+            case focusedBlockID = "focused_block_id"
+            case zoomedBlockID = "zoomed_block_id"
+            case layers
+        }
+    }
+
+    struct Layer: Decodable {
+        var kind: String
+        var layout: Layout?
+        var blocks: [Block]?
+    }
+
+    struct Block: Decodable {
+        var blockID: String
+        var label: String
+
+        enum CodingKeys: String, CodingKey {
+            case blockID = "block_id"
+            case label
+        }
+    }
+
+    final class Layout: Decodable {
+        var blockID: String?
+        var split: Split?
+
+        func node() throws -> TerminalSplitTree.Node {
+            if let blockID {
+                return .pane(blockID)
+            }
+            guard let split else { throw RexControlError.malformed }
+            return try .split(
+                id: split.splitID,
+                axis: split.direction == "vertical" ? .vertical : .horizontal,
+                ratio: split.ratio,
+                first: split.before.node(),
+                second: split.after.node()
+            )
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case blockID = "block_id"
+            case split
+        }
+    }
+
+    struct Split: Decodable {
+        var splitID: String
+        var direction: String
+        var ratio: Double
+        var before: Layout
+        var after: Layout
+
+        enum CodingKeys: String, CodingKey {
+            case splitID = "split_id"
+            case direction, ratio, before, after
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case revision
+        case sessionID = "session_id"
+        case label, windows
+    }
+}
