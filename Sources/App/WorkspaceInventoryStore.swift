@@ -138,10 +138,10 @@ final class WorkspaceInventoryStore {
 
     private let scheduledRefreshSubject = PassthroughSubject<Void, Never>()
 
-    /// Fires each time the cadence refreshes subscribed inventory, so scenes
-    /// can refresh the Herdr and Zellij inventories they own on the same
-    /// schedule. Reactivation does not fire it; activation stays free of
-    /// scene-owned fleet discovery.
+    /// Fires each time the cadence or reactivation refreshes subscribed
+    /// inventory, so scenes can refresh the Herdr, Zellij, and backend
+    /// terminal inventories they own at the same moments. Scenes run that
+    /// discovery in background tasks, so activation never waits for it.
     var scheduledRefreshPublisher: AnyPublisher<Void, Never> {
         scheduledRefreshSubject.eraseToAnyPublisher()
     }
@@ -383,6 +383,7 @@ final class WorkspaceInventoryStore {
             requestTmux(host)
         }
         reconcileCadence()
+        scheduledRefreshSubject.send()
     }
 
     func startApplicationActivityMonitoring(

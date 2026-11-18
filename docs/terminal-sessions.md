@@ -350,7 +350,9 @@ with Rex stopped or absent lists no Rex windows.
 title is the window's label. Rex's automatic `Window <id>` labels are replaced
 by the name of the window's focused pane: its program's title, or else its
 foreground program and directory, such as `zsh ~`. The detail is the session
-and pane count. Only window IDs of the form `window:<id>` reach kwt.
+and pane count. While a window is open, its row follows the window's live
+view instead of waiting for the next listing. Only window IDs of the form
+`window:<id>` reach kwt.
 
 Opening a window starts one `kwt rex control <window-id>`, which writes the
 session view as a JSON line at the start and after each change, and carries
@@ -364,7 +366,8 @@ Rex owns the layout, and a change shows once Rex reports it:
 
 - Split Right and Split Down (++cmd+d++, ++shift+cmd+d++, or the focused pane's
   header) send `session.new_split` beside the focused pane, with a new shell
-  that takes focus.
+  that takes focus. The shell starts in the directory of the pane's
+  foreground program, as kwt reports it.
 - Releasing a divider sends one `session.resize_pane`. If Rex refuses, the
   divider returns to Rex's ratio.
 - Clicking a pane or the focus shortcuts send `session.focus_block`. Rex's own

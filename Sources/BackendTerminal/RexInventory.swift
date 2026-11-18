@@ -73,9 +73,7 @@ public enum RexInventory {
         return .available(summaries(listing.terminals))
     }
 
-    /// One row per Rex window, in the order Rex lists them. Rex names an
-    /// unnamed window `Window` and an ID fragment, so such a window takes
-    /// its focused pane's name instead.
+    /// One row per Rex window, in the order Rex lists them.
     private static func summaries(_ terminals: [Terminal]) -> [BackendTerminalSummary] {
         var order: [String] = []
         var panes: [String: [Terminal]] = [:]
@@ -89,19 +87,38 @@ public enum RexInventory {
         return order.compactMap { windowID in
             guard let window = panes[windowID], let first = window.first else { return nil }
             let focused = window.first(where: { $0.focused == true }) ?? first
-            let label = nonBlank(first.windowLabel).flatMap {
-                $0.range(of: "^Window [0-9a-f]{8}$", options: .regularExpression) == nil
-                    ? $0 : nil
-            }
-            let count = window.count == 1 ? "1 pane" : "\(window.count) panes"
-            return BackendTerminalSummary(
-                kind: .rex,
-                address: windowID,
-                title: label ?? [focused.name, focused.label].compactMap(nonBlank).first,
-                detail: ([nonBlank(first.sessionLabel)].compactMap(\.self) + [count])
-                    .joined(separator: " · ")
+            return windowRow(
+                windowID: windowID,
+                windowLabel: first.windowLabel,
+                sessionLabel: first.sessionLabel,
+                focusedPaneNames: [focused.name, focused.label],
+                paneCount: window.count
             )
         }
+    }
+
+    /// A Rex window's sidebar row. Rex names an unnamed window `Window` and
+    /// an ID fragment, so such a window takes the first of its focused
+    /// pane's names that is not blank.
+    public static func windowRow(
+        windowID: String,
+        windowLabel: String?,
+        sessionLabel: String?,
+        focusedPaneNames: [String?],
+        paneCount: Int
+    ) -> BackendTerminalSummary {
+        let label = nonBlank(windowLabel).flatMap {
+            $0.range(of: "^Window [0-9a-f]{8}$", options: .regularExpression) == nil
+                ? $0 : nil
+        }
+        let count = paneCount == 1 ? "1 pane" : "\(paneCount) panes"
+        return BackendTerminalSummary(
+            kind: .rex,
+            address: windowID,
+            title: label ?? focusedPaneNames.compactMap(nonBlank).first,
+            detail: ([nonBlank(sessionLabel)].compactMap(\.self) + [count])
+                .joined(separator: " · ")
+        )
     }
 
     private static func nonBlank(_ value: String?) -> String? {

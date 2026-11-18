@@ -38,6 +38,7 @@ public enum RexControlMessage: Equatable, Sendable {
 
     struct Terminal: Decodable {
         var name: String
+        var cwd: String?
     }
 
     struct Result: Decodable {
@@ -76,6 +77,8 @@ public struct RexControlView: Equatable, Sendable {
     /// Each pane's display name by block ID: the terminal's name from kwt,
     /// else the block's Rex label.
     public var paneNames: [String: String]
+    /// Each terminal pane's working directory on the Rex host, when known.
+    public var paneDirectories: [String: String]
 
     fileprivate init(
         _ view: SessionView,
@@ -103,6 +106,9 @@ public struct RexControlView: Equatable, Sendable {
             )
         }
         paneNames = names
+        paneDirectories = terminals.compactMapValues { terminal in
+            terminal.cwd.flatMap { $0.isEmpty ? nil : $0 }
+        }
     }
 }
 

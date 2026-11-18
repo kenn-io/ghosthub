@@ -167,7 +167,7 @@ struct WorkspaceInventoryStoreTests {
         }
     }
 
-    @Test("cadence ticks announce a scheduled refresh and reactivation does not")
+    @Test("cadence ticks and reactivation announce a scene refresh")
     func cadenceAnnouncesScheduledRefresh() async {
         let cadence = AsyncGate()
         let store = makeCadenceInventoryStore(cadence: cadence)
@@ -197,8 +197,9 @@ struct WorkspaceInventoryStoreTests {
         await waitUntilMainActor { refreshes == 1 }
 
         store.setApplicationActive(false)
-        store.setApplicationActive(true)
         #expect(refreshes == 1)
+        store.setApplicationActive(true)
+        #expect(refreshes == 2)
     }
 
     @Test("reactivation replaces loads started before inactivity")

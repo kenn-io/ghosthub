@@ -44,6 +44,7 @@ struct RexWindowViewTests {
             focusedPaneID: c
         ))
         #expect(view.paneNames == [a: "vim notes.md", b: "zsh ~/src/app", c: "shell"])
+        #expect(view.paneDirectories == [a: "/home/user-a", b: "/home/user-a/src/app"])
     }
 
     @Test("a zoomed pane and an empty window come through")

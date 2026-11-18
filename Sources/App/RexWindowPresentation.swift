@@ -36,6 +36,9 @@ final class RexWindowPresentation {
     private let sshConnection: KwtSSHConnection?
     private var sessionID: String?
     private var paneNames: [String: String] = [:]
+    private var windowLabel = ""
+    private var sessionLabel = ""
+    private var paneDirectories: [String: String] = [:]
     private var paneStates: [String: ConnectionState] = [:]
     private var paneContents: [String: TerminalSurfaceView] = [:]
     private var keyboardSuspended = false
@@ -110,21 +113,39 @@ final class RexWindowPresentation {
         paneHandles.values.contains { coordinator.hasKeyboardFocus(handle: $0) }
     }
 
+    /// The window's sidebar row as this view shows it, which can be newer
+    /// than the last inventory listing.
+    var row: BackendTerminalSummary? {
+        guard let tree else { return nil }
+        return RexInventory.windowRow(
+            windowID: selection.address,
+            windowLabel: windowLabel,
+            sessionLabel: sessionLabel,
+            focusedPaneNames: [focusedPaneID.flatMap { paneNames[$0] }],
+            paneCount: tree.paneIDs.count
+        )
+    }
+
     func title(ofPane blockID: String) -> String {
         paneNames[blockID] ?? blockID
     }
 
     // MARK: Requests
 
-    /// Splits the focused pane, as ⌘D and ⇧⌘D do in Rex.app.
+    /// Splits the focused pane, as ⌘D and ⇧⌘D do in Rex.app. The new
+    /// shell starts in the anchor pane's directory.
     func split(_ direction: TerminalPaneSplitShortcut, from blockID: String? = nil) {
         guard let anchor = blockID ?? focusedPaneID else { return }
+        var shell: [String: any Sendable] = ["flavor": "com.superlogical.terminal.shell"]
+        if let cwd = paneDirectories[anchor] {
+            shell["options"] = ["cwd": cwd]
+        }
         request("session.new_split", [
             "anchor_id": anchor,
             "direction": direction == .right ? "horizontal" : "vertical",
             "side": "after",
             "focus": true,
-            "layout": ["block": ["flavor": "com.superlogical.terminal.shell"]],
+            "layout": ["block": shell],
         ])
     }
 
@@ -264,6 +285,9 @@ final class RexWindowPresentation {
         tree = newTree
         viewRevision = view.revision
         paneNames = view.paneNames
+        windowLabel = window.label
+        sessionLabel = view.sessionLabel
+        paneDirectories = view.paneDirectories
         let blockIDs = Set(newTree.paneIDs)
         if let requested = requestedFocus, !blockIDs.contains(requested) {
             requestedFocus = nil
