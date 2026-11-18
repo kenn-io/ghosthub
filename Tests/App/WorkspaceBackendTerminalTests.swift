@@ -1226,6 +1226,36 @@ struct WorkspaceBackendTerminalTests {
         await model.shutdown()
     }
 
+    private static let twoBlocks = #"[{"block_id":"block:a","label":"shell"},{"block_id":"block:b","label":"shell"}]"#
+
+    @Test("the open Rex window's sidebar row follows its live view")
+    func rexWindowLiveRow() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        let channels = RexChannels()
+        let model = try makeTerminalModel(environment, store: store, rexChannels: channels)
+        let channel = try await openRexWindow(model, environment, channels: channels, store: store)
+        func row() -> BackendTerminalSummary? {
+            model.snapshot.hosts.flatMap(\.backendTerminals).first { $0.address == "window:01aa" }
+        }
+
+        try channel.deliver(
+            layout: Self.twoPanes, focused: "block:b", window: "window:01aa",
+            terminals: #"{"block:a":{"name":"vim notes"},"block:b":{"name":"htop"}}"#,
+            windowLabel: "Window 01aa0000", blocks: Self.twoBlocks
+        )
+        await waitUntilMainActor { row()?.title == "htop" }
+        #expect(row()?.detail == "work · 2 panes")
+
+        try channel.deliver(
+            layout: Self.twoPanes, focused: "block:a", window: "window:01aa",
+            terminals: #"{"block:a":{"name":"vim notes"},"block:b":{"name":"htop"}}"#,
+            windowLabel: "Window 01aa0000", blocks: Self.twoBlocks
+        )
+        await waitUntilMainActor { row()?.title == "vim notes" }
+        await model.shutdown()
+    }
+
     @Test("a split key reaches Rex only from a Rex pane with keyboard focus")
     func rexWindowSplitKeyNeedsFocus() async throws {
         let environment = try environment(terminals: [Self.rexWindow])

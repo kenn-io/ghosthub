@@ -350,7 +350,9 @@ with Rex stopped or absent lists no Rex windows.
 title is the window's label. Rex's automatic `Window <id>` labels are replaced
 by the name of the window's focused pane: its program's title, or else its
 foreground program and directory, such as `zsh ~`. The detail is the session
-and pane count. Only window IDs of the form `window:<id>` reach kwt.
+and pane count. While a window is open, its row follows the window's live
+view instead of waiting for the next listing. Only window IDs of the form
+`window:<id>` reach kwt.
 
 Opening a window starts one `kwt rex control <window-id>`, which writes the
 session view as a JSON line at the start and after each change, and carries

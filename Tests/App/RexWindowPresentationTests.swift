@@ -48,12 +48,12 @@ final class FakeRexControlChannel: RexControlChannelling {
     /// Delivers a view of `window:1` in session `session:s`.
     func deliver(
         layout: String, focused: String, window: String = "window:1", revision: Int? = nil,
-        terminals: String = "{}"
+        terminals: String = "{}", windowLabel: String = "w", blocks: String = "[]"
     ) throws {
         let line = """
         {"type":"view","terminals":\(terminals),"view":{"revision":\(revision ?? self.revision),"session_id":"session:s","label":"work",
-         "windows":[{"window_id":"\(window)","label":"w","focused_block_id":"\(focused)",
-         "layers":[{"kind":"tiled","layout":\(layout),"blocks":[]}]}]}}
+         "windows":[{"window_id":"\(window)","label":"\(windowLabel)","focused_block_id":"\(focused)",
+         "layers":[{"kind":"tiled","layout":\(layout),"blocks":\(blocks)}]}]}}
         """
         guard case let .view(view) = try RexControlMessage.decode(line: Data(line.utf8)) else {
             Issue.record("not a view")

@@ -15495,7 +15495,7 @@ extension WorkspaceSceneModel {
                 break
             }
         }
-        backendTerminalsByHost[hostID] = terminals
+        backendTerminalsByHost[hostID] = withLiveRexRow(terminals, hostID: hostID)
         backendTerminalFreshHostIDs.insert(hostID)
         if failures.isEmpty {
             backendTerminalDiscoveryFailuresByHost.removeValue(forKey: hostID)
@@ -15517,9 +15517,35 @@ extension WorkspaceSceneModel {
     ) {
         let current = backendTerminalsByHost[hostID]
             ?? snapshot.host(id: hostID)?.backendTerminals ?? []
-        backendTerminalsByHost[hostID] = BackendTerminalKind.allCases.flatMap { each in
-            each == kind ? found : current.filter { $0.kind == each }
-        }
+        backendTerminalsByHost[hostID] = withLiveRexRow(
+            BackendTerminalKind.allCases.flatMap { each in
+                each == kind ? found : current.filter { $0.kind == each }
+            },
+            hostID: hostID
+        )
+        applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
+        updateWorkspaceInventoryState()
+    }
+
+    /// Shows the open Rex window's row as its live view has it, so the
+    /// sidebar follows the focused pane without waiting for the next
+    /// listing, and a listing read before a change cannot undo it.
+    private func withLiveRexRow(
+        _ terminals: [BackendTerminalSummary],
+        hostID: UUID
+    ) -> [BackendTerminalSummary] {
+        guard let window = activeRexWindow, !window.isStopped,
+              window.selection.hostID == hostID, let row = window.row
+        else { return terminals }
+        return terminals.map { $0.kind == .rex && $0.address == row.address ? row : $0 }
+    }
+
+    private func showLiveRexRow(hostID: UUID) {
+        let current = backendTerminalsByHost[hostID]
+            ?? snapshot.host(id: hostID)?.backendTerminals ?? []
+        let updated = withLiveRexRow(current, hostID: hostID)
+        guard updated != current else { return }
+        backendTerminalsByHost[hostID] = updated
         applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
         updateWorkspaceInventoryState()
     }
@@ -16226,9 +16252,9 @@ extension WorkspaceSceneModel {
         host: CommandHost
     ) {
         presentation.onChange = { [weak self] in
-            guard let self, activeBackendTerminalHandle == handle,
-                  backendTerminalConnectionStates[handle.id] != .connected
-            else { return }
+            guard let self, activeBackendTerminalHandle == handle else { return }
+            showLiveRexRow(hostID: handle.hostID)
+            guard backendTerminalConnectionStates[handle.id] != .connected else { return }
             backendTerminalConnectionStates[handle.id] = .connected
             clearBackendTerminalRecovery()
         }

@@ -36,6 +36,8 @@ final class RexWindowPresentation {
     private let sshConnection: KwtSSHConnection?
     private var sessionID: String?
     private var paneNames: [String: String] = [:]
+    private var windowLabel = ""
+    private var sessionLabel = ""
     private var paneDirectories: [String: String] = [:]
     private var paneStates: [String: ConnectionState] = [:]
     private var paneContents: [String: TerminalSurfaceView] = [:]
@@ -109,6 +111,19 @@ final class RexWindowPresentation {
     /// True when one of this window's panes takes the keystrokes.
     var hasKeyboardFocus: Bool {
         paneHandles.values.contains { coordinator.hasKeyboardFocus(handle: $0) }
+    }
+
+    /// The window's sidebar row as this view shows it, which can be newer
+    /// than the last inventory listing.
+    var row: BackendTerminalSummary? {
+        guard let tree else { return nil }
+        return RexInventory.windowRow(
+            windowID: selection.address,
+            windowLabel: windowLabel,
+            sessionLabel: sessionLabel,
+            focusedPaneNames: [focusedPaneID.flatMap { paneNames[$0] }],
+            paneCount: tree.paneIDs.count
+        )
     }
 
     func title(ofPane blockID: String) -> String {
@@ -270,6 +285,8 @@ final class RexWindowPresentation {
         tree = newTree
         viewRevision = view.revision
         paneNames = view.paneNames
+        windowLabel = window.label
+        sessionLabel = view.sessionLabel
         paneDirectories = view.paneDirectories
         let blockIDs = Set(newTree.paneIDs)
         if let requested = requestedFocus, !blockIDs.contains(requested) {
