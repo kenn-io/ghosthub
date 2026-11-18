@@ -310,6 +310,62 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         await waitFor("the exited pane to leave") { presentation.tree?.paneIDs == [first] }
         XCTAssertNil(presentation.container.paneViews[third])
 
+        // Floating windows: open one, tile and float it again, float the
+        // last tiled pane, then move, raise, minimize, and restore.
+        func layer(holding blockID: String) -> TerminalSplitTree.FloatingLayer? {
+            presentation.tree?.floatingLayer(holding: blockID)
+        }
+        presentation.newFloatingPane()
+        await waitFor("a floating pane") { presentation.tree?.floatingLayers.count == 1 }
+        let floating = try XCTUnwrap(presentation.tree?.floatingLayers.first?.root.paneIDs.first)
+        await waitFor("the floating pane's terminal") { surface(floating) != nil }
+        let floatingProcess = await shellProcess(floating)
+        XCTAssertTrue(floatingProcess.contains(#"/work""#), floatingProcess)
+        let floatingFrame = try XCTUnwrap(presentation.container.paneViews[floating]?.frame)
+        XCTAssertEqual(floatingFrame.width, 600, accuracy: 1)
+
+        presentation.toggleFloating(floating)
+        await waitFor("the floating pane to tile") {
+            presentation.tree?.root?.paneIDs == [first, floating]
+        }
+        XCTAssertEqual(presentation.tree?.floatingLayers.count, 0)
+        presentation.toggleFloating(floating)
+        await waitFor("the pane to float again") { layer(holding: floating) != nil }
+
+        presentation.toggleFloating(first)
+        await waitFor("the last tiled pane to float") { layer(holding: first) != nil }
+        XCTAssertNil(presentation.tree?.root, "Only floating windows remain")
+        XCTAssertEqual(presentation.tree?.floatingLayers.last?.id, layer(holding: first)?.id)
+
+        let moved = CGRect(x: 0.05, y: 0.1, width: 0.4, height: 0.5)
+        presentation.container.onLayerBoundsCommitted?(
+            try XCTUnwrap(layer(holding: first)?.id),
+            moved
+        )
+        await waitFor("Rex to report the moved window") {
+            guard let bounds = layer(holding: first)?.bounds else { return false }
+            return abs(bounds.minX - 0.05) < 0.001 && abs(bounds.width - 0.4) < 0.001
+        }
+
+        presentation.paneFocused(floating)
+        await waitFor("the clicked window to come to the front") {
+            presentation.tree?.floatingLayers.last?.id == layer(holding: floating)?.id
+        }
+
+        presentation.minimizeFloatingWindow(first)
+        await waitFor("the minimize") { layer(holding: first)?.isMinimized == true }
+        presentation.container.layoutSubtreeIfNeeded()
+        XCTAssertEqual(presentation.container.paneViews[first]?.isHidden, true)
+        let capsule = try XCTUnwrap(presentation.container
+            .capsules[layer(holding: first)?.id ?? ""])
+        capsule.performClick(nil)
+        await waitFor("the restore") { layer(holding: first)?.isMinimized == false }
+
+        // With no tiled panes, Rex cannot tile a pane beside one; close the
+        // floating shell so the first pane's window stays.
+        presentation.closePane(floating)
+        await waitFor("the floating shell to close") { presentation.tree?.paneIDs == [first] }
+
         presentation.stop()
         XCTAssertEqual(
             listedTerminals().map(\.address), [row.address],

@@ -11,13 +11,27 @@ public protocol TerminalSplitPaneContent: AnyObject {
 public enum TerminalSplitHeaderAction: CaseIterable, Equatable, Sendable {
     case splitRight
     case splitDown
+    /// Moves a tiled pane into a floating window.
+    case float
+    /// Moves a floating pane back into the tiled layout.
+    case tile
+    /// Hides the pane's floating window; its panes keep running.
+    case minimize
     case zoom
     case close
+
+    public static let tiledActions: [Self] = [.splitRight, .splitDown, .float, .zoom, .close]
+    public static let floatingActions: [Self] = [
+        .splitRight, .splitDown, .tile, .minimize, .zoom, .close,
+    ]
 
     var title: String {
         switch self {
         case .splitRight: "Split Right"
         case .splitDown: "Split Down"
+        case .float: "Float Pane"
+        case .tile: "Tile Pane"
+        case .minimize: "Minimize Floating Window"
         case .zoom: "Zoom Pane"
         case .close: "Close Pane"
         }
@@ -27,6 +41,9 @@ public enum TerminalSplitHeaderAction: CaseIterable, Equatable, Sendable {
         switch self {
         case .splitRight: "rectangle.split.2x1"
         case .splitDown: "rectangle.split.1x2"
+        case .float: "macwindow.on.rectangle"
+        case .tile: "rectangle.split.2x2"
+        case .minimize: "minus"
         case .zoom: "arrow.up.left.and.arrow.down.right"
         case .close: "xmark"
         }
@@ -42,6 +59,9 @@ public final class TerminalSplitPaneView: NSView {
     public private(set) var content: (any TerminalSplitPaneContent)?
     var onAction: ((TerminalSplitHeaderAction) -> Void)?
     var onHeaderClick: (() -> Void)?
+    /// The header is being dragged, at this point in window coordinates;
+    /// `ended` is true on mouse-up.
+    var onHeaderDrag: ((CGPoint, _ ended: Bool) -> Void)?
     var onReconnect: (() -> Void)?
 
     private let header = HeaderView()
@@ -61,10 +81,16 @@ public final class TerminalSplitPaneView: NSView {
     var isFocused = false {
         didSet {
             guard isFocused != oldValue else { return }
-            for button in buttons {
-                button.isHidden = !isFocused
-            }
+            updateButtons()
             needsDisplay = true
+        }
+    }
+
+    /// The header buttons the pane offers while it has focus.
+    var actions = TerminalSplitHeaderAction.tiledActions {
+        didSet {
+            guard actions != oldValue else { return }
+            updateButtons()
         }
     }
 
@@ -117,6 +143,7 @@ public final class TerminalSplitPaneView: NSView {
         titleLabel.cell?.truncatesLastVisibleLine = true
         header.addSubview(titleLabel)
         header.onClick = { [weak self] in self?.onHeaderClick?() }
+        header.onDrag = { [weak self] point, ended in self?.onHeaderDrag?(point, ended) }
         for button in buttons {
             button.target = self
             button.action = #selector(buttonPressed(_:))
@@ -189,6 +216,14 @@ public final class TerminalSplitPaneView: NSView {
         )
     }
 
+    private func updateButtons() {
+        for button in buttons {
+            button.isHidden = !isFocused
+                || !actions.contains(TerminalSplitHeaderAction.allCases[button.tag])
+        }
+        needsLayout = true
+    }
+
     @objc private func reconnectPressed() {
         onReconnect?()
     }
@@ -199,11 +234,20 @@ public final class TerminalSplitPaneView: NSView {
 
     private final class HeaderView: NSView {
         var onClick: (() -> Void)?
+        var onDrag: ((CGPoint, Bool) -> Void)?
 
         override var isFlipped: Bool { true }
 
         override func mouseDown(with _: NSEvent) {
             onClick?()
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            onDrag?(event.locationInWindow, false)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            onDrag?(event.locationInWindow, true)
         }
     }
 }

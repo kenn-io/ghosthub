@@ -142,6 +142,132 @@ struct TerminalSplitContainerViewTests {
         #expect(b.deferrals == [true, false])
     }
 
+    /// A | B tiled, with a floating C in the middle, and a minimized D.
+    private func floatingTree(
+        bounds: CGRect = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5),
+        tiled: Bool = true
+    ) -> TerminalSplitTree {
+        TerminalSplitTree(
+            root: tiled ? .split(
+                id: "tiled", axis: .horizontal, ratio: 0.5,
+                first: .pane("A"), second: .pane("B")
+            ) : nil,
+            floatingLayers: [
+                .init(id: "layer:c", bounds: bounds, root: .pane("C")),
+                .init(
+                    id: "layer:d", bounds: CGRect(x: 0, y: 0, width: 0.2, height: 0.2),
+                    root: .pane("D"), isMinimized: true
+                ),
+            ],
+            focusedPaneID: "C"
+        )
+    }
+
+    private func floatingContainer() -> (TerminalSplitContainerView, [String: RecordingContent]) {
+        let view = container()
+        let contents = [
+            "A": RecordingContent(), "B": RecordingContent(),
+            "C": RecordingContent(), "D": RecordingContent(),
+        ]
+        view.apply(tree: floatingTree(), panes: panes(contents))
+        view.layoutSubtreeIfNeeded()
+        return (view, contents)
+    }
+
+    @Test("a floating window draws over the tiled panes, and a minimized one shows a capsule")
+    func floatingOrder() throws {
+        let (view, _) = floatingContainer()
+        let a = try #require(view.paneViews["A"])
+        let c = try #require(view.paneViews["C"])
+        let capsule = try #require(view.capsules["layer:d"])
+        let order = view.subviews
+        let indexA = try #require(order.firstIndex { $0 === a })
+        let indexC = try #require(order.firstIndex { $0 === c })
+        #expect(indexA < indexC)
+        #expect(order.last === capsule)
+        #expect(c.frame == CGRect(x: 250, y: 150, width: 500, height: 300))
+        #expect(view.paneViews["D"]?.isHidden == true)
+        #expect(capsule.title == "pane D")
+
+        var restored: [String] = []
+        view.onLayerRestored = { restored.append($0) }
+        capsule.performClick(nil)
+        #expect(restored == ["layer:d"])
+    }
+
+    @Test(
+        "dragging a floating window's edge resizes it, no smaller than its panes, then reports once"
+    )
+    func floatingResize() throws {
+        let (view, contents) = floatingContainer()
+        var commits: [(String, CGRect)] = []
+        view.onLayerBoundsCommitted = { commits.append(($0, $1)) }
+
+        #expect(view.beginDrag(at: CGPoint(x: 750, y: 300)))
+        #expect(contents.values.allSatisfy { $0.deferrals == [true] })
+        view.moveDrag(to: CGPoint(x: 850, y: 300))
+        #expect(view.paneViews["C"]?.frame.width == 600)
+        view.moveDrag(to: CGPoint(x: 0, y: 300))
+        // No narrower than a pane's minimum width.
+        #expect(view.paneViews["C"]?.frame.width == 80)
+        view.moveDrag(to: CGPoint(x: 850, y: 300))
+        #expect(commits.isEmpty)
+        view.endDrag()
+
+        #expect(contents.values.allSatisfy { $0.deferrals == [true, false] })
+        let (layerID, bounds) = try #require(commits.first)
+        #expect(commits.count == 1)
+        #expect(layerID == "layer:c")
+        #expect(bounds == CGRect(x: 0.25, y: 0.25, width: 0.6, height: 0.5))
+
+        // The new bounds stay until the backend reports different ones.
+        view.apply(tree: floatingTree(), panes: panes(contents))
+        view.layoutSubtreeIfNeeded()
+        #expect(view.paneViews["C"]?.frame.width == 600)
+        view.apply(tree: floatingTree(bounds: bounds), panes: panes(contents))
+        view.discardCommittedBounds(layerID: "layer:c")
+        view.layoutSubtreeIfNeeded()
+        #expect(view.paneViews["C"]?.frame.width == 600)
+    }
+
+    @Test("dragging a floating pane's header moves its window, kept inside the view")
+    func floatingMove() throws {
+        let (view, _) = floatingContainer()
+        var commits: [(String, CGRect)] = []
+        view.onLayerBoundsCommitted = { commits.append(($0, $1)) }
+
+        #expect(view.beginMove(paneID: "C", at: CGPoint(x: 400, y: 160)))
+        view.moveDrag(to: CGPoint(x: 0, y: 0))
+        #expect(view.paneViews["C"]?.frame.origin == .zero)
+        view.moveDrag(to: CGPoint(x: 500, y: 160))
+        view.endDrag()
+
+        let (_, bounds) = try #require(commits.first)
+        #expect(bounds == CGRect(x: 0.35, y: 0.25, width: 0.5, height: 0.5))
+        #expect(!view.beginMove(paneID: "A", at: CGPoint(x: 10, y: 10)))
+    }
+
+    @Test("a tiled divider under a floating window cannot be grabbed through it")
+    func floatingCoversDivider() {
+        let (view, _) = floatingContainer()
+        // The tiled divider runs down the middle, under the floating window.
+        #expect(!view.beginDrag(at: CGPoint(x: 500, y: 300)))
+        #expect(view.beginDrag(at: CGPoint(x: 500, y: 50)))
+        view.endDrag()
+    }
+
+    @Test(
+        "a floating pane offers Tile only beside a tiled layout and Minimize only beside another pane"
+    )
+    func floatingActions() {
+        #expect(TerminalSplitContainerView.actions(for: "A", in: floatingTree())
+            == TerminalSplitHeaderAction.tiledActions)
+        #expect(TerminalSplitContainerView.actions(for: "C", in: floatingTree())
+            == TerminalSplitHeaderAction.floatingActions)
+        #expect(TerminalSplitContainerView.actions(for: "C", in: floatingTree(tiled: false))
+            == [.splitRight, .splitDown, .zoom, .close])
+    }
+
     @Test("a reported ratio stays until the backend reports a different one")
     func committedRatio() throws {
         let view = container()
@@ -189,10 +315,10 @@ struct TerminalSplitContainerViewTests {
         let view = container()
         let contents = ["A": RecordingContent(), "B": RecordingContent(), "C": RecordingContent()]
         view.apply(tree: tree(focused: "C"), panes: panes(contents))
-        #expect(view.paneViews["C"]?.buttonActions == TerminalSplitHeaderAction.allCases)
+        #expect(view.paneViews["C"]?.buttonActions == TerminalSplitHeaderAction.tiledActions)
         #expect(view.paneViews["A"]?.buttonActions == [])
         view.apply(tree: tree(focused: "A"), panes: panes(contents))
-        #expect(view.paneViews["A"]?.buttonActions == TerminalSplitHeaderAction.allCases)
+        #expect(view.paneViews["A"]?.buttonActions == TerminalSplitHeaderAction.tiledActions)
         #expect(view.paneViews["C"]?.buttonActions == [])
     }
 

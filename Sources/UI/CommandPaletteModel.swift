@@ -218,6 +218,33 @@ public enum CommandPaletteModel {
                 shortcut: shortcuts[.closePane],
                 action: .applicationShortcut(.closePane)
             ),
+            WorkspaceCommandItem(
+                id: "new-floating-pane",
+                title: "New Floating Pane",
+                subtitle: "Open a shell in a floating window over the Rex window.",
+                keywords: ["new", "floating", "pane", "window", "rex", "popup", "scratchpad"],
+                shortcutAction: .newFloatingPane,
+                shortcut: shortcuts[.newFloatingPane],
+                action: .applicationShortcut(.newFloatingPane)
+            ),
+            WorkspaceCommandItem(
+                id: "toggle-floating-pane",
+                title: "Float or Tile Pane",
+                subtitle: "Move the focused Rex pane into a floating window, or back into the layout.",
+                keywords: ["float", "tile", "dock", "undock", "pane", "window", "rex"],
+                shortcutAction: .toggleFloatingPane,
+                shortcut: shortcuts[.toggleFloatingPane],
+                action: .applicationShortcut(.toggleFloatingPane)
+            ),
+            WorkspaceCommandItem(
+                id: "minimize-floating-window",
+                title: "Minimize Floating Window",
+                subtitle: "Hide the focused floating window. Its capsule shows it again.",
+                keywords: ["minimize", "hide", "floating", "window", "pane", "rex"],
+                shortcutAction: .minimizeFloatingWindow,
+                shortcut: shortcuts[.minimizeFloatingWindow],
+                action: .applicationShortcut(.minimizeFloatingWindow)
+            ),
         ]
 
         commands.removeAll { command in

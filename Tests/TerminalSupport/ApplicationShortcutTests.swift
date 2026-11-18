@@ -79,6 +79,9 @@ struct ApplicationShortcutTests {
             .focusPreviousPane: "cmd+[",
             .zoomPane: "cmd+shift+return",
             .closePane: nil,
+            .newFloatingPane: nil,
+            .toggleFloatingPane: nil,
+            .minimizeFloatingWindow: nil,
             .reloadConfiguration: "cmd+shift+,",
             .openApplicationLog: "cmd+opt+l",
         ]

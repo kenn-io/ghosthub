@@ -1220,6 +1220,16 @@ struct WorkspaceBackendTerminalTests {
         #expect(model.performApplicationShortcut(.zoomPane, invocation: .menu))
         #expect(await waitForRequest(channel, count: 3)?.method == "session.zoom_block")
 
+        // A tiled pane can float; only a floating one can be minimized.
+        #expect(model.availablePaletteApplicationShortcuts.isSuperset(
+            of: [.newFloatingPane, .toggleFloatingPane]
+        ))
+        #expect(!model.availablePaletteApplicationShortcuts.contains(.minimizeFloatingWindow))
+        #expect(model.performApplicationShortcut(.toggleFloatingPane, invocation: .menu))
+        #expect(await waitForRequest(channel, count: 4)?.method == "session.float_block")
+        #expect(model.performApplicationShortcut(.newFloatingPane, invocation: .menu))
+        #expect(await waitForRequest(channel, count: 5)?.method == "session.new_layer")
+
         try await model.openBackendTerminal(environment.selection(Self.coreTerminal))
         #expect(channel.isStopped)
         #expect(!model.performApplicationShortcut(.focusPaneRight, invocation: .menu))

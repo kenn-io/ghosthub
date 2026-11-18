@@ -215,6 +215,83 @@ struct TerminalSplitLayoutTests {
         #expect(outer.ratioRange.lowerBound == outer.ratioRange.upperBound)
     }
 
+    /// A | B tiled, with a floating C over D, and a minimized E.
+    private func floatingTree(focused: String = "C", zoomed: String? = nil) -> TerminalSplitTree {
+        TerminalSplitTree(
+            root: .split(
+                id: "tiled", axis: .horizontal, ratio: 0.5,
+                first: .pane("A"), second: .pane("B")
+            ),
+            floatingLayers: [
+                .init(
+                    id: "layer:1", bounds: CGRect(x: 0.25, y: 0.1, width: 0.5, height: 0.5),
+                    root: .split(
+                        id: "floating", axis: .vertical, ratio: 0.5,
+                        first: .pane("C"), second: .pane("D")
+                    )
+                ),
+                .init(
+                    id: "layer:2", bounds: CGRect(x: 0, y: 0, width: 0.3, height: 0.3),
+                    root: .pane("E"), isMinimized: true
+                ),
+            ],
+            focusedPaneID: focused,
+            zoomedPaneID: zoomed
+        )
+    }
+
+    @Test("a floating layer sits at its bounds over the tiled panes; a minimized one is not drawn")
+    func floatingLayers() {
+        let layout = TerminalSplitLayout.layout(
+            floatingTree(), in: bounds, metrics: metrics, scale: 2
+        )
+        #expect(layout.floatingLayers == [
+            .init(id: "layer:1", frame: CGRect(x: 250, y: 60, width: 500, height: 300)),
+        ])
+        #expect(layout.panes["C"] == CGRect(x: 250, y: 60, width: 500, height: 146))
+        #expect(layout.panes["D"] == CGRect(x: 250, y: 214, width: 500, height: 146))
+        #expect(layout.panes["E"] == nil)
+        #expect(layout.dividers.map(\.splitID) == ["tiled", "floating"])
+        #expect(layout.dividers.map(\.layerID) == [nil, "layer:1"])
+    }
+
+    @Test("a dragged floating layer is drawn at its new bounds")
+    func floatingBoundsOverride() {
+        let layout = TerminalSplitLayout.layout(
+            floatingTree(), in: bounds, metrics: metrics, scale: 2,
+            layerBoundsOverrides: ["layer:1": CGRect(x: 0, y: 0, width: 0.4, height: 0.5)]
+        )
+        #expect(layout.floatingLayers.first?.frame == CGRect(x: 0, y: 0, width: 400, height: 300))
+    }
+
+    @Test("a zoomed floating pane fills the bounds and hides every layer")
+    func zoomedFloatingPane() {
+        let layout = TerminalSplitLayout.layout(
+            floatingTree(zoomed: "D"), in: bounds, metrics: metrics, scale: 2
+        )
+        #expect(layout.panes == ["D": bounds])
+        #expect(layout.floatingLayers.isEmpty)
+    }
+
+    @Test("focus moves reach floating panes and skip minimized ones")
+    func floatingFocus() {
+        let tree = floatingTree(focused: "B")
+        #expect(TerminalSplitLayout.pane(.next, from: tree, in: bounds, metrics: metrics) == "C")
+        let last = floatingTree(focused: "D")
+        #expect(TerminalSplitLayout.pane(.next, from: last, in: bounds, metrics: metrics) == "A")
+        #expect(TerminalSplitLayout.pane(.up, from: last, in: bounds, metrics: metrics) == "C")
+    }
+
+    @Test("a window whose panes all float has no tiled layout")
+    func onlyFloating() {
+        var tree = floatingTree()
+        tree.root = nil
+        let layout = TerminalSplitLayout.layout(tree, in: bounds, metrics: metrics, scale: 2)
+        #expect(Set(layout.panes.keys) == ["C", "D"])
+        #expect(tree.paneIDs == ["C", "D", "E"])
+        #expect(tree.visiblePaneIDs == ["C", "D"])
+    }
+
     @Test("a zoomed pane fills the bounds and the others get no frame")
     func zoomed() {
         var tree = rexProbe

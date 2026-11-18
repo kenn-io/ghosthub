@@ -32,6 +32,9 @@ public enum ApplicationShortcutAction: String, CaseIterable, Sendable {
     case focusPreviousPane = "focus-previous-pane"
     case zoomPane = "zoom-pane"
     case closePane = "close-pane"
+    case newFloatingPane = "new-floating-pane"
+    case toggleFloatingPane = "toggle-floating-pane"
+    case minimizeFloatingWindow = "minimize-floating-window"
     case reloadConfiguration = "reload-configuration"
     case openApplicationLog = "open-application-log"
 
@@ -439,6 +442,9 @@ public enum ApplicationShortcutCatalog {
         definition(.focusPreviousPane, "Focus Previous Pane", .multiplexer, "cmd+["),
         definition(.zoomPane, "Zoom Pane", .multiplexer, "cmd+shift+return"),
         definition(.closePane, "Close Pane…", .multiplexer, nil),
+        definition(.newFloatingPane, "New Floating Pane", .multiplexer, nil),
+        definition(.toggleFloatingPane, "Float or Tile Pane", .multiplexer, nil),
+        definition(.minimizeFloatingWindow, "Minimize Floating Window", .multiplexer, nil),
         definition(.reloadConfiguration, "Reload Configuration", .application, "cmd+shift+,"),
         definition(.openApplicationLog, "Open Application Log", .application, "cmd+opt+l"),
     ]
