@@ -25,6 +25,9 @@ test, and documentation-only changes are omitted.
 
 ### Fixed
 
+- A Herdr desktop terminal whose program ends now closes in Ghosthub. Before,
+  it showed **Reconnect**, and only choosing it found that the terminal was
+  gone.
 - Commands in new Zellij sessions on your Mac now find programs that
   `~/.zprofile` puts on PATH, such as Homebrew tools. Before, a
   Ghosthub opened from the Dock or Finder started Zellij with the minimal

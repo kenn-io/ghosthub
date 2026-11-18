@@ -122,6 +122,7 @@ spaces, tabs, or [split layout](#herdr-desktop-splits).
 ![A Herdr desktop terminal and an older Herdr TUI session in one host's session list.](/docs/assets/guide-herdr-core.png)
 
 Switching away or pressing ++cmd+w++ detaches and leaves the program running.
+When the program ends, Ghosthub closes its view.
 Press ++ctrl+tab++ or ++ctrl+shift+tab++ to move to the next or previous
 session in the host's list. Herdr desktop's space, tab, and pane
 shortcuts belong to its own window.
