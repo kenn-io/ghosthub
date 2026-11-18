@@ -65,6 +65,16 @@ public final class TerminalSplitContainerView: NSView {
         }
     }
 
+    /// False when the layout cannot change here, such as a Herdr desktop
+    /// tab: dividers stay where the backend put them and headers offer only
+    /// Zoom.
+    public var isLayoutEditable = true {
+        didSet {
+            guard isLayoutEditable != oldValue else { return }
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
     /// A drag ended at a new ratio.
     public var onResizeCommitted: ((TerminalSplitDivider, Double) -> Void)?
     /// A floating window was moved or resized to these fractional bounds.
@@ -124,7 +134,8 @@ public final class TerminalSplitContainerView: NSView {
             view.overlayMessage = pane.overlayMessage
             view.offersReconnect = pane.offersReconnect && pane.overlayMessage != nil
             view.isFocused = pane.id == tree?.focusedPaneID
-            view.actions = tree.map { Self.actions(for: pane.id, in: $0) }
+            view.actions = !isLayoutEditable ? [.zoom]
+                : tree.map { Self.actions(for: pane.id, in: $0) }
                 ?? TerminalSplitHeaderAction.tiledActions
             if view.content !== pane.content, defersContentResize || drag != nil {
                 pane.content?.setResizeDeferred(true)
@@ -246,6 +257,7 @@ public final class TerminalSplitContainerView: NSView {
     }
 
     override public func resetCursorRects() {
+        guard isLayoutEditable else { return }
         for divider in dividers where divider.layerID == nil {
             addCursorRect(divider.hitRect, cursor: Self.cursor(for: divider))
         }
@@ -270,7 +282,7 @@ public final class TerminalSplitContainerView: NSView {
     /// Starts a drag at a point in this view: a floating window's edge or a
     /// divider, whichever is in front there.
     func beginDrag(at point: CGPoint) -> Bool {
-        guard drag == nil else { return false }
+        guard drag == nil, isLayoutEditable else { return false }
         for layer in floatingLayerFrames.reversed() {
             let grip = layer.frame.insetBy(dx: -Self.edgeGrip, dy: -Self.edgeGrip)
             guard grip.contains(point) else { continue }

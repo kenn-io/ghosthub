@@ -96,27 +96,14 @@ struct BackendTerminalInventoryClient: Sendable {
         guard Self.supports(host) else { return .unavailable }
         switch kind {
         case .herdrCore:
-            let path: String
-            switch resolveExecutable(
-                .herdrCore,
-                on: host,
-                sshConnectionArguments: sshConnectionArguments
-            ) {
-            case let .success(found):
-                path = found
+            switch herdrCoreListing(on: host, sshConnectionArguments: sshConnectionArguments) {
+            case let .success(listing):
+                return .available(listing.rows)
             case .failure(.unavailable), .failure(.unsupportedPlatform):
                 return .unavailable
             case let .failure(error):
                 return .failure(error)
             }
-            let output = run(
-                HerdrCoreInventory.command(executable: path),
-                on: host,
-                sshConnectionArguments: sshConnectionArguments
-            )
-            return HerdrCoreInventory.parse(
-                status: output.status, stdout: output.stdout, stderr: output.stderr
-            )
         case .rex:
             let output = run(
                 RexInventory.command(kwtPrelude: kwtPrelude(for: host)),
@@ -127,6 +114,24 @@ struct BackendTerminalInventoryClient: Sendable {
                 status: output.status, stdout: output.stdout, stderr: output.stderr
             )
         }
+    }
+
+    /// Lists Herdr Core's terminals with the desktop tabs that hold them.
+    func herdrCoreListing(
+        on host: CommandHost,
+        sshConnectionArguments: [String]?
+    ) -> Result<HerdrCoreListing, BackendTerminalCommandError> {
+        resolveExecutable(.herdrCore, on: host, sshConnectionArguments: sshConnectionArguments)
+            .flatMap { path in
+                let output = run(
+                    HerdrCoreInventory.command(executable: path),
+                    on: host,
+                    sshConnectionArguments: sshConnectionArguments
+                )
+                return HerdrCoreInventory.parseListing(
+                    status: output.status, stdout: output.stdout, stderr: output.stderr
+                )
+            }
     }
 
     /// The absolute path of the program that attaches to `kind`'s terminals.

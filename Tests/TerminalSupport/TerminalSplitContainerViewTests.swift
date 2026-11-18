@@ -425,6 +425,24 @@ struct TerminalSplitContainerViewTests {
         #expect(view.paneViews["A"]?.frame.width == 396.5)
     }
 
+    @Test("a layout that cannot change here offers only Zoom and keeps its dividers still")
+    func readOnlyLayout() {
+        let view = container()
+        view.isLayoutEditable = false
+        view.apply(
+            tree: tree(),
+            panes: panes([
+                "A": RecordingContent(),
+                "B": RecordingContent(),
+                "C": RecordingContent(),
+            ])
+        )
+        view.layoutSubtreeIfNeeded()
+
+        #expect(view.paneViews["C"]?.actions == [.zoom])
+        #expect(!view.beginDrag(at: CGPoint(x: 500, y: 300)))
+    }
+
     @Test("a click away from every divider is not a drag")
     func missedDivider() {
         let view = container()

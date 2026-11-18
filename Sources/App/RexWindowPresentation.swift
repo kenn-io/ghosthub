@@ -9,9 +9,14 @@ import GhosthubWorkspace
 /// Shows one Rex window: follows its layout through `kwt rex control`,
 /// attaches each pane with `kwt rex attach`, and sends the user's layout
 /// changes to Rex. Rex owns the layout; a change shows once Rex reports it.
+///
+/// It also shows a Herdr desktop tab, through `HerdrTabChannel`, with each
+/// pane attached by `herdr-core attach`. The Herdr desktop app owns that
+/// layout, so it cannot change here; focus and zoom stay in Ghosthub.
 @MainActor
 final class RexWindowPresentation {
-    /// The window. Its address is the Rex window ID.
+    /// The window. Its address is the Rex window ID, or the Herdr tab's
+    /// `tab:` address.
     let selection: WorkspaceBackendTerminalSelection
     let container: TerminalSplitContainerView
     private(set) var tree: TerminalSplitTree?
@@ -75,6 +80,7 @@ final class RexWindowPresentation {
         self.sshConnection = sshConnection
         self.container = container
         self.reconnectDelay = reconnectDelay
+        container.isLayoutEditable = selection.kind == .rex
         channel.onView = { [weak self] view in self?.show(view) }
         channel.onExit = { [weak self] exit in self?.channelExited(exit) }
         coordinator.onStateChanged = { [weak self] handle, state in
@@ -103,6 +109,9 @@ final class RexWindowPresentation {
         }
     }
 
+    /// Whether the user can split, close, float, resize, or move panes.
+    var isLayoutEditable: Bool { selection.kind == .rex }
+
     /// The pane that has, or is about to get, focus: the user's latest
     /// choice, else the one Rex reports.
     var focusedPaneID: String? { requestedFocus ?? tree?.focusedPaneID }
@@ -123,6 +132,12 @@ final class RexWindowPresentation {
     /// than the last inventory listing.
     var row: BackendTerminalSummary? {
         guard let tree else { return nil }
+        if selection.kind == .herdrCore {
+            return HerdrCoreInventory.tabRow(
+                address: selection.address, name: windowLabel, spaceName: sessionLabel,
+                paneCount: tree.paneIDs.count
+            )
+        }
         return RexInventory.windowRow(
             windowID: selection.address,
             windowLabel: windowLabel,
@@ -380,7 +395,7 @@ final class RexWindowPresentation {
     private func attach(_ blockID: String) {
         let handle = coordinator.attach(
             WorkspaceBackendTerminalSelection(
-                hostID: selection.hostID, kind: .rex, address: blockID
+                hostID: selection.hostID, kind: selection.kind, address: blockID
             ),
             host: host,
             validated: validated
@@ -420,8 +435,10 @@ final class RexWindowPresentation {
     private func paneReady(_ handle: BorrowedBackendTerminalHandle) {
         guard let blockID = blockID(of: handle) else { return }
         if let surface = coordinator.surface(handle: handle) {
-            surface.paneSplitShortcutHandler = { [weak self] direction in
-                self?.split(direction, from: blockID)
+            if isLayoutEditable {
+                surface.paneSplitShortcutHandler = { [weak self] direction in
+                    self?.split(direction, from: blockID)
+                }
             }
             surface.registerPaneFocusObserver(
                 id: UUID(),

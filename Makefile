@@ -563,7 +563,7 @@ swift-test: bootstrap-libghostty
 .PHONY: test-herdr-core
 test-herdr-core:
 	@test -x "$(HERDR_CORE_BINARY)" || { echo 'Set HERDR_CORE_BINARY to an upstream herdr-core executable.' >&2; exit 1; }
-	@GHOSTHUB_TEST_HERDR_CORE_BINARY="$(HERDR_CORE_BINARY)" $(MAKE) swift-test SWIFT_TEST_FILTER=TerminalSurfaceViewInputTests/testHerdrCoreTerminalAttachment
+	@GHOSTHUB_TEST_HERDR_CORE_BINARY="$(HERDR_CORE_BINARY)" $(MAKE) swift-test SWIFT_TEST_FILTER=TerminalSurfaceViewInputTests/testHerdrCore
 
 .PHONY: test-rex
 test-rex: bootstrap-libghostty ensure-kwt

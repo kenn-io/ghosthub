@@ -107,24 +107,27 @@ Ghosthub on macOS can open live terminals from the newer
 separately from older Herdr TUI sessions. Windows and Linux builds do not yet
 include this integration.
 
-Each terminal opens on its own. Ghosthub does not display Herdr desktop's
-spaces, tabs, or [split layout](#herdr-desktop-splits).
+A Herdr desktop tab opens with all of its terminal panes, in the
+[split layout](#herdr-desktop-splits) Herdr desktop keeps. A terminal that
+belongs to no tab, such as one started with `herdr-core run`, opens on its own.
 
 1. Install `herdr-core` on the Mac or SSH host where the terminal runs. Its
    executable must be on that account's login-shell `PATH`. The upstream
    installer places it in `~/.local/bin`; `hc` is an optional alias.
 2. Start a terminal in Herdr desktop, or run `herdr-core run --bg --name review`.
-3. Find the terminal's **herdr** row in the host's session list and select it.
-   The row shows its name or desktop space and tab, followed by its address
+3. Find the tab's or terminal's **herdr** row in the host's session list and
+   select it. A tab's row shows the tab's name, followed by its desktop space
+   and pane count. A terminal's row shows its name, followed by its address
    (such as `t7`).
    You can also press ++shift+cmd+p++ and search for the name or address.
 
 ![A Herdr desktop terminal and an older Herdr TUI session in one host's session list.](/docs/assets/guide-herdr-core.png)
 
-Switching away or pressing ++cmd+w++ detaches and leaves the program running.
-When the program ends, Ghosthub closes its view.
+Switching away or pressing ++cmd+w++ detaches and leaves the programs running.
+When a program ends, Ghosthub removes its pane, and closes the view once no
+pane remains.
 Press ++ctrl+tab++ or ++ctrl+shift+tab++ to move to the next or previous
-session in the host's list. Herdr desktop's space, tab, and pane
+session in the host's list. Herdr desktop's own space, tab, and pane
 shortcuts belong to its own window.
 
 Create terminals in Herdr desktop or with its CLI. Ghosthub's
@@ -142,23 +145,26 @@ Agents use the same terminals through `herdr-core ls --json`,
 terminal address separate from its display name, so renaming a terminal does
 not change the attachment target. Agents can inspect the desktop's arrangement
 with `herdr-app ls`; its terminal addresses match `herdr-core ls --json` and
-Ghosthub. The desktop handoff is tested with Herdr 0.1.13 and core 0.1.17.
+Ghosthub. Desktop tabs are tested with core 0.1.21.
 
 ### Herdr desktop splits
 
-Each terminal pane in a Herdr desktop split appears as a separate **herdr**
-row in the host's session list. A tab with two terminal panes produces two rows. Selecting
-either row opens that terminal at full size. Ghosthub does not show the panes
-side by side or preserve their arrangement.
+A Herdr desktop tab's terminal panes appear side by side, as Herdr desktop
+arranges them, and follow the tab as it changes there: a new split, a closed
+pane, or a resized divider shows in Ghosthub within moments. Closing the tab in
+Herdr desktop closes it in Ghosthub. Each pane shows its terminal's name in
+its header.
 
-Without explicit terminal names, panes in the same desktop tab share the same
-`space / tab` title. Use the address after each title, such as `t1` or `t2`,
-to tell them apart. ++ctrl+tab++ and ++ctrl+shift+tab++ move through every
-session in the host's list, including terminals in other tabs.
+Herdr desktop keeps the layout, and Ghosthub only shows it. Click a pane or use
+the pane focus shortcuts to choose which pane you type into, and zoom a pane to
+fill the window. Focus and zoom stay in Ghosthub. Split, close, resize, and
+move panes in Herdr desktop; Ghosthub's **Split Right**, **Split Down**, and
+**Close Pane** actions are unavailable for desktop tabs. A stacked pane shows
+its front terminal, and panes that hold no terminal, such as Herdr's own
+panels, and Herdr's edge drawers are not shown.
 
-Use Herdr desktop to view or change the split layout. Ghosthub's **Split Right**
-and **Split Down** actions are unavailable for desktop terminals. Older
-Herdr TUI sessions open as a whole session, including their visible splits.
+Older Herdr TUI sessions open as a whole session, including their visible
+splits.
 
 ## Rex windows
 

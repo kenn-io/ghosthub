@@ -250,13 +250,15 @@ Windows sessions.
 ## Backend Terminals
 
 Herdr Core and Rex offer one terminal at a time to attach to. Ghosthub lists
-Herdr Core terminals and Rex windows per host. A Herdr Core terminal attaches
-in its own libghostty surface; a Rex window shows all of its panes, each in its
-own surface (see [Rex windows](#rex-windows)). The backend owns creation,
+Herdr desktop tabs, Herdr Core terminals in no tab, and Rex windows per host. A
+Herdr Core terminal attaches in its own libghostty surface; a desktop tab or a
+Rex window shows all of its panes, each in its own surface (see
+[Herdr Core terminals](#herdr-core-terminals) and [Rex windows](#rex-windows)). The backend owns creation,
 program lifetime, and layout; closing the view only detaches.
 
 A backend terminal's identity is its host, kind (`core` or `rex`), and address:
-a Herdr Core address such as `t7` or a Rex window ID. Titles and details are
+a Herdr Core address such as `t7`, a desktop tab's `tab:` address, or a Rex
+window ID. Titles and details are
 display text. A Herdr TUI session with the same name is a separate target.
 Selection, reconnect, sibling navigation, and restoration use that identity.
 
@@ -315,7 +317,7 @@ The macOS app resolves `herdr-core` separately from the older `herdr` TUI in
 each host account's login environment. It uses `herdr-core ls --json` for
 inventory and `herdr-core attach <address>` for presentation. The optional
 `hc` alias is not used because other programs may own that command. This
-contract is verified with upstream core 0.1.17.
+contract is verified with upstream core 0.1.21.
 
 Only `state: live` terminals with host-local `t…` addresses are listed.
 Finished terminals and `machine/t…` addresses are excluded; Ghosthub's own
@@ -323,11 +325,23 @@ host routes determine where discovery and attachment run. The terminal's
 optional name, desktop location (`where`, the space and tab), or agent label is
 display text, in that order; the address appears beneath it.
 
-Each desktop terminal pane has its own core address and sidebar row. Split
-panes in the same desktop tab share the same `where` value, so their displayed
-titles can match; the address beneath each title distinguishes them. Attaching
-opens only the selected terminal, with no split geometry or desktop tab
-grouping. See the [user guide's split limitation](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
+Discovery also reads the Herdr desktop app's layout, the `herdr-app` document
+the app keeps in the core, with `doc.get` through `herdr-core connect`. Each
+desktop tab that shows a live local terminal becomes one row addressed
+`tab:<tab id>`; its terminals get no rows of their own. A core without the
+document, or a document Ghosthub cannot read, leaves every terminal its own
+row. The document belongs to Herdr desktop, so Ghosthub reads it and never
+writes it.
+
+Opening a tab row shows the tab in the split view Rex windows use. Each row and
+column of the document becomes nested binary splits sized by its children's
+weights; a stack shows its active child; hidden nodes, blocks without a
+terminal, and edge floats are left out. Each pane attaches with
+`herdr-core attach`. A `herdr-core connect` subscription to every change keeps
+the tab current: a document, terminal-set, label, or title event, or a missed
+event, lists the host again, and changes during a listing cost one more listing.
+Focus and zoom are kept in Ghosthub; split, close, resize, and float are
+unavailable. See the [user guide](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
 
 Before discovery and attachment, Ghosthub clears inherited TUI routing variables
 and `HC_SESSION`, `HC_SOCKET`, `HC_TERMINAL_ID`, and `HC_TERMINAL_SOCKET`.
