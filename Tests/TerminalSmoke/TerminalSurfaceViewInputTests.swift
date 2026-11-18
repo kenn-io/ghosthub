@@ -238,6 +238,20 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             presentation.container.paneViews[blockID]?.content as? TerminalSurfaceView
         }
 
+        // A pane's shell, once it runs. Rex starts it through login, which
+        // reports no directory.
+        func shellProcess(_ blockID: String) async -> String {
+            var process = ""
+            await waitFor("the shell in \(blockID)") {
+                process = rexCommand([
+                    "api", "call", "-s", "live", "com.superlogical.terminal.process",
+                    #"{"block_id":"\#(blockID)"}"#,
+                ]).stdout
+                return process.contains(#""cwd""#)
+            }
+            return process
+        }
+
         await waitFor("the first pane") { presentation.tree?.paneIDs.count == 1 }
         let first = try XCTUnwrap(presentation.tree?.paneIDs.first)
         await waitFor("the first pane's terminal") { surface(first) != nil }
@@ -257,15 +271,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(presentation.tree?.focusedPaneID, second)
         await waitFor("the second pane's terminal") { surface(second) != nil }
         // The new shell starts where the first pane's program runs.
-        // Rex starts the shell through login, which reports no directory.
-        var process = ""
-        await waitFor("the second pane's shell") {
-            process = rexCommand([
-                "api", "call", "-s", "live", "com.superlogical.terminal.process",
-                #"{"block_id":"\#(second)"}"#,
-            ]).stdout
-            return process.contains(#""cwd""#)
-        }
+        let process = await shellProcess(second)
         XCTAssertTrue(
             process.contains(#"/work""#),
             "The split must start in the anchor pane's directory: \(process)"
@@ -289,6 +295,20 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
 
         presentation.closePane(second)
         await waitFor("the close") { presentation.tree?.paneIDs == [first] }
+
+        // A pane whose program ends leaves the layout, with no Reconnect.
+        presentation.split(.down)
+        await waitFor("another split") { presentation.tree?.paneIDs.count == 2 }
+        let third = try XCTUnwrap(presentation.tree?.paneIDs.last)
+        await waitFor("the third pane's terminal") { surface(third) != nil }
+        _ = await shellProcess(third)
+        // Rex keeps a terminal open when its program ends within 250 ms of
+        // starting, so the user can read why.
+        try await Task.sleep(for: .seconds(1))
+        let exited = rexCommand(["send", "-s", "live", "-b", third, "exit\n"])
+        XCTAssertEqual(exited.status, 0, exited.stderr)
+        await waitFor("the exited pane to leave") { presentation.tree?.paneIDs == [first] }
+        XCTAssertNil(presentation.container.paneViews[third])
 
         presentation.stop()
         XCTAssertEqual(
