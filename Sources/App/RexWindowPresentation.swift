@@ -156,9 +156,10 @@ final class RexWindowPresentation {
     }
 
     /// A window in this window's session, with a shell where the focused
-    /// pane's program runs, once Rex has reported the session.
+    /// pane's program runs, once Rex has reported the session. A Herdr tab
+    /// has no Rex session.
     var newWindowRequest: RexWindowRequest? {
-        guard let sessionID else { return nil }
+        guard selection.kind == .rex, let sessionID else { return nil }
         return RexWindowRequest(
             sessionID: sessionID, cwd: focusedPaneID.flatMap { paneDirectories[$0] }
         )

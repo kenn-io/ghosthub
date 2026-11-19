@@ -15603,7 +15603,8 @@ extension WorkspaceSceneModel {
     /// Opens a shell in a new Rex window on the host, then lists the host's
     /// Rex windows again so the new one can be opened like any listed one.
     /// Navigating elsewhere first cancels it: before the request, nothing is
-    /// created; after it, the window is listed but not returned to open.
+    /// created; after it, the window is listed but not returned to open. A
+    /// host removed or changed while its connection opens gets nothing.
     func createRexWindow(
         _ request: RexWindowRequest,
         hostID: UUID
@@ -15625,6 +15626,9 @@ extension WorkspaceSceneModel {
         }
         let connection = await herdrConnectionSnapshot(on: host)
         try requireNoNavigation()
+        guard snapshot.host(id: hostID).flatMap(CommandHostResolver.resolve) == host else {
+            throw BackendTerminalPresentationError.hostChanged
+        }
         let result = await rexWindowCreation(host, request, connection.arguments)
         if case let .failure(.commandFailed(_, status, stderr)) = result,
            SSHConnectionFailure.indicatesUnusableConnection(status: status, output: stderr) {

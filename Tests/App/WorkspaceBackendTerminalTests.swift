@@ -1335,6 +1335,36 @@ struct WorkspaceBackendTerminalTests {
         await model.shutdown()
     }
 
+    @Test("a host changed while its connection opens gets no new Rex window")
+    func rexCreationHostChanged() async throws {
+        let environment = try environment(terminals: [Self.rexWindow], remote: true)
+        let fake = FakeHost([Self.rexWindow])
+        let gate = AsyncGate()
+        fake.nextConnectionGate.withLock { $0 = gate }
+        let sent = Mutex(0)
+        let model = try makeTerminalModel(
+            environment, store: RecordingNativeSessionSurfaceStore(), fake: fake,
+            rexWindowCreation: { _, _, _ in
+                sent.withLock { $0 += 1 }
+                return .success("window:02bb")
+            }
+        )
+        let creating = Task {
+            try await model.createRexWindow(RexWindowRequest(), hostID: environment.host.id)
+        }
+        await gate.waitUntilWaiting()
+        // Another window points the host somewhere else.
+        let index = try #require(model.snapshot.hosts.firstIndex { $0.id == environment.host.id })
+        model.snapshot.hosts[index].sshDestination = "dev@other.example.test"
+        gate.open()
+
+        await #expect(throws: BackendTerminalPresentationError.hostChanged) {
+            try await creating.value
+        }
+        #expect(sent.withLock { $0 } == 0)
+        await model.shutdown()
+    }
+
     @Test("Rex refusing a new window reports its message")
     func rexCreationFailure() async throws {
         let environment = try environment(terminals: [Self.rexWindow])
@@ -1612,6 +1642,8 @@ struct WorkspaceBackendTerminalTests {
         ))
         #expect(!model.performApplicationShortcut(.closePane, invocation: .menu))
         #expect(!model.performApplicationShortcut(.toggleFloatingPane, invocation: .menu))
+        #expect(model.newRexWindowRequest == nil)
+        #expect(!model.performApplicationShortcut(.newRexWindow, invocation: .menu))
 
         #expect(model.performApplicationShortcut(.focusPaneRight, invocation: .menu))
         await waitUntilMainActor { model.shownRexWindow?.tree?.focusedPaneID == "t2" }
