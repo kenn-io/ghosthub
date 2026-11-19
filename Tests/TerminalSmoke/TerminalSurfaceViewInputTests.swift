@@ -438,6 +438,22 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         presentation.toggleZoom()
         await waitFor("the unzoom") { presentation.tree?.zoomedPaneID == nil }
 
+        // Drag the second pane below the first, then onto it to swap them.
+        presentation.dropPane(second, on: .init(paneID: first, zone: .bottom))
+        await waitFor("the pane below") {
+            guard case let .split(_, axis, _, .pane(top), .pane(bottom)) = presentation.tree?.root
+            else { return false }
+            return axis == .vertical && top == first && bottom == second
+        }
+        presentation.dropPane(second, on: .init(paneID: first, zone: .center))
+        await waitFor("the swap") {
+            guard case let .split(_, axis, _, .pane(top), _) = presentation.tree?.root else {
+                return false
+            }
+            return axis == .vertical && top == second
+        }
+        XCTAssertTrue(surface(first) === firstSurface, "A moved pane keeps its terminal")
+
         presentation.closePane(second)
         await waitFor("the close") { presentation.tree?.paneIDs == [first] }
 

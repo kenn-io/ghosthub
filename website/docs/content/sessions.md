@@ -191,8 +191,10 @@ pane:
 | Focus the next or previous pane | <kbd>⌘</kbd><kbd>&#93;</kbd>, <kbd>⌘</kbd><kbd>&#91;</kbd> |
 | Zoom or unzoom the pane | ++shift+cmd+enter++ |
 
-Drag the space between panes to resize them. The focused pane's header also
-has split, zoom, and close buttons. **Close Pane…** in the Command Palette or
+Drag the space between panes to resize them. To move a pane, drag its header
+onto another pane: drop it on a half of that pane to place it there, or on the
+middle to swap the two panes. Press ++escape++ to cancel. The focused pane's
+header also has split, zoom, and close buttons. **Close Pane…** in the Command Palette or
 the header asks first, because it ends the pane's program. Changes go to Rex,
 so Rex.app and other clients show them too, and changes made in Rex show in
 Ghosthub.

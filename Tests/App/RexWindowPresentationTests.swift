@@ -302,6 +302,36 @@ struct RexWindowPresentationTests {
         ] as NSDictionary)
     }
 
+    @Test("dropping a pane beside another moves it there; dropping it on one swaps them")
+    func dropPane() async throws {
+        let presentation = presentation()
+        try channel.deliver(layout: Self.two, focused: "block:a")
+        let drops: [(TerminalSplitPaneDrop.Zone, NSDictionary)] = [
+            (.left, [
+                "block_id": "block:a", "anchor_block_id": "block:b",
+                "direction": "horizontal", "side": "before",
+            ]),
+            (.bottom, [
+                "block_id": "block:a", "anchor_block_id": "block:b",
+                "direction": "vertical", "side": "after",
+            ]),
+        ]
+        for (index, (zone, params)) in drops.enumerated() {
+            presentation.container.onPaneDropped?("block:a", .init(paneID: "block:b", zone: zone))
+            let request = await lastRequest(index + 1)
+            #expect(request?.method == "session.move_block")
+            #expect(request?.params == params)
+        }
+
+        presentation.container.onPaneDropped?("block:a", .init(paneID: "block:b", zone: .center))
+        let swap = await lastRequest(3)
+        #expect(swap?.method == "session.swap_blocks")
+        #expect(swap?.params == [
+            "block_id": "block:a",
+            "other_block_id": "block:b",
+        ] as NSDictionary)
+    }
+
     @Test("minimizing hides the pane's floating window; its capsule shows it again")
     func minimizeAndRestore() async throws {
         let presentation = presentation()

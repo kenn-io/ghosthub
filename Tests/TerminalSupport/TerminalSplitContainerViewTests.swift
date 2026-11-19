@@ -142,6 +142,85 @@ struct TerminalSplitContainerViewTests {
         #expect(b.deferrals == [true, false])
     }
 
+    @Test("dragging a tiled pane's header onto another pane offers its halves and its middle")
+    func paneDrop() throws {
+        let view = container()
+        let contents = ["A": RecordingContent(), "B": RecordingContent(), "C": RecordingContent()]
+        view.apply(tree: tree(), panes: panes(contents))
+        view.layoutSubtreeIfNeeded()
+        var drops: [String] = []
+        view.onPaneDropped = { drops.append("\($0) \($1.paneID) \($1.zone)") }
+        let a = try #require(view.paneViews["A"]).frame
+        let c = try #require(view.paneViews["C"]).frame
+
+        #expect(view.beginPaneDrag(paneID: "A", at: CGPoint(x: a.midX, y: a.minY + 10)))
+        view.moveDrag(to: CGPoint(x: a.midX + 20, y: a.midY))
+        #expect(view.paneDropFrame == nil, "Its own pane is no target")
+        view.moveDrag(to: CGPoint(x: c.minX + 10, y: c.midY))
+        #expect(view.paneDropFrame == CGRect(
+            x: c.minX, y: c.minY, width: c.width / 2, height: c.height
+        ))
+        view.moveDrag(to: CGPoint(x: c.midX, y: c.maxY - 5))
+        #expect(view.paneDropFrame == CGRect(
+            x: c.minX, y: c.midY, width: c.width, height: c.height / 2
+        ))
+        view.moveDrag(to: CGPoint(x: c.midX, y: c.midY))
+        #expect(view.paneDropFrame == c)
+        #expect(view.subviews.last?.frame == c, "The highlight draws over the panes")
+        #expect(view.paneViews["A"]?.frame == a, "The layout waits for the backend")
+        #expect(contents.values.allSatisfy { $0.deferrals.isEmpty })
+        view.endDrag()
+
+        #expect(drops == ["A C center"])
+        #expect(view.paneDropFrame == nil)
+
+        #expect(view.beginPaneDrag(paneID: "C", at: CGPoint(x: c.midX, y: c.minY + 10)))
+        view.moveDrag(to: CGPoint(x: a.maxX - 10, y: a.midY))
+        view.endDrag()
+        #expect(drops == ["A C center", "C A right"])
+    }
+
+    @Test("a pane drag offers nothing it cannot do, and Escape or its own pane cancels it")
+    func paneDropRefused() throws {
+        let view = container()
+        var drops: [String] = []
+        view.onPaneDropped = { drops.append("\($0) \($1.paneID)") }
+        view.apply(tree: tree(), panes: panes(["A": RecordingContent(), "C": RecordingContent()]))
+        view.layoutSubtreeIfNeeded()
+        let a = try #require(view.paneViews["A"]).frame
+        let c = try #require(view.paneViews["C"]).frame
+
+        // Back on its own pane, or Escape, drops nothing.
+        #expect(view.beginPaneDrag(paneID: "A", at: CGPoint(x: a.midX, y: 10)))
+        view.moveDrag(to: CGPoint(x: c.midX, y: c.midY))
+        view.moveDrag(to: CGPoint(x: a.midX, y: a.midY))
+        view.endDrag()
+        #expect(view.beginPaneDrag(paneID: "A", at: CGPoint(x: a.midX, y: 10)))
+        view.moveDrag(to: CGPoint(x: c.midX, y: c.midY))
+        view.cancelDrag()
+        #expect(view.paneDropFrame == nil)
+        view.endDrag()
+        #expect(drops.isEmpty)
+
+        // Zoomed, nothing moves.
+        view.apply(tree: tree(zoomed: "A"), panes: panes(["A": RecordingContent()]))
+        view.layoutSubtreeIfNeeded()
+        #expect(!view.beginPaneDrag(paneID: "A", at: CGPoint(x: 10, y: 10)))
+
+        // A floating pane's header moves its window instead, and a pane
+        // under a floating window is no target.
+        let (floating, _) = floatingContainer()
+        floating.onPaneDropped = { drops.append("\($0) \($1.paneID)") }
+        #expect(!floating.beginPaneDrag(paneID: "C", at: CGPoint(x: 400, y: 160)))
+        #expect(floating.beginPaneDrag(paneID: "A", at: CGPoint(x: 100, y: 10)))
+        floating.moveDrag(to: CGPoint(x: 600, y: 300))
+        #expect(floating.paneDropFrame == nil)
+        floating.moveDrag(to: CGPoint(x: 900, y: 300))
+        #expect(floating.paneDropFrame != nil)
+        floating.endDrag()
+        #expect(drops == ["A B"])
+    }
+
     /// A | B tiled, with a floating C in the middle, and a minimized D.
     private func floatingTree(
         bounds: CGRect = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5),
