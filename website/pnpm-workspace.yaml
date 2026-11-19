@@ -1,2 +1,6 @@
 allowBuilds:
   esbuild: true
+
+# pnpm installs only versions published at least 7 days ago (10080 minutes),
+# matching the shared Renovate release-age preset in kenn-io/actions.
+minimumReleaseAge: 10080
