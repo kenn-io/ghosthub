@@ -202,6 +202,12 @@ struct TerminalSplitContainerViewTests {
         view.endDrag()
         #expect(drops.isEmpty)
 
+        // In a layout that cannot change here, such as a Herdr tab, nothing
+        // moves.
+        view.isLayoutEditable = false
+        #expect(!view.beginPaneDrag(paneID: "A", at: CGPoint(x: a.midX, y: 10)))
+        view.isLayoutEditable = true
+
         // Zoomed, nothing moves.
         view.apply(tree: tree(zoomed: "A"), panes: panes(["A": RecordingContent()]))
         view.layoutSubtreeIfNeeded()

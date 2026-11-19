@@ -331,9 +331,10 @@ public final class TerminalSplitContainerView: NSView {
 
     /// Starts dragging a tiled pane by its header, toward a place beside or
     /// on another tiled pane. A zoomed pane, a floating one, and the only
-    /// tiled pane have nowhere to go.
+    /// tiled pane have nowhere to go, and nothing moves in a layout that
+    /// cannot change here.
     func beginPaneDrag(paneID: String, at point: CGPoint) -> Bool {
-        guard drag == nil, let tree, tree.zoomedPaneID == nil,
+        guard drag == nil, isLayoutEditable, let tree, tree.zoomedPaneID == nil,
               let tiled = tree.root?.paneIDs, tiled.count > 1, tiled.contains(paneID)
         else { return false }
         drag = .pane(id: paneID, origin: point, moved: false, drop: nil)
