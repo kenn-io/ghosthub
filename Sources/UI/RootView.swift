@@ -49,6 +49,9 @@ public struct RootView: View {
     @State private var herdrCreationRevision: UInt64 = 0
     @State private var zellijCreationTask: Task<Void, Never>?
     @State private var zellijCreationRevision: UInt64 = 0
+    @State private var newRexSessionHost: HostSummary?
+    @State private var rexCreationTask: Task<Void, Never>?
+    @State private var rexCreationRevision: UInt64 = 0
     @State private var addProjectHost: HostSummary?
     @State private var recoveringProject: ProjectSummary?
     @State private var workspaceAlert: WorkspaceAlert?
@@ -287,6 +290,25 @@ public struct RootView: View {
                     onCancel: { cancelZellijCreation() }
                 )
             }
+            .sheet(
+                item: $newRexSessionHost,
+                onDismiss: { cancelRexCreation(dismissSheet: false) }
+            ) { host in
+                NewRexSessionSheet(
+                    host: host,
+                    hosts: snapshot.hosts,
+                    isCreating: rexCreationTask != nil,
+                    onCreate: { selectedHost, name in
+                        startRexCreation {
+                            guard let create = handlers.createRexSession else {
+                                throw CancellationError()
+                            }
+                            return try await create(selectedHost.id, name)
+                        }
+                    },
+                    onCancel: { cancelRexCreation() }
+                )
+            }
             .sheet(item: $addProjectHost) { host in
                 AddProjectSheet(
                     host: host,
@@ -327,6 +349,7 @@ public struct RootView: View {
                 cancelHerdrPresentationIntents()
                 cancelHerdrCreation()
                 cancelZellijCreation()
+                cancelRexCreation()
                 cancelHerdrLifecyclePreparation()
                 cancelZellijKillPreparation()
             }
@@ -525,6 +548,13 @@ public struct RootView: View {
             let host = snapshot.host(id: selection.selectedHostID)
             if host?.herdrAvailable == true {
                 newHerdrSessionHost = host
+            }
+        case .newRexWindow:
+            startRexCreation {
+                guard let create = handlers.createRexWindow else {
+                    throw CancellationError()
+                }
+                return try await create()
             }
         default:
             break
@@ -805,6 +835,9 @@ public struct RootView: View {
             },
             onNewZellijSession: { host in
                 newZellijSessionHost = host
+            },
+            onNewRexSession: { host in
+                newRexSessionHost = host
             },
             onAddProject: { host in
                 addProjectHost = host
@@ -1238,6 +1271,46 @@ public struct RootView: View {
         }
     }
 
+    /// Runs one Rex creation at a time, then opens the new window as the
+    /// sidebar opens a listed one. Navigating elsewhere first cancels it.
+    private func startRexCreation(
+        _ create: @escaping @MainActor () async throws -> WorkspaceBackendTerminalSelection
+    ) {
+        guard rexCreationTask == nil else { return }
+        rexCreationRevision &+= 1
+        let creationRevision = rexCreationRevision
+        rexCreationTask = Task { @MainActor in
+            do {
+                let terminal = try await create()
+                guard rexCreationRevision == creationRevision else { return }
+                rexCreationTask = nil
+                newRexSessionHost = nil
+                selectWorkspace(.backendTerminal(
+                    hostID: terminal.hostID,
+                    kind: terminal.kind,
+                    address: terminal.address
+                ))
+                activateBackendTerminal(terminal)
+            } catch {
+                guard rexCreationRevision == creationRevision else { return }
+                rexCreationTask = nil
+                guard !(error is CancellationError) else { return }
+                presentNonWorktreeWorkspaceAlert(.rexCreationFailure(
+                    message: error.localizedDescription
+                ))
+            }
+        }
+    }
+
+    private func cancelRexCreation(dismissSheet: Bool = true) {
+        rexCreationRevision &+= 1
+        rexCreationTask?.cancel()
+        rexCreationTask = nil
+        if dismissSheet {
+            newRexSessionHost = nil
+        }
+    }
+
     private func cancelZellijCreation(dismissSheet: Bool = true) {
         zellijCreationRevision &+= 1
         zellijCreationTask?.cancel()
@@ -1520,6 +1593,12 @@ public struct RootView: View {
         case let .zellijCreationFailure(session, message):
             return Alert(
                 title: Text("Could Not Create “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        case let .rexCreationFailure(message):
+            return Alert(
+                title: Text("Could Not Open a Rex Window"),
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
@@ -2168,6 +2247,9 @@ public struct RootView: View {
         case let .newZellijSession(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
             newZellijSessionHost = host
+        case let .newRexSession(hostID):
+            guard let host = snapshot.host(id: hostID), host.rexAvailable else { return }
+            newRexSessionHost = host
         case let .addProject(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
             addProjectHost = host
@@ -2333,6 +2415,9 @@ public struct RootView: View {
         }
         if zellijCreationTask != nil {
             cancelZellijCreation()
+        }
+        if rexCreationTask != nil {
+            cancelRexCreation()
         }
         cancelHerdrPresentationIntents()
         if let selectWorkspace = handlers.selectWorkspace {

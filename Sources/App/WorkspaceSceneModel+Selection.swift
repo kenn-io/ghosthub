@@ -158,6 +158,9 @@ extension WorkspaceSceneModel {
             return withShownRexWindow { $0.toggleFloating() }
         case .minimizeFloatingWindow:
             return withShownRexWindow { $0.minimizeFloatingWindow() }
+        case .newRexWindow:
+            guard newRexWindowRequest != nil else { return false }
+            return postShortcutRequest(action)
         case .reloadConfiguration:
             reloadTerminalConfig()
             return true
@@ -293,6 +296,9 @@ extension WorkspaceSceneModel {
             actions.formUnion([.closePane, .newFloatingPane, .toggleFloatingPane])
             if window.canMinimizeFocusedFloatingWindow {
                 actions.insert(.minimizeFloatingWindow)
+            }
+            if newRexWindowRequest != nil {
+                actions.insert(.newRexWindow)
             }
         }
         if let controller = activeTerminalFindController,

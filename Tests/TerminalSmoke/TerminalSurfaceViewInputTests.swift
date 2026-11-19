@@ -511,11 +511,52 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         presentation.closePane(floating)
         await waitFor("the floating shell to close") { presentation.tree?.paneIDs == [first] }
 
+        // New Rex Window: a window in this session, where the pane runs.
+        let request = try XCTUnwrap(presentation.newWindowRequest)
+        func createWindow(label: String, sessionID: String?) throws -> String {
+            let output = AccountCommandRunner.runProcess(
+                executable: "/bin/sh",
+                arguments: ["-c", RexInventory.newWindowCommand(
+                    kwtPrelude: "ghosthub_kwt_path=\(shellQuotedCommandArgument(wrapper.path)); ",
+                    label: label, sessionID: sessionID, cwd: request.cwd
+                )],
+                timeout: 10
+            )
+            return try RexInventory.parseNewWindow(
+                status: output.status, stdout: output.stdout, stderr: output.stderr
+            ).get()
+        }
+
         presentation.stop()
         XCTAssertEqual(
             listedTerminals().map(\.address), [row.address],
             "Closing the view must leave the window running"
         )
+
+        let sibling = try createWindow(label: "second", sessionID: request.sessionID)
+        let fresh = try createWindow(label: "fresh", sessionID: nil)
+        let rows = listedTerminals()
+        XCTAssertEqual(rows.first { $0.address == sibling }?.title, "second")
+        XCTAssertEqual(rows.first { $0.address == sibling }?.detail, "live · 1 pane")
+        XCTAssertEqual(rows.first { $0.address == fresh }?.detail, "fresh · 1 pane")
+        // Its shell starts in the shown pane's directory once it runs.
+        XCTAssertTrue(try XCTUnwrap(request.cwd).hasSuffix("/work"), "\(request)")
+        var siblingDirectory: String?
+        let deadline = ContinuousClock.now + .seconds(20)
+        while siblingDirectory == nil, ContinuousClock.now < deadline {
+            let listing = AccountCommandRunner.runProcess(
+                executable: wrapper.path, arguments: ["rex", "ls", "--json"], timeout: 10
+            )
+            let decoded = try JSONSerialization.jsonObject(with: Data(listing.stdout.utf8))
+            let terminals = (decoded as? [String: Any])?["terminals"] as? [[String: Any]] ?? []
+            siblingDirectory = terminals.first {
+                $0["window_id"] as? String == sibling
+            }?["cwd"] as? String
+            if siblingDirectory == nil {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        XCTAssertEqual(siblingDirectory, request.cwd)
     }
 
     // Retained across the entire test suite so ghostty_app_free is

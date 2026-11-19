@@ -17,7 +17,9 @@ test, and documentation-only changes are omitted.
   host's session list with a **rex** label, and in the Command Palette. Split,
   resize, focus, zoom, and close panes in Ghosthub, and float panes in windows
   over the layout; Rex keeps the layout.
-  Closing a window in Ghosthub leaves its panes running in Rex.
+  Closing a window in Ghosthub leaves its panes running in Rex. Start a Rex
+  session from the host's **+** menu, or a new window in the shown session
+  from the Command Palette.
 - Herdr desktop tabs open with their split panes side by side, as one
   **herdr** row per tab, and follow changes Herdr desktop makes to the
   layout. Focus and zoom panes in Ghosthub; Herdr desktop keeps the layout.

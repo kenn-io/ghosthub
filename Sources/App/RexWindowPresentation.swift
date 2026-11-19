@@ -6,6 +6,14 @@ import GhosthubTerminalSupport
 import GhosthubTransport
 import GhosthubWorkspace
 
+/// A shell in a new Rex window, in a new session unless `sessionID` names
+/// one. `label` names the new session, or the window in `sessionID`.
+struct RexWindowRequest: Equatable, Sendable {
+    var label: String?
+    var sessionID: String?
+    var cwd: String?
+}
+
 /// Shows one Rex window: follows its layout through `kwt rex control`,
 /// attaches each pane with `kwt rex attach`, and sends the user's layout
 /// changes to Rex. Rex owns the layout; a change shows once Rex reports it.
@@ -144,6 +152,16 @@ final class RexWindowPresentation {
             sessionLabel: sessionLabel,
             focusedPaneNames: [focusedPaneID.flatMap { paneNames[$0] }],
             paneCount: tree.paneIDs.count
+        )
+    }
+
+    /// A window in this window's session, with a shell where the focused
+    /// pane's program runs, once Rex has reported the session. A Herdr tab
+    /// has no Rex session.
+    var newWindowRequest: RexWindowRequest? {
+        guard selection.kind == .rex, let sessionID else { return nil }
+        return RexWindowRequest(
+            sessionID: sessionID, cwd: focusedPaneID.flatMap { paneDirectories[$0] }
         )
     }
 

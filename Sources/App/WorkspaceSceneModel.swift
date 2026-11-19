@@ -113,6 +113,11 @@ final class WorkspaceSceneModel: ObservableObject {
     typealias BackendTerminalValidationDiscovery = @Sendable (
         CommandHost, BackendTerminalKind, [String]
     ) async -> BackendTerminalDiscoveryResult
+    /// Opens a shell in a new Rex window over a frozen SSH connection and
+    /// returns the window's ID.
+    typealias RexWindowCreation = @Sendable (
+        CommandHost, RexWindowRequest, [String]
+    ) async -> Result<String, BackendTerminalCommandError>
     typealias ZellijSessionValidationDiscovery = @Sendable (
         CommandHost, [String]
     ) async -> ZellijDiscoveryResult
@@ -225,6 +230,8 @@ final class WorkspaceSceneModel: ObservableObject {
     // Backend terminals (Herdr Core and Rex); see the extension at the end
     // of this file.
     private var backendTerminalsByHost: [UUID: [BackendTerminalSummary]] = [:]
+    /// Whether each host's last Rex listing found a running server.
+    private var rexAvailabilityByHost: [UUID: Bool] = [:]
     private var backendTerminalDiscoveryFailuresByHost: [UUID: String] = [:]
     private var backendTerminalFreshHostIDs: Set<UUID> = []
     private var backendTerminalDiscoveryGeneration = 0
@@ -245,6 +252,7 @@ final class WorkspaceSceneModel: ObservableObject {
     private var backendTerminalRecoveryRequest: SessionConnectionRecoveryRequest?
     private let backendTerminalDiscovery: BackendTerminalDiscovery
     private let backendTerminalValidationDiscovery: BackendTerminalValidationDiscovery
+    private let rexWindowCreation: RexWindowCreation
     private var createdSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
     private var exhaustedCreatedTmuxSessionHandles: Set<UUID> = []
     private var endedCreatedTmuxSessionHandles: Set<UUID> = []
@@ -1474,6 +1482,14 @@ final class WorkspaceSceneModel: ObservableObject {
                 )
             }
         },
+        rexWindowCreation: @escaping RexWindowCreation = { host, request, arguments in
+            await BlockingTask.run(priority: .userInitiated) {
+                BackendTerminalInventoryClient().createRexWindow(
+                    on: host, label: request.label, sessionID: request.sessionID,
+                    cwd: request.cwd, sshConnectionArguments: arguments
+                )
+            }
+        },
         zellijSessionDiscovery: @escaping ZellijSessionDiscovery = { host in
             await ZellijInventoryClient().discover(on: host)
         },
@@ -1699,6 +1715,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.zellijSessionDiscovery = zellijSessionDiscovery
         self.backendTerminalDiscovery = backendTerminalDiscovery
         self.backendTerminalValidationDiscovery = backendTerminalValidationDiscovery
+        self.rexWindowCreation = rexWindowCreation
         self.zellijSessionValidationDiscovery =
             zellijSessionValidationDiscovery
         let zellijExecutableResolver:
@@ -4392,6 +4409,9 @@ final class WorkspaceSceneModel: ObservableObject {
         backendTerminalsByHost = backendTerminalsByHost.filter {
             retainedHerdrHostIDs.contains($0.key)
         }
+        rexAvailabilityByHost = rexAvailabilityByHost.filter {
+            retainedHerdrHostIDs.contains($0.key)
+        }
         backendTerminalDiscoveryFailuresByHost =
             backendTerminalDiscoveryFailuresByHost.filter {
                 retainedHerdrHostIDs.contains($0.key)
@@ -4427,6 +4447,7 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijSessionsByHost: zellijSessionsByHost,
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
+            rexAvailabilityByHost: rexAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
             tmuxAuthoritativeHostIDs: tmuxFreshHostIDs,
@@ -4474,6 +4495,10 @@ final class WorkspaceSceneModel: ObservableObject {
             ),
             zellijAvailabilityByHost: hostScopedValue(
                 zellijAvailabilityByHost,
+                hostID: hostID
+            ),
+            rexAvailabilityByHost: hostScopedValue(
+                rexAvailabilityByHost,
                 hostID: hostID
             ),
             tmuxReachabilityByHost: hostScopedValue(
@@ -5865,6 +5890,7 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijSessionsByHost: zellijSessionsByHost,
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
+            rexAvailabilityByHost: rexAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
             tmuxAuthoritativeHostIDs: tmuxFreshHostIDs,
@@ -15486,6 +15512,7 @@ extension WorkspaceSceneModel {
     ) {
         var terminals: [BackendTerminalSummary] = []
         var failures: [String] = []
+        noteRexAvailability(results[.rex], hostID: hostID)
         for kind in BackendTerminalKind.allCases {
             switch results[kind] {
             case let .available(found):
@@ -15515,6 +15542,16 @@ extension WorkspaceSceneModel {
         }
         applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
         updateWorkspaceInventoryState()
+    }
+
+    /// A listing tells whether the host's Rex server answers; a failed one
+    /// keeps the last answer.
+    private func noteRexAvailability(_ result: BackendTerminalDiscoveryResult?, hostID: UUID) {
+        switch result {
+        case .available: rexAvailabilityByHost[hostID] = true
+        case .unavailable, nil: rexAvailabilityByHost[hostID] = false
+        case .failure: break
+        }
     }
 
     /// Replaces one backend's rows on a host and keeps the other backends'.
@@ -15561,6 +15598,59 @@ extension WorkspaceSceneModel {
     func prepareActiveBackendTerminalSurface() {
         guard !isShutDown, let handle = activeBackendTerminalHandle else { return }
         _ = nativeBackendTerminalCoordinator.surface(handle: handle)
+    }
+
+    /// Opens a shell in a new Rex window on the host, then lists the host's
+    /// Rex windows again so the new one can be opened like any listed one.
+    /// Navigating elsewhere first cancels it: before the request, nothing is
+    /// created; after it, the window is listed but not returned to open. A
+    /// host removed or changed while its connection opens gets nothing.
+    func createRexWindow(
+        _ request: RexWindowRequest,
+        hostID: UUID
+    ) async throws -> WorkspaceBackendTerminalSelection {
+        let activityGeneration = try captureSceneActivity()
+        let navigationRevision = userNavigationRevision
+        func requireNoNavigation() throws {
+            try Task.checkCancellation()
+            try requireActiveScene(activityGeneration)
+            guard navigationRevision == userNavigationRevision else {
+                throw CancellationError()
+            }
+        }
+        guard let hostSummary = snapshot.host(id: hostID) else {
+            throw BackendTerminalCommandError.unavailable(.rex)
+        }
+        guard let host = CommandHostResolver.resolve(hostSummary) else {
+            throw BackendTerminalPresentationError.hostUnavailable(hostSummary.name)
+        }
+        let connection = await herdrConnectionSnapshot(on: host)
+        try requireNoNavigation()
+        guard snapshot.host(id: hostID).flatMap(CommandHostResolver.resolve) == host else {
+            throw BackendTerminalPresentationError.hostChanged
+        }
+        let result = await rexWindowCreation(host, request, connection.arguments)
+        if case let .failure(.commandFailed(_, status, stderr)) = result,
+           SSHConnectionFailure.indicatesUnusableConnection(status: status, output: stderr) {
+            await connection.invalidate()
+        }
+        let selection = try WorkspaceBackendTerminalSelection(
+            hostID: hostID, kind: .rex, address: result.get()
+        )
+        // List the new window even if the user moved on, so its row shows.
+        _ = try await validatedBackendTerminal(
+            selection, title: request.label ?? selection.address, on: host
+        )
+        try requireNoNavigation()
+        return selection
+    }
+
+    /// A new window beside the shown Rex window: in its session, with a
+    /// shell in its focused pane's directory.
+    var newRexWindowRequest: (hostID: UUID, request: RexWindowRequest)? {
+        guard let window = shownRexWindow, let request = window.newWindowRequest
+        else { return nil }
+        return (window.selection.hostID, request)
     }
 
     /// Opens a listed terminal once the backend confirms, over the SSH
@@ -15660,6 +15750,9 @@ extension WorkspaceSceneModel {
               .flatMap(CommandHostResolver.resolve) == host
         else {
             throw BackendTerminalPresentationError.hostChanged
+        }
+        if selection.kind == .rex {
+            noteRexAvailability(result, hostID: selection.hostID)
         }
         switch result {
         case let .available(terminals):

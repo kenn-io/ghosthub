@@ -97,6 +97,7 @@ enum ConfiguredHostOverlay {
                 host.zellijSessions = []
                 host.herdrAvailable = false
                 host.zellijAvailable = false
+                host.rexAvailable = false
             }
             if host.platform == .windows {
                 host.herdrSessions = []
@@ -104,6 +105,7 @@ enum ConfiguredHostOverlay {
                 host.zellijSessions = []
                 host.herdrAvailable = false
                 host.zellijAvailable = false
+                host.rexAvailable = false
             }
             hosts.append(host)
         }
