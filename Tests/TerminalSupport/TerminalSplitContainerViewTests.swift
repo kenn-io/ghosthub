@@ -256,6 +256,102 @@ struct TerminalSplitContainerViewTests {
         view.endDrag()
     }
 
+    @Test("capsules that do not fit in one row wrap upward, all inside the view")
+    func capsuleRows() {
+        let view = TerminalSplitContainerView(frame: CGRect(x: 0, y: 0, width: 400, height: 600))
+        let ids = (1 ... 8).map { "M\($0)" }
+        let tree = TerminalSplitTree(
+            root: .pane("A"),
+            floatingLayers: ids.map { .init(
+                id: "layer:\($0)", bounds: CGRect(x: 0, y: 0, width: 0.2, height: 0.2),
+                root: .pane($0), isMinimized: true
+            ) },
+            focusedPaneID: "A"
+        )
+        view.apply(tree: tree, panes: (["A"] + ids).map {
+            .init(id: $0, title: "a long pane title \($0)", content: nil)
+        })
+        view.layoutSubtreeIfNeeded()
+
+        let frames = ids.compactMap { view.capsules["layer:\($0)"]?.frame }
+        #expect(frames.count == ids.count)
+        #expect(frames.allSatisfy { view.bounds.contains($0) })
+        #expect(Set(frames.map(\.minY)).count > 1)
+        for (index, frame) in frames.enumerated() {
+            #expect(frames[(index + 1)...].allSatisfy { !$0.intersects(frame) })
+        }
+    }
+
+    @Test("a floating window with an uneven split shrinks only until its smaller share is minimal")
+    func floatingResizeKeepsRatios() {
+        let view = container()
+        let tree = TerminalSplitTree(
+            root: .pane("A"),
+            floatingLayers: [.init(
+                id: "layer:c", bounds: CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8),
+                root: .split(
+                    id: "float", axis: .horizontal, ratio: 0.25,
+                    first: .pane("C"), second: .pane("E")
+                )
+            )],
+            focusedPaneID: "C"
+        )
+        view.apply(tree: tree, panes: panes([
+            "A": RecordingContent(), "C": RecordingContent(), "E": RecordingContent(),
+        ]))
+        view.layoutSubtreeIfNeeded()
+
+        #expect(view.beginDrag(at: CGPoint(x: 100, y: 300)))
+        view.moveDrag(to: CGPoint(x: 1000, y: 300))
+        view.endDrag()
+        // C keeps a quarter of the width and still has its 80 points.
+        #expect(view.paneViews["C"]?.frame.width == 80)
+        #expect(view.paneViews["E"]?.frame.width == 240)
+    }
+
+    @Test("a floating window that fills the view can still be resized from its edges")
+    func filledFloatingEdges() throws {
+        let view = container()
+        let contents = ["A": RecordingContent(), "C": RecordingContent()]
+        view.apply(tree: TerminalSplitTree(
+            root: .pane("A"),
+            floatingLayers: [.init(
+                id: "layer:c", bounds: CGRect(x: 0, y: 0, width: 1, height: 1), root: .pane("C")
+            )],
+            focusedPaneID: "C"
+        ), panes: panes(contents))
+        view.layoutSubtreeIfNeeded()
+        let c = try #require(view.paneViews["C"])
+
+        let edge = try #require(view.hitTest(view.convert(CGPoint(x: 997, y: 300), to: nil)))
+        #expect(!edge.isDescendant(of: c))
+        let middle = try #require(view.hitTest(view.convert(CGPoint(x: 500, y: 300), to: nil)))
+        #expect(middle.isDescendant(of: c))
+
+        // A minimized window's capsule over a window's edge keeps its clicks.
+        view.apply(tree: TerminalSplitTree(
+            root: .pane("A"),
+            floatingLayers: [
+                .init(
+                    id: "layer:c", bounds: CGRect(x: 0, y: 0, width: 0.95, height: 1),
+                    root: .pane("C")
+                ),
+                .init(
+                    id: "layer:d", bounds: CGRect(x: 0, y: 0, width: 0.2, height: 0.2),
+                    root: .pane("D"), isMinimized: true
+                ),
+            ],
+            focusedPaneID: "C"
+        ), panes: panes(contents.merging(["D": RecordingContent()]) { a, _ in a }))
+        view.layoutSubtreeIfNeeded()
+        let capsule = try #require(view.capsules["layer:d"])
+        #expect(capsule.frame.minX < 950 && capsule.frame.maxX > 950)
+        #expect(view.hitTest(view.convert(CGPoint(x: 950, y: capsule.frame.midY), to: nil))
+            === capsule)
+        #expect(view.hitTest(view.convert(CGPoint(x: 950, y: 300), to: nil))
+            .map { !$0.isDescendant(of: c) } == true)
+    }
+
     @Test(
         "a floating pane offers Tile only beside a tiled layout and Minimize only beside another pane"
     )

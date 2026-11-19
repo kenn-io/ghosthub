@@ -1787,6 +1787,41 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         )
     }
 
+    func testClickOnOverlappingTerminalsReachesOnlyTheFrontOne() throws {
+        let appHandle = try requireAppHandle()
+        let back = makeSurface(app: appHandle, configuration: TerminalSurfaceConfiguration())
+        let front = makeSurface(app: appHandle, configuration: TerminalSurfaceConfiguration())
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
+        back.frame = container.bounds
+        front.frame = NSRect(x: 0, y: 0, width: 300, height: 300)
+        container.addSubview(back)
+        container.addSubview(front)
+        let window = makeTestWindow(contentView: container, settleDelay: 0.1)
+        window.makeFirstResponder(nil)
+        var backInteractions = 0
+        var frontInteractions = 0
+        back.onPrimaryInteraction = { backInteractions += 1 }
+        front.onPrimaryInteraction = { frontInteractions += 1 }
+
+        dispatch(
+            makeLeftMouseDownEvent(windowNumber: window.windowNumber),
+            to: window,
+            route: .application
+        )
+        XCTAssertEqual(frontInteractions, 1)
+        XCTAssertEqual(backInteractions, 0, "A covered terminal must not claim the click.")
+
+        dispatch(
+            makeLeftMouseDownEvent(
+                windowNumber: window.windowNumber, location: NSPoint(x: 600, y: 400)
+            ),
+            to: window,
+            route: .application
+        )
+        XCTAssertEqual(backInteractions, 1)
+        XCTAssertEqual(frontInteractions, 1)
+    }
+
     func testRemovingOlderPaneObserverDoesNotClearNewerPaneObserver() throws {
         let appHandle = try requireAppHandle()
 

@@ -324,6 +324,29 @@ struct RexWindowPresentationTests {
         #expect(!presentation.canMinimizeFocusedFloatingWindow)
     }
 
+    @Test("clicking a pane in a floating window behind another brings it to the front")
+    func clickRaisesWindow() async throws {
+        let presentation = presentation()
+        let behind = #"""
+        ,{"kind":"floating","layer_id":"layer:c","bounds":[0.1,0.1,0.5,0.5],
+          "layout":{"block_id":"block:c"}},
+         {"kind":"floating","layer_id":"layer:e","bounds":[0.3,0.3,0.5,0.5],
+          "layout":{"block_id":"block:e"}}
+        """#
+        // Another Rex app raised layer:e; Ghosthub still has block:c focused.
+        try channel.deliver(layout: Self.two, focused: "block:c", floating: behind)
+
+        presentation.panePressed("block:c")
+        let request = try #require(await lastRequest(1))
+        #expect(request.method == "session.raise_layer")
+        #expect(request.params == ["layer_id": "layer:c"] as NSDictionary)
+
+        presentation.panePressed("block:e")
+        presentation.panePressed("block:a")
+        try await sendsSettle()
+        #expect(channel.requests.count == 1)
+    }
+
     @Test("moving or resizing a floating window sends its new bounds")
     func moveFloatingWindow() async throws {
         let presentation = presentation()

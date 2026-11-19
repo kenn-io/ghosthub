@@ -230,6 +230,13 @@ final class RexWindowPresentation {
         request("block.close", ["block_id": blockID])
     }
 
+    /// A pane's terminal was clicked. Its floating window comes to the
+    /// front even when the pane already has focus, since another Rex app
+    /// may have raised a different window.
+    func panePressed(_ blockID: String) {
+        raiseLayer(holding: blockID)
+    }
+
     /// A pane took keyboard focus or its header was clicked.
     func paneFocused(_ blockID: String) {
         guard paneHandles[blockID] != nil else { return }
@@ -423,7 +430,9 @@ final class RexWindowPresentation {
                         self?.paneFocused(blockID)
                     }
                 },
-                onPrimaryInteraction: {}
+                onPrimaryInteraction: { [weak self] in
+                    self?.panePressed(blockID)
+                }
             )
             paneContents[blockID] = surface
         }

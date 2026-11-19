@@ -227,6 +227,21 @@ public final class TerminalSplitContainerView: NSView {
         }
     }
 
+    /// A floating window's edges take clicks before the panes inside it,
+    /// so a window that fills the view can still be resized. Capsules stay
+    /// in front of every window.
+    override public func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if !capsules.values.contains(where: { $0.frame.contains(local) }),
+           let layer = floatingLayerFrames.last(where: {
+               $0.frame.insetBy(dx: -Self.edgeGrip, dy: -Self.edgeGrip).contains(local)
+           }), !Self.edges(of: layer.frame, at: local).isEmpty,
+           bounds.contains(local), let backdrop = backdrops[layer.id] {
+            return backdrop
+        }
+        return super.hitTest(point)
+    }
+
     override public func resetCursorRects() {
         for divider in dividers where divider.layerID == nil {
             addCursorRect(divider.hitRect, cursor: Self.cursor(for: divider))
@@ -347,7 +362,8 @@ public final class TerminalSplitContainerView: NSView {
     }
 
     /// A floating window's frame after a drag by `offset`, kept inside the
-    /// view and, when resized, no smaller than its panes' minimum size.
+    /// view and, when resized, no smaller than its panes need at their
+    /// current split ratios.
     private func draggedFrame(
         id: String,
         edges: Edges,
@@ -360,14 +376,14 @@ public final class TerminalSplitContainerView: NSView {
             return CGRect(origin: CGPoint(x: x, y: y), size: start.size)
         }
         let root = tree?.floatingLayers.first { $0.id == id }?.root
-        let minWidth = min(
-            root?.minimumLength(along: .horizontal, metrics: metrics) ?? 0,
-            bounds.width
-        )
-        let minHeight = min(
-            root?.minimumLength(along: .vertical, metrics: metrics) ?? 0,
-            bounds.height
-        )
+        let ratios = committedRatios.mapValues(\.ratio)
+        func minimum(along axis: TerminalSplitTree.Axis) -> CGFloat {
+            root?.minimumLength(
+                along: axis, metrics: metrics, overrides: ratios, keepingRatios: true
+            ) ?? 0
+        }
+        let minWidth = min(minimum(along: .horizontal), bounds.width)
+        let minHeight = min(minimum(along: .vertical), bounds.height)
         var minX = start.minX, maxX = start.maxX, minY = start.minY, maxY = start.maxY
         if edges.contains(.left) {
             minX = min(max(minX + offset.width, bounds.minX), maxX - minWidth)
@@ -535,17 +551,27 @@ public final class TerminalSplitContainerView: NSView {
         return capsule
     }
 
-    /// Lines up the capsules from the bottom-right corner, leftward.
+    /// Lines up the capsules from the bottom-right corner, leftward, and
+    /// starts a row above when one is full, so every capsule stays in view.
     private func layoutCapsules() {
-        var trailing = bounds.maxX - 8
+        let margin: CGFloat = 8, spacing: CGFloat = 6
+        var trailing = bounds.maxX - margin
+        var bottom = bounds.maxY - margin
+        var rowHeight: CGFloat = 0
         for capsule in capsules.values.sorted(by: { $0.tag < $1.tag }) {
             let size = capsule.fittingSize
-            let width = min(size.width, 200)
+            let width = min(size.width, 200, max(bounds.width - 2 * margin, 0))
+            if trailing - width < bounds.minX + margin, rowHeight > 0 {
+                trailing = bounds.maxX - margin
+                bottom -= rowHeight + spacing
+                rowHeight = 0
+            }
             trailing -= width
             capsule.frame = CGRect(
-                x: trailing, y: bounds.maxY - size.height - 8, width: width, height: size.height
+                x: trailing, y: bottom - size.height, width: width, height: size.height
             )
-            trailing -= 6
+            trailing -= spacing
+            rowHeight = max(rowHeight, size.height)
         }
     }
 
