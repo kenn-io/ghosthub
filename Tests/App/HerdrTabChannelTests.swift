@@ -137,6 +137,19 @@ struct HerdrTabChannelTests {
         }
     }
 
+    @Test("moving focus while zoomed zooms the newly focused pane")
+    func focusWhileZoomed() async throws {
+        let (channel, _, recorder) = start(Listings([.success(Self.listing(Self.twoPanes))]))
+        defer { channel.stop() }
+        await waitUntil { !recorder.views.isEmpty }
+
+        try await channel.send(method: "session.zoom_block", params: ["block_id": "t1"])
+        try await channel.send(method: "session.focus_block", params: ["block_id": "t2"])
+        let tree = recorder.views.last?.windows.first?.tree
+        #expect(tree?.focusedPaneID == "t2")
+        #expect(tree?.zoomedPaneID == "t2")
+    }
+
     @Test("a change in the core shows the tab's new layout and keeps the focused pane")
     func change() async throws {
         let listings = Listings([
@@ -189,6 +202,23 @@ struct HerdrTabChannelTests {
         withExtendedLifetime(channel) {}
         #expect(recorder.exits == [.ended])
         #expect(events.stopped)
+    }
+
+    @Test("a tab missing from one listing stays open when the next one has it")
+    func tabBrieflyMissing() async {
+        let listings = Listings([
+            .success(Self.listing(Self.twoPanes)),
+            .success(Self.listing(nil)),
+            .success(Self.listing(Self.twoPanes, name: "back")),
+        ])
+        let (channel, events, recorder) = start(listings)
+        defer { channel.stop() }
+        await waitUntil { !recorder.views.isEmpty }
+
+        events.onChange?()
+        await waitUntil { recorder.views.last?.windows.first?.label == "back" }
+        #expect(recorder.exits.isEmpty)
+        #expect(!events.stopped)
     }
 
     @Test("a failed listing or a stopped event stream is reported once")
@@ -267,26 +297,38 @@ struct HerdrCoreEventStreamTests {
         await waitUntil { !recorder.exits.isEmpty }
         withExtendedLifetime(stream) {}
 
-        #expect(recorder.changes == 8)
+        // The confirmed subscription counts too.
+        #expect(recorder.changes == 9)
         // The exit carries what the fake wrote to stderr: the request it read.
         #expect(recorder.exits.first?.contains(#""method":"events.subscribe""#) == true)
+    }
+
+    @Test("a confirmed subscription counts as a change, for anything missed while it started")
+    func subscribed() async throws {
+        let (stream, recorder) = try follow(Self.fakeCore(events: []))
+        await waitUntil { !recorder.exits.isEmpty }
+        withExtendedLifetime(stream) {}
+        #expect(recorder.changes == 1)
     }
 
     @Test("a refused subscription or an unreadable line stops the stream", arguments: [
         (
             #"{"id":1,"jsonrpc":"2.0","error":{"code":-32601,"message":"no method events.subscribe"}}"#,
-            [String]()
+            [String](),
+            "no method events.subscribe",
+            0
         ),
-        (#"{"id":1,"jsonrpc":"2.0","result":{}}"#, ["not json"]),
+        (
+            #"{"id":1,"jsonrpc":"2.0","result":{}}"#, ["not json"],
+            "Cannot read the Herdr Core event stream.", 1
+        ),
     ])
-    func refused(_ reply: String, events: [String]) async throws {
+    func refused(_ reply: String, events: [String], message: String, changes: Int) async throws {
         let (stream, recorder) = try follow(Self.fakeCore(events: events, reply: reply))
         await waitUntil { !recorder.exits.isEmpty }
         withExtendedLifetime(stream) {}
 
-        #expect(recorder.changes == 0)
-        #expect(recorder.exits.count == 1)
-        #expect(recorder.exits.first?.contains("events.subscribe") == true
-            || recorder.exits.first == "Cannot read the Herdr Core event stream.")
+        #expect(recorder.changes == changes)
+        #expect(recorder.exits == [message])
     }
 }

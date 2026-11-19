@@ -76,6 +76,20 @@ struct HerdrCoreLayoutTests {
         #expect(result.paneDirectories["t1"] == "/src/a")
     }
 
+    @Test("a tab named by its space, or after it, names the space once", arguments: [
+        ("", "Review", "Review", "2 panes"),
+        ("Review", "Review", "Review", "2 panes"),
+        ("ready", "Review", "ready", "Review · 2 panes"),
+        ("ready", "", "ready", "2 panes"),
+    ])
+    func tabRowNames(_ name: String, space: String, title: String, detail: String) {
+        let row = HerdrCoreInventory.tabRow(
+            address: "tab:tb01", name: name, spaceName: space, paneCount: 2
+        )
+        #expect(row.title == title)
+        #expect(row.detail == detail)
+    }
+
     @Test("a row of three panes keeps each pane's share of the space")
     func threeWayRow() throws {
         let root = """

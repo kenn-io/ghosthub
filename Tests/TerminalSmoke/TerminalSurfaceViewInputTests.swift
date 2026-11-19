@@ -1239,12 +1239,19 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     private func waitForViewportTextYielding(
         _ expected: String,
         in view: TerminalSurfaceView,
-        timeout: Duration = .seconds(20)
+        timeout: Duration = .seconds(20),
+        file: StaticString = #filePath,
+        line: UInt = #line
     ) async {
         let deadline = ContinuousClock.now + timeout
         while !readViewportText(from: view).contains(expected), ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
+        XCTAssertTrue(
+            readViewportText(from: view).contains(expected),
+            "Timed out waiting for \(expected) in the viewport",
+            file: file, line: line
+        )
     }
 
     private enum HostMode {

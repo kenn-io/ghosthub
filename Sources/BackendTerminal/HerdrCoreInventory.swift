@@ -121,17 +121,19 @@ public enum HerdrCoreInventory {
         ))
     }
 
-    /// A desktop tab's sidebar row: its name, then its space and panes.
+    /// A desktop tab's sidebar row: its name, then its space and panes. A
+    /// tab without a name takes its space's, which the detail then omits.
     public static func tabRow(
         address: String, name: String, spaceName: String, paneCount: Int
     ) -> BackendTerminalSummary {
         let count = paneCount == 1 ? "1 pane" : "\(paneCount) panes"
+        let title = nonBlank(name) ?? nonBlank(spaceName)
+        let space = nonBlank(spaceName).flatMap { $0 == title ? nil : $0 }
         return BackendTerminalSummary(
             kind: .herdrCore,
             address: address,
-            title: nonBlank(name) ?? nonBlank(spaceName),
-            detail: ([nonBlank(spaceName)].compactMap(\.self) + [count])
-                .joined(separator: " · ")
+            title: title,
+            detail: ([space].compactMap(\.self) + [count]).joined(separator: " · ")
         )
     }
 

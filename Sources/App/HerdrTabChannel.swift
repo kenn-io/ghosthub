@@ -43,6 +43,9 @@ final class HerdrTabChannel: RexControlChannelling {
     private var revision = 0
     private var refreshTask: Task<Void, Never>?
     private var refreshAgain = false
+    /// The last listing lacked the tab. One more listing confirms it is
+    /// gone: a terminal replaced between a listing's reads looks absent.
+    private var tabMissing = false
     private var finished = false
 
     init(tabAddress: String, events: any HerdrCoreEventFollowing, list: @escaping Listing) {
@@ -62,6 +65,10 @@ final class HerdrTabChannel: RexControlChannelling {
         case "session.focus_block":
             guard let block, tab?.root.paneIDs.contains(block) == true else { break }
             focused = block
+            // A zoomed view shows only the focused pane.
+            if zoomed != nil {
+                zoomed = block
+            }
         case "session.zoom_block":
             guard let block, tab?.root.paneIDs.contains(block) == true else { break }
             zoomed = zoomed == block ? nil : block
@@ -104,10 +111,17 @@ final class HerdrTabChannel: RexControlChannelling {
             return
         case let .success(listing):
             guard let tab = listing.tabs.first(where: { $0.address == tabAddress }) else {
-                stop()
-                onExit?(.ended)
+                if tabMissing {
+                    stop()
+                    onExit?(.ended)
+                } else {
+                    tabMissing = true
+                    refreshAgain = false
+                    refresh()
+                }
                 return
             }
+            tabMissing = false
             self.listing = listing
             self.tab = tab
         }
@@ -264,6 +278,8 @@ final class HerdrCoreEventStream: HerdrCoreEventFollowing {
                 return fail(message.error?.message ?? "Herdr Core refused the event stream.")
             }
             subscribed = true
+            // A listing that started first could miss earlier changes.
+            onChange?()
             return
         }
         switch message.method {
