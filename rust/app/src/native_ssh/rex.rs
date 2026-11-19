@@ -259,8 +259,11 @@ fn desktop_routes_keyboard_to_the_focused_rex_pane() {
             .output()
             .is_ok_and(|o| o.status.success() && o.stdout == b"review\n")
     });
-    ui_probe("tmux display-message -p -t \"$TMUX_PANE\" '#S' > /tmp/rex-gui-tmux");
     wait_ui(&fixture, "ordinary terminal lost keyboard focus", || {
+        // tmux can list its client before Ghosthub accepts input for it.
+        // Clear any partial shell input before trying the probe again.
+        ui(&["key", "--clearmodifiers", "ctrl+u"]);
+        ui_probe("tmux display-message -p -t \"$TMUX_PANE\" '#S' > /tmp/rex-gui-tmux");
         std::fs::read_to_string("/tmp/rex-gui-tmux").is_ok_and(|s| s == "review\n")
     });
     ui_palette("Work rex");
