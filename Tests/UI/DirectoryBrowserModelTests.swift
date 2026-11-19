@@ -45,6 +45,30 @@ struct DirectoryBrowserModelTests {
         #expect(children.allSatisfy { $0.projectPath == nil })
     }
 
+    @Test("hiding unregistered folders retains registrations and their ancestor paths")
+    func hideUnregisteredFolders() {
+        let entries = [
+            DirectoryEntry(name: "unused", path: "/hub/unused"),
+            DirectoryEntry(name: "checkout", path: "/hub/checkout", projectPath: "/elsewhere/main"),
+            DirectoryEntry(name: "unloaded", path: "/hub/unloaded", projectPath: "/hub/unloaded"),
+        ]
+        let directories = [DirectoryWorkspaceSummary(
+            id: UUID(), hostID: UUID(), name: "notes", path: "/hub/notes",
+            tmuxSessionName: "notes", sessionLive: false
+        )]
+        let projects = [project(path: "/elsewhere/main"), project(path: "/hub/team/widget/main")]
+        let hidden = DirectoryBrowserModel.children(
+            of: "/hub", entries: entries, directories: directories, projects: projects,
+            showUnregisteredFolders: false
+        )
+        #expect(hidden.map(\.name) == ["checkout", "notes", "team"])
+        let shown = DirectoryBrowserModel.children(
+            of: "/hub", entries: entries, directories: directories, projects: projects,
+            showUnregisteredFolders: true
+        )
+        #expect(shown.map(\.name) == ["checkout", "notes", "team", "unloaded", "unused"])
+    }
+
     @Test("group roots compare host and path components")
     func roots() {
         let hostID = UUID()

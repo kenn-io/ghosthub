@@ -25,6 +25,7 @@ struct DirectoryBrowserRow: View {
     @State private var reload = 0
     @State private var registering = false
     @State private var registered = false
+    @State private var showUnregisteredFolders = true
 
     private var directory: DirectoryWorkspaceSummary? {
         directories.first {
@@ -87,6 +88,10 @@ struct DirectoryBrowserRow: View {
                             }
                             Divider()
                         }
+                        Button(showUnregisteredFolders ? "Hide Unregistered Folders" :
+                            "Show Unregistered Folders") {
+                                showUnregisteredFolders.toggle()
+                            }
                         Button("Refresh Folders") {
                             expanded = true
                             reload += 1
@@ -115,7 +120,8 @@ struct DirectoryBrowserRow: View {
                         let children = DirectoryBrowserModel.children(
                             of: listing?.path ?? entry.path,
                             entries: listing?.entries ?? [],
-                            directories: directories, projects: projects
+                            directories: directories, projects: projects,
+                            showUnregisteredFolders: showUnregisteredFolders
                         )
                         ForEach(children) { child in
                             childRow(child)
@@ -181,7 +187,8 @@ enum DirectoryBrowserModel {
         of parent: String,
         entries: [DirectoryEntry],
         directories: [DirectoryWorkspaceSummary],
-        projects: [WorkspaceSidebarProject]
+        projects: [WorkspaceSidebarProject],
+        showUnregisteredFolders: Bool = true
     ) -> [DirectoryEntry] {
         var children = entries
         let parent = DirectoryPaths.normalized(parent)
@@ -197,6 +204,14 @@ enum DirectoryBrowserModel {
         }
         var seenProjects = Set<UUID>()
         return children.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .filter { child in
+                showUnregisteredFolders
+                    || project(for: child, in: projects) != nil
+                    || (directories.map(\.path) + projects.map(\.project.rootPath)).contains {
+                        DirectoryPaths.normalized($0) == DirectoryPaths.normalized(child.path)
+                            || DirectoryPaths.contains(child.path, $0)
+                    }
+            }
             .filter {
                 guard let project = project(for: $0, in: projects) else { return true }
                 return seenProjects.insert(project.id).inserted

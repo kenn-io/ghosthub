@@ -93,6 +93,10 @@ Project** when kwt recognizes a checkout, or **Add Directory** to give the folde
 its own root terminal. Registered projects show their normal worktree rows.
 
 Use **… → Refresh Folders** to reload a folder after filesystem changes.
+Use **… → Hide Unregistered Folders** to show only registered children and
+folders leading to registered projects or directories. **Show Unregistered
+Folders** restores the full listing. This choice applies to that folder while
+it remains in the sidebar.
 Browsing is available on the local Mac and remote macOS/Linux hosts. It omits
 hidden folders and symbolic links and inspects up to 1,000 filesystem entries
 per expansion. Known registrations remain reachable even when their folders
