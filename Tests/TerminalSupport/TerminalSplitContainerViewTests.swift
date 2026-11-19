@@ -227,6 +227,54 @@ struct TerminalSplitContainerViewTests {
         #expect(drops == ["A B"])
     }
 
+    @Test("a pane drag drops on the layout at release, and leaves terminal resizing alone")
+    func paneDropFollowsLayout() throws {
+        let view = container()
+        var drops: [String] = []
+        view.onPaneDropped = { drops.append("\($0) \($1.paneID) \($1.zone)") }
+        let contents = ["A": RecordingContent(), "B": RecordingContent(), "C": RecordingContent()]
+        view.apply(tree: tree(), panes: panes(contents))
+        view.layoutSubtreeIfNeeded()
+        let a = try #require(view.paneViews["A"]).frame
+        let c = try #require(view.paneViews["C"]).frame
+        let sideBySide = TerminalSplitTree(root: .split(
+            id: "split:root", axis: .horizontal, ratio: 0.5, first: .pane("A"), second: .pane("B")
+        ))
+
+        // Released back over its own pane, it drops nothing.
+        #expect(view.beginPaneDrag(paneID: "A", at: CGPoint(x: a.midX, y: 10)))
+        view.moveDrag(to: CGPoint(x: c.midX, y: c.midY))
+        view.endDrag(at: CGPoint(x: a.midX, y: a.midY))
+        #expect(drops.isEmpty)
+
+        // The backend closes C mid-drag: the pointer is now over B, and a
+        // terminal that attaches then resizes freely.
+        #expect(view.beginPaneDrag(paneID: "A", at: CGPoint(x: a.midX, y: 10)))
+        view.moveDrag(to: CGPoint(x: c.midX, y: c.midY))
+        let attached = RecordingContent()
+        view.apply(tree: sideBySide, panes: panes(["A": contents["A"]!, "B": attached]))
+        view.layoutSubtreeIfNeeded()
+        let b = try #require(view.paneViews["B"]).frame
+        #expect(view.paneDropFrame == CGRect(
+            x: b.minX, y: b.midY, width: b.width, height: b.height / 2
+        ))
+        view.endDrag()
+        #expect(drops == ["A B bottom"])
+        #expect(attached.deferrals.isEmpty)
+
+        // Zoomed mid-drag, it drops nothing.
+        #expect(view.beginPaneDrag(paneID: "A", at: CGPoint(x: a.midX, y: 10)))
+        view.moveDrag(to: CGPoint(x: b.midX, y: b.midY))
+        view.apply(
+            tree: TerminalSplitTree(root: sideBySide.root, zoomedPaneID: "B"),
+            panes: panes(["A": contents["A"]!, "B": attached])
+        )
+        view.layoutSubtreeIfNeeded()
+        #expect(view.paneDropFrame == nil)
+        view.endDrag()
+        #expect(drops == ["A B bottom"])
+    }
+
     /// A | B tiled, with a floating C in the middle, and a minimized D.
     private func floatingTree(
         bounds: CGRect = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5),

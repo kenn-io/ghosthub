@@ -46,9 +46,9 @@ public final class TerminalSplitContainerView: NSView {
         /// `start` is the window's frame and `origin` the pointer when the
         /// drag began; `frame` is where the window is now.
         case layer(id: String, edges: Edges, start: CGRect, origin: CGPoint, frame: CGRect)
-        /// A tiled pane dragged by its header, and where it would land.
-        /// `moved` turns true once the pointer leaves the starting spot.
-        case pane(id: String, origin: CGPoint, moved: Bool, drop: TerminalSplitPaneDrop?)
+        /// A tiled pane dragged by its header. `point` is the pointer, nil
+        /// until it leaves the starting spot.
+        case pane(id: String, origin: CGPoint, point: CGPoint?)
     }
 
     /// How far outside a floating window its edges can be grabbed.
@@ -62,7 +62,7 @@ public final class TerminalSplitContainerView: NSView {
     /// animates its size, such as the sidebar.
     public var defersContentResize = false {
         didSet {
-            if defersContentResize != oldValue, drag == nil {
+            if defersContentResize != oldValue, !holdsContentResize {
                 setContentResizeDeferred(defersContentResize)
             }
         }
@@ -147,7 +147,7 @@ public final class TerminalSplitContainerView: NSView {
             view.actions = !isLayoutEditable ? [.zoom]
                 : tree.map { Self.actions(for: pane.id, in: $0) }
                 ?? TerminalSplitHeaderAction.tiledActions
-            if view.content !== pane.content, defersContentResize || drag != nil {
+            if view.content !== pane.content, defersContentResize || holdsContentResize {
                 pane.content?.setResizeDeferred(true)
             }
             view.setContent(pane.content)
@@ -239,6 +239,9 @@ public final class TerminalSplitContainerView: NSView {
         layoutCapsules()
         CATransaction.commit()
         floatingLayerFrames = result.floatingLayers
+        if case .pane = drag {
+            showDrop(currentDrop)
+        }
         orderSubviews(tree)
         if result.dividers != dividers {
             dividers = result.dividers
@@ -285,8 +288,8 @@ public final class TerminalSplitContainerView: NSView {
         moveDrag(to: convert(event.locationInWindow, from: nil))
     }
 
-    override public func mouseUp(with _: NSEvent) {
-        endDrag()
+    override public func mouseUp(with event: NSEvent) {
+        endDrag(at: convert(event.locationInWindow, from: nil))
     }
 
     /// Starts a drag at a point in this view: a floating window's edge or a
@@ -337,7 +340,7 @@ public final class TerminalSplitContainerView: NSView {
         guard drag == nil, isLayoutEditable, let tree, tree.zoomedPaneID == nil,
               let tiled = tree.root?.paneIDs, tiled.count > 1, tiled.contains(paneID)
         else { return false }
-        drag = .pane(id: paneID, origin: point, moved: false, drop: nil)
+        drag = .pane(id: paneID, origin: point, point: nil)
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53, let self else { return event }
             cancelDrag()
@@ -356,11 +359,10 @@ public final class TerminalSplitContainerView: NSView {
 
     func moveDrag(to point: CGPoint) {
         switch drag {
-        case let .pane(id, origin, moved, _):
-            let moved = moved || hypot(point.x - origin.x, point.y - origin.y) >= 4
-            let drop = moved ? paneDrop(at: point, from: id) : nil
-            drag = .pane(id: id, origin: origin, moved: moved, drop: drop)
-            showDrop(drop)
+        case let .pane(id, origin, last):
+            let moved = last != nil || hypot(point.x - origin.x, point.y - origin.y) >= 4
+            drag = .pane(id: id, origin: origin, point: moved ? point : nil)
+            showDrop(currentDrop)
             return
         case let .divider(divider, _):
             drag = .divider(
@@ -384,13 +386,21 @@ public final class TerminalSplitContainerView: NSView {
         layoutSubtreeIfNeeded()
     }
 
-    func endDrag() {
+    /// Ends a drag; a pane drag drops where `point` is in the layout now.
+    func endDrag(at point: CGPoint? = nil) {
         headerDragCancelled = false
+        if case .pane = drag {
+            if let point {
+                moveDrag(to: point)
+            }
+            layoutSubtreeIfNeeded()
+        }
+        let drop = currentDrop
         guard let ended = drag else { return }
         drag = nil
         var commit: (() -> Void)?
         switch ended {
-        case let .pane(id, _, _, drop):
+        case let .pane(id, _, _):
             finishPaneDrag()
             if let drop {
                 onPaneDropped?(id, drop)
@@ -415,6 +425,24 @@ public final class TerminalSplitContainerView: NSView {
             setContentResizeDeferred(false)
         }
         commit?()
+    }
+
+    /// Where the dragged pane would land now. Nothing moves in a layout that
+    /// has stopped being editable, became zoomed, or no longer tiles it.
+    private var currentDrop: TerminalSplitPaneDrop? {
+        guard case let .pane(id, _, point?) = drag, isLayoutEditable, let tree,
+              tree.zoomedPaneID == nil, tree.root?.paneIDs.contains(id) == true
+        else { return nil }
+        return paneDrop(at: point, from: id)
+    }
+
+    /// Divider and floating window drags hold terminal resizing until they
+    /// end; a pane drag changes no size until the backend moves the pane.
+    private var holdsContentResize: Bool {
+        switch drag {
+        case .divider, .layer: true
+        case .pane, nil: false
+        }
     }
 
     /// The tiled pane under `point`, other than the dragged one, and the
@@ -579,7 +607,7 @@ public final class TerminalSplitContainerView: NSView {
             guard let self else { return }
             let point = convert(location, from: nil)
             if ended {
-                endDrag()
+                endDrag(at: point)
             } else if headerDragCancelled {
                 return
             } else if drag != nil || beginMove(paneID: id, at: point)
