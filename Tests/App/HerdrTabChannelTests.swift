@@ -155,7 +155,7 @@ struct HerdrTabChannelTests {
         let listings = Listings([
             .success(Self.listing(Self.twoPanes)),
             .success(Self.listing(.split(
-                id: "r#0", axis: .vertical, ratio: 0.3, first: .pane("t2"), second: .pane("t1")
+                id: "r#0", axis: .vertical, ratio: 0.3, first: .pane("t1"), second: .pane("t2")
             ), name: "renamed")),
         ])
         let (channel, events, recorder) = start(listings)
@@ -320,7 +320,7 @@ struct HerdrCoreEventStreamTests {
         ),
         (
             #"{"id":1,"jsonrpc":"2.0","result":{}}"#, ["not json"],
-            "Cannot read the Herdr Core event stream.", 1
+            "Cannot update this Herdr tab.", 1
         ),
     ])
     func refused(_ reply: String, events: [String], message: String, changes: Int) async throws {

@@ -271,11 +271,11 @@ final class HerdrCoreEventStream: HerdrCoreEventFollowing {
 
     private func handle(_ line: Data) {
         guard let message = try? JSONDecoder().decode(Message.self, from: line) else {
-            return fail("Cannot read the Herdr Core event stream.")
+            return fail("Cannot update this Herdr tab.")
         }
         if !subscribed {
             guard message.error == nil, message.result != nil else {
-                return fail(message.error?.message ?? "Herdr Core refused the event stream.")
+                return fail(message.error?.message ?? "Herdr refused tab updates.")
             }
             subscribed = true
             // A listing that started first could miss earlier changes.
