@@ -5,6 +5,21 @@ import Testing
 
 @Suite("Directory browser")
 struct DirectoryBrowserModelTests {
+    @Test(
+        "folder reads occur only for an expanded uncached full listing",
+        arguments: [
+            (false, false, false), (false, false, true),
+            (false, true, false), (false, true, true),
+            (true, false, false), (true, false, true),
+            (true, true, false), (true, true, true),
+        ]
+    )
+    func loadingPolicy(expanded: Bool, showUnregistered: Bool, cached: Bool) {
+        #expect(DirectoryBrowserModel.shouldLoad(
+            expanded: expanded, showUnregisteredFolders: showUnregistered, hasListing: cached
+        ) == (expanded && showUnregistered && !cached))
+    }
+
     private func project(path: String) -> WorkspaceSidebarProject {
         WorkspaceSidebarProject(
             project: ProjectSummary(id: UUID(), hostID: UUID(), name: "widget", rootPath: path),
@@ -67,6 +82,24 @@ struct DirectoryBrowserModelTests {
             showUnregisteredFolders: true
         )
         #expect(shown.map(\.name) == ["checkout", "notes", "team", "unloaded", "unused"])
+    }
+
+    @Test("large listings retain exactly the registered projects")
+    func largeListing() {
+        let entries = (0 ..< 1000).map {
+            DirectoryEntry(name: "folder-\($0)", path: "/hub/folder-\($0)")
+        }
+        let projects = (0 ..< 500).map { project(path: "/hub/folder-\($0)") }
+        let duration = ContinuousClock().measure {
+            for _ in 0 ..< 10 {
+                let children = DirectoryBrowserModel.children(
+                    of: "/hub", entries: entries, directories: [], projects: projects,
+                    showUnregisteredFolders: false
+                )
+                #expect(Set(children.map(\.path)) == Set(projects.map(\.project.rootPath)))
+            }
+        }
+        print("Directory projection: 10 x 1,000 folders / 500 projects: \(duration)")
     }
 
     @Test("group roots compare host and path components")

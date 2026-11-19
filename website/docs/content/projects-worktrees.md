@@ -98,6 +98,9 @@ Folders** to see the full listing. **Hide Unregistered Folders** shows only
 registered children and folders leading to registered projects or directories.
 This choice applies to that folder while
 it remains in the sidebar.
+The registered-only view uses existing inventory without a filesystem request.
+Full folder listings are loaded on demand and reused when you collapse and
+reopen a folder. **Refresh Folders** clears that folder's cached listing.
 For a registered directory with a running session, the same **…** menu includes
 **Kill Session…**, which asks for confirmation.
 Browsing is available on the local Mac and remote macOS/Linux hosts. It omits

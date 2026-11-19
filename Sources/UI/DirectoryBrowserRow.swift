@@ -94,6 +94,7 @@ struct DirectoryBrowserRow: View {
                                 showUnregisteredFolders.toggle()
                             }
                         Button("Refresh Folders") {
+                            listing = nil
                             expanded = true
                             reload += 1
                         }
@@ -130,7 +131,12 @@ struct DirectoryBrowserRow: View {
                         ForEach(children) { child in
                             childRow(child)
                         }
-                        if let listing {
+                        if !showUnregisteredFolders {
+                            if children.isEmpty {
+                                Text("No registered child folders").font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if let listing {
                             if children.isEmpty {
                                 Text("No visible child folders").font(.caption)
                                     .foregroundStyle(.secondary)
@@ -149,8 +155,11 @@ struct DirectoryBrowserRow: View {
         }
         .onChange(of: directory?.id) { _, _ in registered = false }
         .onChange(of: project?.id) { _, _ in registered = false }
-        .task(id: "\(expanded)-\(reload)") {
-            guard expanded, project == nil || directory != nil else { return }
+        .task(id: "\(expanded)-\(showUnregisteredFolders)-\(reload)") {
+            guard DirectoryBrowserModel.shouldLoad(
+                expanded: expanded, showUnregisteredFolders: showUnregisteredFolders,
+                hasListing: listing != nil
+            ), project == nil || directory != nil else { return }
             error = nil
             let result = await load(host, entry.path)
             guard !Task.isCancelled else { return }
@@ -186,6 +195,12 @@ struct DirectoryBrowserRow: View {
 }
 
 enum DirectoryBrowserModel {
+    static func shouldLoad(
+        expanded: Bool, showUnregisteredFolders: Bool, hasListing: Bool
+    ) -> Bool {
+        expanded && showUnregisteredFolders && !hasListing
+    }
+
     /// Merge known registrations into the visible filesystem level so missing,
     /// hidden, or truncated entries do not make registered projects unreachable.
     static func children(
@@ -197,29 +212,37 @@ enum DirectoryBrowserModel {
     ) -> [DirectoryEntry] {
         var children = entries
         let parent = DirectoryPaths.normalized(parent)
+        var childPaths = Set(entries.map { DirectoryPaths.normalized($0.path) })
+        var registeredChildPaths = Set<String>()
+        var projectIDs: [String: UUID] = [:]
+        for project in projects {
+            let path = DirectoryPaths.normalized(project.project.rootPath)
+            if projectIDs[path] == nil {
+                projectIDs[path] = project.id
+            }
+        }
         for path in directories.map(\.path) + projects.map(\.project.rootPath) {
             guard DirectoryPaths.contains(parent, path) else { continue }
             let relative = DirectoryPaths.normalized(path)
                 .dropFirst(parent == "/" ? 1 : parent.count + 1)
             guard let name = relative.split(separator: "/").first else { continue }
             let childPath = (parent == "/" ? "" : parent) + "/" + name
-            guard !children.contains(where: { DirectoryPaths.normalized($0.path) == childPath })
-            else { continue }
+            registeredChildPaths.insert(childPath)
+            guard childPaths.insert(childPath).inserted else { continue }
             children.append(DirectoryEntry(name: String(name), path: childPath))
         }
         var seenProjects = Set<UUID>()
-        return children.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return children
             .filter { child in
                 showUnregisteredFolders
-                    || project(for: child, in: projects) != nil
-                    || (directories.map(\.path) + projects.map(\.project.rootPath)).contains {
-                        DirectoryPaths.normalized($0) == DirectoryPaths.normalized(child.path)
-                            || DirectoryPaths.contains(child.path, $0)
-                    }
+                    || projectIDs[DirectoryPaths.normalized(child.projectPath ?? child.path)] != nil
+                    || registeredChildPaths.contains(DirectoryPaths.normalized(child.path))
             }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             .filter {
-                guard let project = project(for: $0, in: projects) else { return true }
-                return seenProjects.insert(project.id).inserted
+                guard let id = projectIDs[DirectoryPaths.normalized($0.projectPath ?? $0.path)]
+                else { return true }
+                return seenProjects.insert(id).inserted
             }
     }
 

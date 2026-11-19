@@ -809,6 +809,12 @@ and optional primary checkout paths. Gray folders are not registered. Only
 their **…** menu's **Add Project** or **Add Directory** action registers them.
 Browsing never registers children or creates sessions.
 
+The default registered-only folder view projects existing host inventory and
+does not run a browse command. Showing unregistered folders loads one listing
+on demand. Each row retains that listing across collapse/reopen until Refresh
+Folders clears it or the row leaves the view hierarchy. There is no background
+folder polling. Child projection indexes registered paths before filtering.
+
 Kwt owns filesystem enumeration and Git recognition on both local and remote
 POSIX hosts. Each expansion inspects at most 1,000 filesystem entries, omits
 hidden and symlink entries, and reports truncation. The UI also retains known
