@@ -420,6 +420,33 @@ pub struct ZellijAttachPlan {
     args: Vec<OsString>,
 }
 
+/// An attach-only Rex pane, or a non-interactive Rex control channel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RexPlan {
+    program: OsString,
+    args: Vec<OsString>,
+}
+
+impl RexPlan {
+    #[must_use]
+    pub fn attach_only(program: impl Into<OsString>, args: Vec<OsString>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+        }
+    }
+
+    #[must_use]
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[OsString] {
+        &self.args
+    }
+}
+
 /// A re-runnable KWT repair-or-open action for one exact registered
 /// worktree. Unlike one-shot session creation, reconnecting through this plan
 /// is intentional: KWT probes and repairs the workspace before attaching its

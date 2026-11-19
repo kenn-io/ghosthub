@@ -60,7 +60,7 @@ final class RexWindowPresentation {
     /// Panes waiting to attach again after a lost connection.
     private var reconnectTasks: [String: Task<Void, Never>] = [:]
     private var reconnectAttempts: [String: Int] = [:]
-    private let reconnectDelay: (Int) -> Duration
+    private let waitForReconnect: @MainActor (Int) async throws -> Void
 
     init(
         selection: WorkspaceBackendTerminalSelection,
@@ -70,7 +70,9 @@ final class RexWindowPresentation {
         coordinator: NativeBackendTerminalCoordinator,
         sshConnection: KwtSSHConnection? = nil,
         container: TerminalSplitContainerView = TerminalSplitContainerView(),
-        reconnectDelay: @escaping (Int) -> Duration = { .seconds(min(30, 1 << min($0, 5))) }
+        waitForReconnect: @escaping @MainActor (Int) async throws -> Void = { attempt in
+            try await Task.sleep(for: .seconds(min(30, 1 << min(attempt, 5))))
+        }
     ) {
         self.selection = selection
         self.host = host
@@ -79,7 +81,7 @@ final class RexWindowPresentation {
         self.coordinator = coordinator
         self.sshConnection = sshConnection
         self.container = container
-        self.reconnectDelay = reconnectDelay
+        self.waitForReconnect = waitForReconnect
         container.isLayoutEditable = selection.kind == .rex
         channel.onView = { [weak self] view in self?.show(view) }
         channel.onExit = { [weak self] exit in self?.channelExited(exit) }
@@ -483,10 +485,10 @@ final class RexWindowPresentation {
     private func scheduleReconnect(_ blockID: String) {
         let attempt = reconnectAttempts[blockID, default: 0]
         reconnectAttempts[blockID] = attempt + 1
-        let delay = reconnectDelay(attempt)
+        let waitForReconnect = waitForReconnect
         reconnectTasks[blockID]?.cancel()
         reconnectTasks[blockID] = Task { [weak self] in
-            try? await Task.sleep(for: delay)
+            try? await waitForReconnect(attempt)
             guard !Task.isCancelled else { return }
             self?.reconnectPane(blockID)
         }

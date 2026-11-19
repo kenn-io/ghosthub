@@ -1627,6 +1627,45 @@ The planned complete corpus covers:
 - clipboard and paste policy
 - surface resize, damage, scroll, and snapshots
 
+### Remote Rex windows
+
+On Linux, a Rex sidebar row opens one remote window over its host's existing
+SSH lease, including hosts reached through Tailscale MagicDNS. The managed,
+revision-pinned KWT helper supplies `rex ls --json`, `rex control WINDOW_ID`,
+and each `rex attach BLOCK_ID` process. Rex itself must already be installed
+and running under the remote SSH account. Ghosthub neither starts it nor
+opens a Rex network listener.
+
+The host module decodes KWT's inventory and control messages and owns the
+bounded control process. The workspace owns the window and its clients. Its
+focused pane occupies the scene's normal terminal-worker slot, so input,
+selection, paste confirmation, and clipboard policy use the existing terminal
+path. Other panes keep their clients and surfaces, with clipboard writes
+disabled. Pane identity preserves those clients across backend layout updates.
+Only tiled terminal panes are drawn.
+
+Rex confirms split, resize, focus, zoom, and close requests through its control
+channel. The UI chooses directional focus from the window it displays, rather
+than Rex's globally active window. Divider movement sends one resize on
+release. Pane close requires confirmation for an exact presentation; replacing
+the view or SSH connection invalidates it. Switching away or detaching closes
+the pane clients and control channel while leaving Rex's programs running.
+Connection failures keep a visible Reconnect action. They do not recreate
+programs. Local Rex discovery remains separate work.
+
+Run `make rust-test-rex-live REX_BINARY_PATH=/absolute/path/to/rex` on Linux.
+The OpenSSH fixture confines the server, sockets, account, and data to its
+private filesystem and network. Xvfb, xdotool, and a software Vulkan driver
+are required for the desktop test.
+Set `XDTOOL_BINARY_PATH` or `VK_ICD_FILENAMES` for tools outside the system
+locations. The desktop test opens the real GPUI app and verifies keyboard
+routing after pane changes and navigation through the Command Palette.
+The workspace test drives discovery, control, input,
+split, focus, zoom, divider resize, pane close, detach, and reopen against a
+real Rex server. Linux CI downloads a fixed public server archive and verifies
+its SHA-256 checksum; updating that fixture changes both the archive URL and
+checksum in `rust-port.yml`. No Rex binary ships with Ghosthub.
+
 ## 4. First Vertical Slice and Delivery
 
 ### Blocking substrate gates

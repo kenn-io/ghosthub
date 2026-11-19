@@ -51,6 +51,78 @@ impl RemoteKwtTarget {
 }
 
 impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
+    /// Read Rex windows using this host's revision-pinned managed helper.
+    ///
+    /// # Errors
+    /// Returns a helper, SSH, or Rex inventory error.
+    pub fn discover_rex(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        cancellation: &CancellationToken,
+    ) -> Result<(String, Vec<crate::rex::Window>), RemoteTmuxError> {
+        let helper = self.ensure_kwt(snapshot.lease(), cancellation)?;
+        let output = self.kwt_command(
+            snapshot.lease(),
+            &helper,
+            &["rex", "ls", "--json"],
+            CommandKind::Inventory,
+            cancellation,
+        )?;
+        let windows = crate::rex::parse_inventory(&output.stdout)
+            .map_err(|e| RemoteTmuxError::new(DiagnosticKind::MalformedOutput, e))?;
+        Ok((helper, windows))
+    }
+
+    /// Build an SSH Rex pane attachment or window control channel.
+    ///
+    /// # Errors
+    /// Rejects expired leases, invalid addresses, or non-absolute helpers.
+    pub fn rex_plan(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        helper: &str,
+        address: &str,
+        term: Option<&str>,
+    ) -> Result<session::RexPlan, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|e| RemoteTmuxError::ssh(&e))?;
+        require_absolute("remote KWT helper", helper)?;
+        let (verb, kind) = if term.is_some() {
+            ("attach", "block")
+        } else {
+            ("control", "window")
+        };
+        if !crate::rex::valid_id(address, kind) {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::MalformedOutput,
+                "Invalid Rex address.",
+            ));
+        }
+        let command = super::multiplexer_command(
+            &[],
+            RemoteCommandLocale::Login,
+            term,
+            helper,
+            ["rex", verb, address],
+        );
+        let mut command = posix_command(&command);
+        if term.is_none() {
+            // A login banner may end without a newline. The reader expects
+            // the control marker to occupy a line by itself.
+            command = format!("printf '\\n%s\\n' 'GHOSTHUB_REX_CONTROL'; exec {command}");
+        }
+        Ok(session::RexPlan::attach_only(
+            self.ssh.program(),
+            self.ssh.with_arguments(ssh_arguments(
+                snapshot.lease(),
+                self.config.target(),
+                term.is_some(),
+                &account_login_shell_command(&command),
+            )),
+        ))
+    }
     /// Provision the pinned helper and read the three KWT inventory surfaces.
     ///
     /// # Errors

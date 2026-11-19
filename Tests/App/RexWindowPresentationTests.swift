@@ -89,7 +89,11 @@ struct RexWindowPresentationTests {
         )
     }
 
-    private func presentation() -> RexWindowPresentation {
+    private func presentation(
+        waitForReconnect: @escaping @MainActor (Int) async throws -> Void = { _ in
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    ) -> RexWindowPresentation {
         let coordinator = NativeBackendTerminalCoordinator(
             terminalCoordinator: store,
             executableProvider: { _, _, _ in .success("/kwt") }
@@ -102,7 +106,7 @@ struct RexWindowPresentationTests {
             validated: SSHConnectionArgumentsSnapshot(arguments: []),
             channel: channel,
             coordinator: coordinator,
-            reconnectDelay: { _ in .milliseconds(10) }
+            waitForReconnect: waitForReconnect
         )
         presentation.container.frame = CGRect(x: 0, y: 0, width: 1000, height: 600)
         return presentation
@@ -553,16 +557,33 @@ struct RexWindowPresentationTests {
     @Test("a pane that lost its connection attaches again by itself")
     func paneReconnects() async throws {
         let suite = RexWindowPresentationTests(failingRetryably: ())
-        let presentation = suite.presentation()
+        let (ticks, advance) = AsyncStream<Void>.makeStream()
+        var retryAttempts: [Int] = []
+        let presentation = suite.presentation { attempt in
+            retryAttempts.append(attempt)
+            var iterator = ticks.makeAsyncIterator()
+            _ = await iterator.next()
+        }
+        defer {
+            presentation.stop()
+            advance.finish()
+        }
         try suite.channel.deliver(layout: Self.one, focused: "block:a")
-        await waitUntil { suite.store.requestedKeys.count >= 3 }
+        await waitUntilMainActor { retryAttempts.count == 1 }
+        advance.yield()
+        await waitUntilMainActor { retryAttempts.count == 2 }
+        #expect(retryAttempts == [0, 1])
+        #expect(suite.store.requestedKeys.count == 2)
         #expect(presentation.container.paneViews["block:a"]?.overlayMessage == "Reconnecting…")
 
         suite.store.surface.launchError = nil
-        let attempts = suite.store.requestedKeys.count
-        await waitUntil { presentation.container.paneViews["block:a"]?.overlayMessage == nil }
-        #expect(suite.store.requestedKeys.count <= attempts + 1)
-        presentation.stop()
+        advance.yield()
+        await waitUntilMainActor {
+            suite.store.surface.closeObservers.count == 1
+                && presentation.container.paneViews["block:a"]?.overlayMessage == nil
+        }
+        #expect(suite.store.requestedKeys.count == 3)
+        #expect(retryAttempts == [0, 1])
     }
 
     @Test("a pane that ended offers Reconnect, which attaches it again")

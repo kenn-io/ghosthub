@@ -20,7 +20,7 @@ sessions, then a **Projects** group:
   | **zellij** | active Zellij session |
   | **herdr** | live Herdr desktop terminal (macOS) |
   | **herdr tui** | running or stopped session from the older Herdr terminal app |
-  | **rex** | terminal on a running Rex server (macOS) |
+  | **rex** | window on a running Rex server (macOS and Linux) |
 
 - **Projects** lists Git worktrees and registered directories with tmux sessions.
 
@@ -168,6 +168,8 @@ splits.
 
 ## Rex windows
 
+### macOS
+
 Ghosthub on macOS can open windows from a running
 [Rex](https://www.superlogical.com/rex/docs) server on your Mac or an SSH host.
 A Rex window opens with all of its panes, in the split layout Rex keeps.
@@ -220,6 +222,52 @@ Ghosthub reaches Rex through its own copy of kwt, so you do not need to install
 anything else. On an SSH host, it uses the
 [managed kwt helper](remote-hosts.md#managed-kwt-helper) that Ghosthub keeps up
 to date there.
+
+### Linux: remote Rex windows
+
+The Linux client opens Rex **windows** on macOS and Linux SSH hosts, including
+their tiled terminal panes. Rex owns the layout and programs. Changes made in
+Rex appear in Ghosthub, and Ghosthub's pane controls send their changes back
+to Rex.
+
+1. [Install and start Rex Server](https://www.superlogical.com/rex/docs/linux/installation)
+   on the remote machine under the account you use for SSH. Create a Rex
+   session there, for example with `rex new Work`. Ghosthub does not install
+   Rex or start a stopped server.
+2. Add that machine in **Settings → Hosts**. For a Tailscale peer, enter its
+   MagicDNS hostname and your remote account. Make sure you can connect to
+   that account over SSH first.
+3. Connect the host and choose its **rex** window row, or find it in the
+   Command Palette. Ghosthub supplies the matching managed KWT helper.
+
+![A remote Rex window with tiled terminal panes in the Linux client](/docs/assets/guide-rust-rex.png)
+
+Click a pane or its header to focus it. The focused pane's header has controls
+for **Split Right**, **Split Down**, **Zoom Pane**, and **Close Pane…**. The same
+actions are in the Command Palette. Drag a divider and release it to resize;
+Rex confirms the new layout before the terminal grids change size.
+New splits start in the remote shell's default directory.
+
+| Shortcut | Action inside a Rex window |
+| --- | --- |
+| ++ctrl+shift+d++ | Split Right |
+| ++ctrl+shift+e++ | Split Down |
+| ++ctrl+alt+left++ / ++ctrl+alt+right++ / ++ctrl+alt+up++ / ++ctrl+alt+down++ | Focus a neighboring pane |
+| ++ctrl+bracket-left++ / ++ctrl+bracket-right++ | Previous / next pane |
+| ++ctrl+shift+enter++ | Toggle pane zoom |
+
+These pane shortcuts apply only inside a Rex window. Saved Ghosthub shortcuts
+take precedence. Ordinary terminal shortcuts keep their meaning in tmux,
+Herdr, and Zellij.
+
+**Close Pane…** asks before ending that pane's program. To leave its programs
+running, choose **Detach** in the window row's menu or switch to another
+session. Opening the Rex window again attaches to its existing panes.
+
+If one pane loses its connection, choose **Reconnect** on that pane to
+resume its program. If the window loses its SSH connection, reconnect the
+host if needed, then choose the window again or use its **Reconnect** button. Local Rex discovery and
+Rex's non-tiled layers are not supported.
 
 ## Attach and detach
 

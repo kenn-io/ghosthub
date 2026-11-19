@@ -14,6 +14,7 @@ mod herdr;
 mod kwt;
 mod recovery;
 mod rename;
+mod rex;
 mod zellij;
 
 struct Fixture {

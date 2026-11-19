@@ -50,6 +50,13 @@ sidebar order and skips stopped Herdr sessions. Rex attachment runs Ghosthub's
 pinned kwt, never a `rex` client. See
 [Backend terminals](docs/terminal-sessions.md#backend-terminals).
 
+The Rust Linux client opens remote Rex windows over the existing SSH lease,
+including SSH over Tailscale. It draws Rex's reported tiled layout with one
+libghostty terminal per pane. Rex owns splits, focus, zoom, sizes, and pane
+lifetime; `kwt rex control` requests those operations and supplies updated
+views. Closing a view detaches all its clients. Closing a pane is a separate,
+confirmed action that ends its program.
+
 Ghosthub is alpha software. Treat the entire app, including its persistence
 layer, as subject to direct iteration.
 

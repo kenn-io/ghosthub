@@ -21,6 +21,9 @@ test, and documentation-only changes are omitted.
 - Herdr desktop tabs open with their split panes side by side, as one
   **herdr** row per tab, and follow changes Herdr desktop makes to the
   layout. Focus and zoom panes in Ghosthub; Herdr desktop keeps the layout.
+- Rust port: open remote Rex windows over SSH, including SSH over Tailscale.
+  Split, focus, zoom, resize, and close panes. Detaching keeps the programs
+  running.
 
 ### Changed
 

@@ -997,7 +997,7 @@ pub(crate) fn require_host_session_actions(
                 "refresh Zellij inventory before changing a session",
             ));
         }
-        SessionKind::Tmux | SessionKind::Herdr | SessionKind::Zellij => {}
+        SessionKind::Tmux | SessionKind::Herdr | SessionKind::Zellij | SessionKind::Rex => {}
     }
     Ok(())
 }

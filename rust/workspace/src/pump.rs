@@ -82,6 +82,7 @@ pub(crate) fn pump_once(runtime: &Runtime) -> bool {
     let mut backlog = false;
     let scenes = live_scenes(runtime);
     for scene in &scenes {
+        crate::rex::tick(scene);
         let workspace = Workspace {
             scene: Arc::clone(scene),
         };
@@ -433,15 +434,32 @@ impl Workspace {
         u64,
         bool,
     )> {
-        let (event, worker_generation, confirmed) = {
+        let (event, worker_generation, confirmed, failed) = {
             let worker = self
                 .scene
                 .worker
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (worker, generation) = worker.active_with_generation()?;
-            (worker.try_event(), generation, worker.is_confirmed_live())
+            let event = worker.try_event();
+            let failure = match &event {
+                Ok(Some(TerminalEvent::Exited { .. })) => Some("Attachment closed.".to_owned()),
+                Ok(Some(TerminalEvent::Error(error))) => Some(error.clone()),
+                Err(error) => Some(error.to_string()),
+                _ => None,
+            };
+            (
+                event,
+                generation,
+                worker.is_confirmed_live(),
+                failure.map(|message| (worker.surface_handle(), message)),
+            )
         };
+        if let Some((surface, message)) = failed
+            && crate::rex::pane_failed(&self.scene, &surface, message)
+        {
+            return Some((Ok(None), worker_generation, confirmed));
+        }
         if confirmed {
             self.mark_attachment_confirmed(worker_generation);
         }

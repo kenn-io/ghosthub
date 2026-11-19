@@ -200,6 +200,30 @@ pub struct TerminalWorker {
 }
 
 impl TerminalWorker {
+    /// Attach to one existing Rex terminal without creating a session.
+    ///
+    /// # Errors
+    /// Returns an error when the PTY or client cannot be started.
+    pub fn attach_rex_with_metadata(
+        plan: &session::RexPlan,
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
+    ) -> Result<Self, WorkerError> {
+        Self::launch(
+            plan.program(),
+            plan.args(),
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+            default_cursor_shape,
+        )
+    }
     /// Spawn the resolved attach client inside a native pseudoterminal.
     ///
     /// # Errors

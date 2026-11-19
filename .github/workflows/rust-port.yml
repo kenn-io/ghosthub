@@ -113,6 +113,7 @@ jobs:
             pkg-config \
             tmux \
             xauth \
+            xdotool \
             xvfb
 
       - name: Enable Bubblewrap namespaces on Ubuntu
@@ -141,6 +142,17 @@ jobs:
         if: runner.os == 'Linux'
         run: make -C .. bootstrap-zellij-test
 
+      - name: Stage Rex for Linux acceptance
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ghosthub-rex"
+          curl --fail --location --retry 3 \
+            https://blob.superlogical.com/download/rex/preview/202b1b3fc0219883112258a8d0f9f95e2d47daa9/rex-linux-amd64.tar.gz \
+            --output "$RUNNER_TEMP/ghosthub-rex/rex.tar.gz"
+          echo "41988e86e87e8b0b47c8bca7652d9959178360f7789785232090784e38e23cb5  $RUNNER_TEMP/ghosthub-rex/rex.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/ghosthub-rex/rex.tar.gz" -C "$RUNNER_TEMP/ghosthub-rex"
+          echo "REX_BINARY_PATH=$RUNNER_TEMP/ghosthub-rex/rex" >> "$GITHUB_ENV"
+
       - name: Test and lint on Linux
         if: runner.os == 'Linux'
         shell: bash
@@ -152,6 +164,7 @@ jobs:
           make -C .. rust-test-herdr-live
           make -C .. rust-test-zellij-live
           make -C .. rust-test-ssh-live
+          make -C .. rust-test-rex-live
 
       - name: Test Linux protected pull-request worktrees
         if: runner.os == 'Linux'

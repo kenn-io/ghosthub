@@ -14,6 +14,18 @@ if [ "${GHOSTHUB_SSH_FIXTURE:-}" = "" ]; then
     trap 'rm -rf -- "$fixture"' EXIT HUP INT TERM
     cp -f -- "$0" "$fixture/fixture.sh"
     cp -f -- "$1" "$fixture/client"
+    if [ -n "${GHOSTHUB_REX_APP_TEST:-}" ]; then
+        mkdir -p "$fixture/bin"
+        cp -f -- "$GHOSTHUB_REX_APP_TEST" "$fixture/bin/ghosthub-native"
+        cp -f -- "$GHOSTHUB_XDTOOL_TEST" "$fixture/bin/xdotool"
+        if [ -n "${VK_ICD_FILENAMES:-}" ]; then
+            printf '%s' "$VK_ICD_FILENAMES" > "$fixture/rex-icd"
+        fi
+    fi
+    if [ -n "${GHOSTHUB_REX_TEST:-}" ]; then
+        mkdir -p "$fixture/bin"
+        cp -f -- "$GHOSTHUB_REX_TEST" "$fixture/bin/rex"
+    fi
     if [ -n "${GHOSTHUB_HERDR_TEST:-}" ]; then
         mkdir -p "$fixture/bin"
         cp -f -- "$GHOSTHUB_HERDR_TEST" "$fixture/bin/herdr"
@@ -94,6 +106,10 @@ EOF
 fi
 if [ -f "$root/github-token" ]; then
     printf '\nexport KWT_GITHUB_TOKEN="$(cat %s/github-token)"\n' "$root" >> "$HOME/.profile"
+fi
+if [ -x "$root/bin/rex" ]; then
+    export REX_SERVER="unix://$root/rex.sock"
+    printf '\nexport REX_SERVER="%s"\n' "$REX_SERVER" >> "$HOME/.profile"
 fi
 if [ -x "$root/bin/herdr" ]; then
     mkdir -p "$XDG_CONFIG_HOME/herdr"
