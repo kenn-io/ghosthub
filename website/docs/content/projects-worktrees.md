@@ -93,9 +93,10 @@ Project** when kwt recognizes a checkout, or **Add Directory** to give the folde
 its own root terminal. Registered projects show their normal worktree rows.
 
 Use **… → Refresh Folders** to reload a folder after filesystem changes.
-Use **… → Hide Unregistered Folders** to show only registered children and
-folders leading to registered projects or directories. **Show Unregistered
-Folders** restores the full listing. This choice applies to that folder while
+Unregistered folders are hidden by default. Use **… → Show Unregistered
+Folders** to see the full listing. **Hide Unregistered Folders** shows only
+registered children and folders leading to registered projects or directories.
+This choice applies to that folder while
 it remains in the sidebar.
 For a registered directory with a running session, the same **…** menu includes
 **Kill Session…**, which asks for confirmation.

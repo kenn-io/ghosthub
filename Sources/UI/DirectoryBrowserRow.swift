@@ -26,7 +26,7 @@ struct DirectoryBrowserRow: View {
     @State private var reload = 0
     @State private var registering = false
     @State private var registered = false
-    @State private var showUnregisteredFolders = true
+    @State private var showUnregisteredFolders = false
 
     private var directory: DirectoryWorkspaceSummary? {
         directories.first {
