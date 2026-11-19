@@ -10,15 +10,18 @@ use surface::{GridSize, PixelSize, SurfaceStore};
 
 use crate::{
     CancellationToken, Ordering, Scene, SessionKind, SessionSelection, TerminalWorker, Workspace,
-    WorkspaceContent, WorkspaceError, WorkspaceEvent, bump_scene_revision, current_default_colors,
-    current_default_cursor_shape, current_remote_clipboard_policy, next_presentation_id, runtime,
-    scene,
+    WorkspaceContent, WorkspaceError, WorkspaceEvent, bump_scene_revision, next_presentation_id,
+    runtime, scene,
 };
 
 use host::rex::Channel;
 mod focus;
 mod inventory;
+mod pane;
+mod ssh;
 pub(crate) use inventory::{Refresh, cancel, cancel_scene, refresh};
+pub(crate) use pane::prompt_connection_generation;
+pub(crate) use ssh::Connections;
 
 pub const PANE_HEADER_HEIGHT: f32 = 26.0;
 pub const DIVIDER_WIDTH: f32 = 5.0;
@@ -39,6 +42,7 @@ pub struct RexPaneSnapshot {
     pub surface: Arc<SurfaceStore>,
     pub rect: RexRect,
     pub focused: bool,
+    pub connecting: bool,
     pub error: Option<String>,
 }
 
@@ -67,10 +71,17 @@ struct Pane {
     title: String,
     surface: Arc<SurfaceStore>,
     worker: Option<TerminalWorker>,
+    pending: Option<pane::Pending>,
+    queued: bool,
     generation: u64,
     rect: RexRect,
     accepted_size: Option<(GridSize, PixelSize)>,
     error: Option<String>,
+}
+
+struct Control {
+    channel: Channel,
+    connection: ssh::Connection,
 }
 
 pub(crate) struct Window {
@@ -82,7 +93,7 @@ pub(crate) struct Window {
     session_id: String,
     navigation: u64,
     cancellation: CancellationToken,
-    channel: Option<Channel>,
+    control: Option<Control>,
     started: Instant,
     title: String,
     detail: String,
@@ -127,6 +138,7 @@ pub(crate) fn snapshot(scene: &Scene) -> Option<RexWindowSnapshot> {
                 surface: p.surface.clone(),
                 rect: p.rect,
                 focused: w.focused.as_ref() == Some(id),
+                connecting: p.queued || p.pending.is_some(),
                 error: p.error.clone(),
             })
             .collect(),
@@ -228,6 +240,7 @@ pub(crate) fn pane_failed(scene: &Scene, surface: &Arc<SurfaceStore>, message: S
     } else {
         pane.worker.take();
     }
+
     pane.error = Some(message);
     bump_scene_revision(scene);
     true
@@ -352,11 +365,19 @@ pub(crate) fn open(
     let selection = selection.clone();
     let task = move || {
         let result: Result<(), WorkspaceError> = (|| {
+            let connection = ssh::Connection::acquire(
+                &task_scene,
+                &host,
+                &snapshot,
+                selection.host_id(),
+                navigation,
+                &cancellation,
+            )?;
             let term = host
-                .probe_terminal_term(&snapshot, &cancellation)
+                .probe_term_on_lease(&connection.lease, &cancellation)
                 .map_err(|e| error(e.to_string()))?;
             let plan = host
-                .rex_plan(&snapshot, &helper, &window.id, None)
+                .rex_plan(&connection.lease, &helper, &window.id, None)
                 .map_err(|e| error(e.to_string()))?;
             let channel = Channel::start(&plan).map_err(error)?;
             let _publication = task_scene
@@ -390,7 +411,10 @@ pub(crate) fn open(
                 detail: window.detail,
                 navigation,
                 cancellation,
-                channel: Some(channel),
+                control: Some(Control {
+                    channel,
+                    connection,
+                }),
                 started: Instant::now(),
                 view: None,
                 revision: None,
@@ -442,7 +466,7 @@ pub(crate) fn open(
     clippy::too_many_lines,
     reason = "Control messages and pane exits settle under the same publication fence."
 )]
-pub(crate) fn tick(scene: &Scene) {
+pub(crate) fn tick(scene: &Arc<Scene>) {
     let _publication = scene
         .runtime
         .remote_publication
@@ -471,8 +495,17 @@ pub(crate) fn tick(scene: &Scene) {
         if window.view.is_none() && window.started.elapsed() > Duration::from_secs(20) {
             return Err(error("Rex did not send a window layout. Try reconnecting."));
         }
+        let control = window
+            .control
+            .as_ref()
+            .ok_or_else(|| error("The Rex connection closed."))?;
+        control
+            .connection
+            .lease
+            .ensure_live()
+            .map_err(|e| error(e.to_string()))?;
         for _ in 0..8 {
-            let Some(message) = window.channel.as_ref().and_then(Channel::next) else {
+            let Some(message) = window.control.as_ref().and_then(|c| c.channel.next()) else {
                 break;
             };
             match message.map_err(error)? {
@@ -537,7 +570,9 @@ pub(crate) fn tick(scene: &Scene) {
                         && let Some(id) = window
                             .view
                             .as_ref()
-                            .and_then(|v| v.focused_block_id.clone())
+                            .and_then(|v| v.focused_block_id.as_ref())
+                            .filter(|id| window.panes.contains_key(*id))
+                            .cloned()
                     {
                         window.focus(scene, &id)?;
                     }
@@ -551,7 +586,7 @@ pub(crate) fn tick(scene: &Scene) {
                 }
             }
         }
-        let mut changed = false;
+        let mut changed = window.poll_pane_launch(scene)?;
         for (id, pane) in &mut window.panes {
             let mut stopped = None;
             if let Some(worker) = &pane.worker {
@@ -585,6 +620,8 @@ pub(crate) fn tick(scene: &Scene) {
                 }
             } else if window.focused.as_ref() == Some(id)
                 && pane.error.is_none()
+                && !pane.queued
+                && pane.pending.is_none()
                 && scene
                     .worker
                     .lock()
@@ -596,6 +633,7 @@ pub(crate) fn tick(scene: &Scene) {
             }
             if let Some(message) = stopped {
                 pane.worker.take();
+
                 pane.error = Some(message);
                 changed = true;
             }
@@ -625,11 +663,14 @@ pub(crate) fn tick(scene: &Scene) {
         scene::restore_scene_inventory_state(scene);
     } else if let Err(e) = result {
         window.error = Some(e.to_string());
-        window.channel.take();
+        window.control.take();
+        drop(take_active_worker(scene));
         for pane in window.panes.values_mut() {
             pane.worker.take();
+
+            pane.pending.take();
+            pane.queued = false;
         }
-        drop(take_active_worker(scene));
         runtime::clear_remote_attachment_registration(
             &scene.runtime,
             window.selection.host_id(),
@@ -667,36 +708,9 @@ impl Window {
         }
         self.panes.retain(|id, _| ids.contains(id));
         for id in &ids {
-            if !self.panes.contains_key(id) {
-                let plan = self
-                    .host
-                    .rex_plan(&self.snapshot, &self.helper, id, Some(self.term.as_str()))
-                    .map_err(|e| error(e.to_string()))?;
-                let worker = TerminalWorker::attach_rex_with_metadata(
-                    &plan,
-                    GridSize::new(80, 24).map_err(|e| error(e.to_string()))?,
-                    0,
-                    PixelSize::new(640, 432),
-                    current_remote_clipboard_policy(&scene.runtime),
-                    current_default_colors(&scene.runtime),
-                    current_default_cursor_shape(&scene.runtime),
-                )
-                .map_err(|e| error(e.to_string()))?;
-                worker.set_clipboard_writes_enabled(false);
-                self.panes.insert(
-                    id.clone(),
-                    Pane {
-                        id: next_presentation_id(&scene.runtime),
-                        title: String::new(),
-                        surface: worker.surface_handle(),
-                        worker: Some(worker),
-                        generation: 0,
-                        rect: RexRect::default(),
-                        accepted_size: None,
-                        error: None,
-                    },
-                );
-            }
+            self.panes
+                .entry(id.clone())
+                .or_insert_with(|| Pane::new(scene));
             if let Some(title) = titles.get(id) {
                 self.panes
                     .get_mut(id)
@@ -711,6 +725,7 @@ impl Window {
             .requested()
             .map(str::to_owned)
             .or_else(|| view.focused_block_id.clone().filter(|id| ids.contains(id)))
+            .or_else(|| self.focused.clone().filter(|id| ids.contains(id)))
             .or_else(|| ids.first().cloned());
         if let Some(id) = selected {
             self.focus(scene, &id)?;
@@ -775,9 +790,10 @@ impl Window {
             return Err(error("Rex is still handling earlier pane requests."));
         }
         let id = self.next_request;
-        self.channel
+        self.control
             .as_ref()
             .ok_or_else(|| error("The Rex connection closed."))?
+            .channel
             .send(id, method, params)
             .map_err(error)?;
         self.next_request += 1;
@@ -799,7 +815,11 @@ impl Window {
                 width,
                 height,
             };
-            if let Some(id) = &view.zoomed_block_id {
+            if let Some(id) = view
+                .zoomed_block_id
+                .as_ref()
+                .filter(|id| self.panes.contains_key(*id))
+            {
                 rects.insert(id.clone(), rect);
             } else if let Some(layout) = view.layout() {
                 layout_rects(layout, rect, &mut rects, &mut self.dividers);
@@ -861,6 +881,7 @@ impl Window {
                     } else {
                         pane.worker.take();
                     }
+
                     pane.error = Some(error.to_string());
                     failed = true;
                 }
@@ -1014,41 +1035,17 @@ impl Workspace {
     /// Rejects a stale pane or SSH connection, or returns a client startup error.
     pub fn reconnect_rex_pane(&self, presentation: u64) -> Result<(), WorkspaceError> {
         self.with_rex(|w, scene| {
-            let id = w
-                .panes
-                .iter()
-                .find(|(_, p)| p.id == presentation)
-                .map(|(id, _)| id.clone())
-                .ok_or_else(|| error("The Rex pane closed."))?;
-            let plan = w
-                .host
-                .rex_plan(&w.snapshot, &w.helper, &id, Some(w.term.as_str()))
-                .map_err(|e| error(e.to_string()))?;
-            let worker = TerminalWorker::attach_rex_with_metadata(
-                &plan,
-                GridSize::new(80, 24).map_err(|e| error(e.to_string()))?,
-                0,
-                PixelSize::new(640, 432),
-                current_remote_clipboard_policy(&scene.runtime),
-                current_default_colors(&scene.runtime),
-                current_default_cursor_shape(&scene.runtime),
-            )
-            .map_err(|e| error(e.to_string()))?;
-            worker.set_clipboard_writes_enabled(false);
+            if w.error.is_some() {
+                return Err(error("Reconnect the Rex window first."));
+            }
             let pane = w
                 .panes
-                .get_mut(&id)
+                .values_mut()
+                .find(|pane| pane.id == presentation)
                 .ok_or_else(|| error("The Rex pane closed."))?;
-            pane.id = next_presentation_id(&scene.runtime);
-            pane.surface = worker.surface_handle();
-            pane.worker = Some(worker);
-            pane.error = None;
-            pane.accepted_size = None;
-            if w.focused.as_ref() == Some(&id) {
-                w.focused = None;
-                w.focus(scene, &id)?;
+            if pane.error.take().is_some() {
+                pane.queued = true;
             }
-            w.resize_panes(scene)?;
             bump_scene_revision(scene);
             Ok(())
         })

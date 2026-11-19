@@ -14152,6 +14152,7 @@ fn overflowing_inbox_cancels_a_dropped_prompt_and_keeps_fifo_survivors() {
         WorkspaceEvent::SshPrompt(SshPromptRequest {
             host_id: "ssh:studio".to_owned(),
             generation: 7,
+            connecting_host: true,
             prompt: host::SshLeasePrompt::test_fixture(),
             response: Arc::new(Mutex::new(Some(sender))),
         }),
@@ -14425,6 +14426,7 @@ fn overflow_evicts_the_oldest_sheddable_entry_never_a_lossless_one() {
         WorkspaceEvent::SshPrompt(SshPromptRequest {
             host_id: "ssh:studio".to_owned(),
             generation: 7,
+            connecting_host: true,
             prompt: host::SshLeasePrompt::test_fixture(),
             response: Arc::new(Mutex::new(Some(sender))),
         }),
@@ -14651,6 +14653,7 @@ fn spawn_prompt(
             generation,
             &host::SshLeasePrompt::test_fixture(),
             &cancellation,
+            true,
         )
     })
 }
@@ -15116,6 +15119,7 @@ fn close_cancels_queued_addressed_requests_and_drops_lossless_settlements() {
         WorkspaceEvent::SshPrompt(SshPromptRequest {
             host_id: "ssh:studio".to_owned(),
             generation: 7,
+            connecting_host: true,
             prompt: host::SshLeasePrompt::test_fixture(),
             response: Arc::new(Mutex::new(Some(sender))),
         }),
@@ -15147,6 +15151,7 @@ fn close_cancels_queued_addressed_requests_and_drops_lossless_settlements() {
         WorkspaceEvent::SshPrompt(SshPromptRequest {
             host_id: "ssh:studio".to_owned(),
             generation: 8,
+            connecting_host: true,
             prompt: host::SshLeasePrompt::test_fixture(),
             response: Arc::new(Mutex::new(Some(late_sender))),
         }),
@@ -15269,6 +15274,7 @@ fn prompt_requested_on_an_already_closed_scene_fails_without_queueing() {
         9,
         &host::SshLeasePrompt::test_fixture(),
         &CancellationToken::new(),
+        true,
     );
 
     let error = result.expect_err("a closed scene mints no prompt request");

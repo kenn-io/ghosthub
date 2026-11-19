@@ -257,13 +257,11 @@ impl Message {
                 || !view.windows.iter().all(|w| {
                     valid_id(&w.window_id, "window")
                         && ids.insert(w.window_id.clone())
-                        && w.layout().is_none_or(|layout| {
-                            layout.validate(&mut ids)
-                                && [&w.focused_block_id, &w.zoomed_block_id].iter().all(|id| {
-                                    id.as_ref()
-                                        .is_none_or(|id| layout.panes().contains(&id.as_str()))
-                                })
-                        })
+                        && w.layout().is_none_or(|layout| layout.validate(&mut ids))
+                        && [&w.focused_block_id, &w.zoomed_block_id]
+                            .into_iter()
+                            .flatten()
+                            .all(|id| valid_id(id, "block"))
                 })
             {
                 return Err("Cannot read the Rex window layout.".to_owned());
@@ -324,7 +322,13 @@ mod tests {
             "window_id":"window:work","focused_block_id":"block:tests","zoomed_block_id":"block:tests","layers":[{
               "kind":"tiled","layout":{"split":{"split_id":"split:main","direction":"horizontal","ratio":0.65,
                  "before":{"block_id":"block:editor"},"after":{"block_id":"block:tests"}}}}
-            ]}]},"terminals":{"block:tests":{"name":"Tests"}}}"#).unwrap();
+            ]},{
+              "window_id":"window:other","focused_block_id":"block:float","zoomed_block_id":"block:float",
+              "layers":[
+                {"kind":"tiled","layout":{"block_id":"block:logs"}},
+                {"kind":"floating","layout":{"block_id":"block:float"}}
+              ]
+            }]},"terminals":{"block:tests":{"name":"Tests"}}}"#).unwrap();
         let Message::View { view, terminals } = message else {
             panic!("expected a view")
         };
@@ -341,6 +345,7 @@ mod tests {
             Some("block:tests")
         );
         assert_eq!(terminals["block:tests"].name, "Tests");
+        assert_eq!(view.windows[1].layout().unwrap().panes(), ["block:logs"]);
     }
 
     #[test]

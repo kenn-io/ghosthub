@@ -1629,8 +1629,8 @@ The planned complete corpus covers:
 
 ### Remote Rex windows
 
-On Linux, a Rex sidebar row opens one remote window over its host's existing
-SSH lease, including hosts reached through Tailscale MagicDNS. The managed,
+On Linux, a Rex sidebar row opens one remote window through its host's reviewed
+SSH route, including hosts reached through Tailscale MagicDNS. The managed,
 revision-pinned KWT helper supplies `rex ls --json`, `rex control WINDOW_ID`,
 and each `rex attach BLOCK_ID` process. Rex itself must already be installed
 and running under the remote SSH account. Ghosthub neither starts it nor
@@ -1643,6 +1643,11 @@ selection, paste confirmation, and clipboard policy use the existing terminal
 path. Other panes keep their clients and surfaces, with clipboard writes
 disabled. Pane identity preserves those clients across backend layout updates.
 Only tiled terminal panes are drawn.
+
+Rex control and pane clients use separate KWT-managed SSH connections from
+tmux and inventory. Each extra connection carries up to eight Rex sessions,
+and Ghosthub opens another when those slots fill. A new connection may prompt
+for authentication. Failure to start one pane leaves its neighbors usable.
 
 Rex confirms split, resize, focus, zoom, and close requests through its control
 channel. The UI chooses directional focus from the window it displays, rather

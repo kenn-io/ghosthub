@@ -2442,9 +2442,7 @@ impl RootView {
 
     fn cancel_ssh_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(prompt) = self.ssh_prompts.pop_front() {
-            let host_id = prompt.request.host_id().to_owned();
-            prompt.request.respond(None);
-            let _cancelled = self.workspace.cancel_host_connection(&host_id);
+            self.workspace.cancel_ssh_prompt(&prompt.request);
         }
         self.focus_after_ssh_prompt(window);
         cx.notify();
@@ -3937,12 +3935,11 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
-        if self
-            .workspace
-            .snapshot()
-            .rex_window()
-            .is_some_and(|w| w.panes.iter().any(|p| p.focused && p.error.is_some()))
-        {
+        if self.workspace.snapshot().rex_window().is_some_and(|w| {
+            w.panes
+                .iter()
+                .any(|p| p.focused && (p.connecting || p.error.is_some()))
+        }) {
             cx.stop_propagation();
             return;
         }

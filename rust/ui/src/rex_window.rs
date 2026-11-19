@@ -217,7 +217,18 @@ impl RootView {
                 .min_h_0()
                 .overflow_hidden()
                 .child(terminal);
-            if let Some(message) = &pane.error {
+            if pane.connecting {
+                pane_body = pane_body.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_sm()
+                        .child("Connecting…"),
+                );
+            } else if let Some(message) = &pane.error {
                 pane_body = pane_body.child(
                     div()
                         .absolute()

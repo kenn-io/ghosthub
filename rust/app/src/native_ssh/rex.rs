@@ -393,6 +393,7 @@ fn remote_windows_keep_backend_layout_and_programs_after_detach() {
         snapshot.rex_window().is_some_and(|w| {
             assert!(w.error.is_none(), "{:?}", w.error);
             w.panes.len() == 2
+                && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
                 && w.panes
                     .iter()
                     .find(|p| p.id == original_block)
@@ -459,7 +460,11 @@ fn remote_windows_keep_backend_layout_and_programs_after_detach() {
             .is_some_and(|w| (w.dividers[0].ratio - 0.7).abs() < 0.01)
     });
     fixture.workspace.split_rex_pane(true).unwrap();
-    fixture.wait(|s| s.rex_window().is_some_and(|w| w.panes.len() == 3));
+    fixture.wait(|s| {
+        s.rex_window().is_some_and(|w| {
+            w.panes.len() == 3 && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
+        })
+    });
     let closing = fixture
         .workspace
         .snapshot()
@@ -484,8 +489,11 @@ fn remote_windows_keep_backend_layout_and_programs_after_detach() {
     assert_eq!(listing["terminals"].as_array().unwrap().len(), 2);
     fixture.workspace.switch_session(&selection).unwrap();
     fixture.wait(|s| {
-        s.rex_window()
-            .is_some_and(|w| w.panes.len() == 2 && w.error.is_none())
+        s.rex_window().is_some_and(|w| {
+            w.panes.len() == 2
+                && w.error.is_none()
+                && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
+        })
     });
     assert!(
         fixture
@@ -515,8 +523,11 @@ fn remote_windows_keep_backend_layout_and_programs_after_detach() {
     }
     fixture.workspace.switch_session(&selection).unwrap();
     fixture.wait(|s| {
-        s.rex_window()
-            .is_some_and(|w| w.panes.len() == 2 && w.error.is_none())
+        s.rex_window().is_some_and(|w| {
+            w.panes.len() == 2
+                && w.error.is_none()
+                && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
+        })
     });
     let ending = fixture
         .workspace
@@ -689,7 +700,11 @@ fn leave_pending_rex(fixture: &Fixture, rex: &SessionSelection, local: &SessionS
 
 fn reconnect_failed_pane(fixture: &Fixture, block: &str) {
     fixture.workspace.split_rex_pane(false).unwrap();
-    fixture.wait(|s| s.rex_window().is_some_and(|w| w.panes.len() == 2));
+    fixture.wait(|s| {
+        s.rex_window().is_some_and(|w| {
+            w.panes.len() == 2 && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
+        })
+    });
     let before = fixture.workspace.snapshot();
     let panes = &before.rex_window().unwrap().panes;
     let other = panes
@@ -710,20 +725,7 @@ fn reconnect_failed_pane(fixture: &Fixture, block: &str) {
     fixture
         .wait(|_| std::fs::read_to_string("/tmp/rex-before-disconnect").is_ok_and(|s| s == "kept"));
     // Only terminate the attach process for this block in the fixture PID namespace.
-    let pid = std::fs::read_dir("/proc")
-        .unwrap()
-        .filter_map(Result::ok)
-        .find_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
-            name.parse::<u32>().ok()?;
-            let command = std::fs::read(entry.path().join("cmdline")).ok()?;
-            let args: Vec<_> = command.split(|b| *b == 0).collect();
-            (args.len() == 5
-                && args[0].ends_with(b"/kwt")
-                && args[1..4] == [b"rex".as_slice(), b"attach", block.as_bytes()])
-            .then_some(name)
-        })
-        .expect("the live Rex pane attach process");
+    let pid = rex_attach_pid(block).expect("the live Rex pane attach process");
     assert!(
         Command::new("/bin/kill")
             .args(["-TERM", &pid])
@@ -746,7 +748,13 @@ fn reconnect_failed_pane(fixture: &Fixture, block: &str) {
             .is_err()
     );
     fixture.workspace.reconnect_rex_pane(first).unwrap();
-    fixture.wait(|_| fixture.terminal_text().contains("$ "));
+    fixture.wait(|s| {
+        s.rex_window().is_some_and(|w| {
+            w.panes
+                .iter()
+                .any(|p| p.id == block && p.focused && !p.connecting && p.error.is_none())
+        }) && fixture.terminal_text().contains("$ ")
+    });
     rex_probe(
         fixture,
         "printf '%s' \"$rex_saved\" > /tmp/rex-after-disconnect",
@@ -854,4 +862,179 @@ fn resize_with_full_input_queue(fixture: &Fixture) {
                 })
         })
     });
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the same SSH connections through saturation and reconnect."
+)]
+#[ignore = "requires a Rex server executable; run make rust-test-rex-live"]
+fn large_rex_window_keeps_ssh_capacity_and_isolates_pane_startup_failure() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::rex::large_rex_window_keeps_ssh_capacity_and_isolates_pane_startup_failure",
+    ) else {
+        return;
+    };
+    let _server = server(&fixture);
+    let created = rex(
+        &fixture,
+        &[
+            "new",
+            "Studio",
+            "--window",
+            "Work",
+            "--json",
+            "--shell=none",
+            "--",
+            "/bin/sh",
+        ],
+    );
+    let window = created["initial_windows"][0]["window_id"].as_str().unwrap();
+    let mut blocks = vec![
+        created["initial_windows"][0]["block_ids"][0]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    ];
+    for i in 0..11 {
+        let added = rex(
+            &fixture,
+            &[
+                "run",
+                "--block",
+                &blocks[i],
+                "--split",
+                if i % 2 == 0 { "right" } else { "below" },
+                "--json",
+                "--shell=none",
+                "--",
+                "/bin/sh",
+            ],
+        );
+        blocks.push(
+            added["block_ids"][0]
+                .as_str()
+                .unwrap_or_else(|| panic!("Rex returned no block ID: {added}"))
+                .to_owned(),
+        );
+    }
+    let session = created["session_id"].as_str().unwrap();
+    rex(
+        &fixture,
+        &[
+            "api",
+            "call",
+            "--session",
+            session,
+            "session.new_layer",
+            &serde_json::json!({
+                "window_id": window,
+                "bounds": [0.15, 0.15, 0.5, 0.5],
+                "focus": true,
+                "layout": {"block": {"flavor": "com.superlogical.terminal.shell"}},
+            })
+            .to_string(),
+        ],
+    );
+    let view = gui_view(&fixture, window);
+    let focused = view["view"]["windows"][0]["focused_block_id"]
+        .as_str()
+        .unwrap();
+    assert!(!blocks.iter().any(|id| id == focused));
+    fixture.connect();
+    fixture.wait(|s| {
+        s.hosts()
+            .iter()
+            .any(|h| h.rex_windows().iter().any(|w| w.id == window))
+    });
+    fixture.workspace.select_host(&fixture.host_id).unwrap();
+    fixture.attach("review", "retained-before-many-panes");
+    fixture
+        .workspace
+        .switch_session(&SessionSelection::rex(
+            &fixture.host_id,
+            &fixture.endpoint,
+            window,
+        ))
+        .unwrap();
+    fixture.wait(|s| {
+        s.rex_window().is_some_and(|w| {
+            w.error.is_none()
+                && w.panes.len() == blocks.len()
+                && w.panes.iter().any(|p| p.focused)
+                && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
+                && blocks.iter().all(|id| rex_attach_pid(id).is_some())
+        })
+    });
+    let before = fixture.workspace.snapshot();
+    let original = &before.rex_window().unwrap().panes;
+
+    let other = fixture.open_scene();
+    other.workspace.select_host(&fixture.host_id).unwrap();
+    other.attach("notes 'one'", "while-rex-holds-twelve-panes");
+
+    // Change the route for new SSH leases only. The reviewed connections
+    // already in use can still carry layout updates and terminal input.
+    let config = fixture.root.join("home/.ssh/config");
+    let reviewed = std::fs::read_to_string(&config).unwrap();
+    let changed = reviewed.replace("User ghosthub", "User wrong-account");
+    assert_ne!(changed, reviewed);
+    std::fs::write(&config, changed).unwrap();
+    fixture.workspace.split_rex_pane(false).unwrap();
+    fixture.wait(|s| {
+        s.rex_window().is_some_and(|w| {
+            w.error.is_none()
+                && w.panes.len() == blocks.len() + 1
+                && w.panes.iter().any(|p| {
+                    p.error
+                        .as_deref()
+                        .is_some_and(|e| e.contains("SSH route changed"))
+                })
+        })
+    });
+    std::fs::write(config, reviewed).unwrap();
+    let snapshot = fixture.workspace.snapshot();
+    let failed = snapshot
+        .rex_window()
+        .unwrap()
+        .panes
+        .iter()
+        .find(|p| p.error.is_some())
+        .unwrap();
+    fixture
+        .workspace
+        .reconnect_rex_pane(failed.presentation_id)
+        .unwrap();
+    fixture.wait(|s| {
+        s.rex_window().is_some_and(|w| {
+            w.error.is_none()
+                && w.panes.len() == blocks.len() + 1
+                && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
+                && rex_attach_pid(&failed.id).is_some()
+                && original.iter().all(|p| {
+                    w.panes
+                        .iter()
+                        .any(|now| now.presentation_id == p.presentation_id)
+                })
+        })
+    });
+    other.workspace.close();
+    fixture.workspace.close();
+}
+
+fn rex_attach_pid(block: &str) -> Option<String> {
+    std::fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            name.parse::<u32>().ok()?;
+            let command = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let args: Vec<_> = command.split(|b| *b == 0).collect();
+            (args.len() == 5
+                && args[0].ends_with(b"/kwt")
+                && args[1..4] == [b"rex".as_slice(), b"attach", block.as_bytes()])
+            .then_some(name)
+        })
 }

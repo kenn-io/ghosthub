@@ -538,8 +538,9 @@ pub(crate) fn request_ssh_prompt(
     generation: u64,
     prompt: &SshLeasePrompt,
     cancellation: &CancellationToken,
+    connecting_host: bool,
 ) -> Result<String, host::SshError> {
-    if scene.closed.load(Ordering::Acquire) {
+    if cancellation.is_cancelled() || scene.closed.load(Ordering::Acquire) {
         return Err(host::SshError::prompt_cancelled());
     }
     let wait = prompt.remaining()?.min(SSH_PROMPT_TIMEOUT);
@@ -551,6 +552,7 @@ pub(crate) fn request_ssh_prompt(
     let request = SshPromptRequest {
         host_id: host_id.to_owned(),
         generation,
+        connecting_host,
         prompt: prompt.clone(),
         response: Arc::new(Mutex::new(Some(sender))),
     };
@@ -567,7 +569,7 @@ pub(crate) fn request_ssh_prompt(
             Ok(Some(value)) => {
                 // A value that raced the scene's close is refused: scene
                 // disappearance fails the operation, never the reverse.
-                if scene.closed.load(Ordering::Acquire) {
+                if cancellation.is_cancelled() || scene.closed.load(Ordering::Acquire) {
                     break Err(host::SshError::prompt_cancelled());
                 }
                 break Ok(value);

@@ -158,4 +158,65 @@ fn finish(
         }
         Err(e) => host.rex_diagnostic = Some(e),
     }
+    scene.runtime.revision.fetch_add(1, Ordering::Release);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::remote_kill_refresh_fixture;
+
+    #[test]
+    fn discovery_updates_are_visible_to_every_scene() {
+        let (workspace, request) = remote_kill_refresh_fixture();
+        let observer = workspace.open_scene();
+        let revision = observer.snapshot().revision();
+        let window = host::rex::Window {
+            id: "window:build".to_owned(),
+            session_id: "session:studio".to_owned(),
+            title: "Build".to_owned(),
+            detail: "Studio · 1 pane".to_owned(),
+        };
+        for (id, result) in [
+            (1, Ok(("/helper/kwt".to_owned(), vec![window.clone()]))),
+            (
+                2,
+                Err(HostDiagnostic::new(
+                    DiagnosticKind::Transport,
+                    "Rex unavailable",
+                )),
+            ),
+        ] {
+            workspace
+                .scene
+                .runtime
+                .remote_hosts
+                .lock()
+                .unwrap()
+                .get_mut(&request.host_id)
+                .unwrap()
+                .rex_refresh = Some(Refresh {
+                id,
+                scene: workspace.scene.id,
+                cancellation: CancellationToken::new(),
+            });
+            finish(
+                &workspace.scene,
+                &request.host_id,
+                request.connection_generation,
+                id,
+                &request.snapshot,
+                result,
+            );
+            let snapshot = observer.snapshot();
+            let host = snapshot
+                .hosts()
+                .iter()
+                .find(|h| h.id() == request.host_id)
+                .unwrap();
+            assert_eq!(host.rex_windows(), std::slice::from_ref(&window));
+            assert_eq!(host.rex_diagnostic().is_some(), id == 2);
+            assert_eq!(snapshot.revision(), revision + id);
+        }
+    }
 }

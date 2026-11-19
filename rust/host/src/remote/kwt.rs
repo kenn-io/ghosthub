@@ -73,21 +73,49 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok((helper, windows))
     }
 
+    /// Acquire another KWT-managed master for the already reviewed route.
+    ///
+    /// # Errors
+    /// Returns a route change, authentication, or transport failure.
+    pub fn acquire_rex_lease(
+        &self,
+        snapshot: &RemoteTmuxSnapshot,
+        connection: u8,
+        cancellation: &CancellationToken,
+        prompt: impl FnMut(&crate::SshLeasePrompt) -> Result<String, crate::SshError>,
+    ) -> Result<SshLease, RemoteTmuxError> {
+        snapshot
+            .lease()
+            .ensure_live()
+            .map_err(|e| RemoteTmuxError::ssh(&e))?;
+        let route =
+            crate::KwtSshResolver::with_command(self.controller.clone(), self.runner.clone())
+                .resolve(self.config.target(), cancellation)
+                .map_err(|e| RemoteTmuxError::ssh(&e))?;
+        if route.route_identity() != snapshot.route_identity() {
+            return Err(RemoteTmuxError::new(
+                DiagnosticKind::Transport,
+                "The SSH route changed. Reconnect the host to continue.",
+            ));
+        }
+        crate::KwtSshLeaseClient::with_command(self.controller.clone())
+            .with_connection(connection)
+            .acquire(&route, cancellation, prompt, |_| {})
+            .map_err(|e| RemoteTmuxError::ssh(&e))
+    }
+
     /// Build an SSH Rex pane attachment or window control channel.
     ///
     /// # Errors
     /// Rejects expired leases, invalid addresses, or non-absolute helpers.
     pub fn rex_plan(
         &self,
-        snapshot: &RemoteTmuxSnapshot,
+        lease: &SshLease,
         helper: &str,
         address: &str,
         term: Option<&str>,
     ) -> Result<session::RexPlan, RemoteTmuxError> {
-        snapshot
-            .lease()
-            .ensure_live()
-            .map_err(|e| RemoteTmuxError::ssh(&e))?;
+        lease.ensure_live().map_err(|e| RemoteTmuxError::ssh(&e))?;
         require_absolute("remote KWT helper", helper)?;
         let (verb, kind) = if term.is_some() {
             ("attach", "block")
@@ -116,7 +144,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         Ok(session::RexPlan::attach_only(
             self.ssh.program(),
             self.ssh.with_arguments(ssh_arguments(
-                snapshot.lease(),
+                lease,
                 self.config.target(),
                 term.is_some(),
                 &account_login_shell_command(&command),

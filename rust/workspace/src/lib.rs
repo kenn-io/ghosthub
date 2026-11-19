@@ -1410,6 +1410,7 @@ impl From<&SshHostSettings> for SshHostDraft {
 pub struct SshPromptRequest {
     host_id: String,
     generation: u64,
+    connecting_host: bool,
     prompt: SshLeasePrompt,
     response: Arc<Mutex<Option<SyncSender<Option<String>>>>>,
 }
@@ -4256,6 +4257,7 @@ impl Workspace {
                     operation_sequence: AtomicU64::new(0),
                     host: Mutex::new(None),
                     remote_hosts: Mutex::new(HashMap::new()),
+                    rex_connections: rex::Connections::default(),
                     remote_runner: Arc::new(StdCommandRunner),
                     remote_controller: None,
                     ssh_executable: None,
@@ -4453,6 +4455,7 @@ impl Workspace {
                 operation_sequence: AtomicU64::new(0),
                 host: Mutex::new(None),
                 remote_hosts: Mutex::new(HashMap::new()),
+                rex_connections: rex::Connections::default(),
                 remote_runner: Arc::new(StdCommandRunner),
                 remote_controller: None,
                 ssh_executable: None,
@@ -4515,6 +4518,7 @@ impl Workspace {
                     operation_sequence: AtomicU64::new(0),
                     host: Mutex::new(None),
                     remote_hosts: Mutex::new(HashMap::new()),
+                    rex_connections: rex::Connections::default(),
                     remote_runner: Arc::new(StdCommandRunner),
                     remote_controller: None,
                     ssh_executable: None,
@@ -5083,6 +5087,7 @@ impl Workspace {
                                         generation,
                                         prompt,
                                         &prompt_cancel,
+                                        true,
                                     )
                                 },
                                 |_| {},
@@ -5131,6 +5136,17 @@ impl Workspace {
 
     #[must_use]
     pub fn cancel_host_connection(&self, id: &str) -> bool {
+        self.cancel_host_connection_scoped(id, None)
+    }
+
+    pub fn cancel_ssh_prompt(&self, request: &SshPromptRequest) {
+        if request.connecting_host {
+            self.cancel_host_connection_scoped(request.host_id(), Some(request.generation));
+        }
+        request.respond(None);
+    }
+
+    fn cancel_host_connection_scoped(&self, id: &str, generation: Option<u64>) -> bool {
         // Publication before the fence, matching connect_host; a retained
         // handle of a closed scene cannot cancel work active scenes use or
         // publish shared disconnected state, so the cancellation is
@@ -5157,6 +5173,11 @@ impl Workspace {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 entries.get_mut(id).and_then(|entry| {
+                    if generation.is_some_and(|generation| {
+                        entry.generation != generation || entry.cancellation.is_none()
+                    }) {
+                        return None;
+                    }
                     let waiting = entry.reconnect.pause();
                     let cancellation = entry.cancellation.take();
                     if cancellation.is_none() && !waiting {
@@ -5191,13 +5212,22 @@ impl Workspace {
 
     #[must_use]
     pub fn ssh_prompt_is_current(&self, host_id: &str, generation: u64) -> bool {
+        let rex_generation = rex::prompt_connection_generation(&self.scene, host_id, generation);
         self.scene
             .runtime
             .remote_hosts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(host_id)
-            .is_some_and(|entry| entry.generation == generation && entry.cancellation.is_some())
+            .is_some_and(|entry| {
+                (entry.generation == generation && entry.cancellation.is_some())
+                    || rex_generation == Some(entry.generation)
+                    || entry.attachment_attempts.iter().any(|attempt| {
+                        attempt.scene == self.scene.id
+                            && attempt.navigation_generation == generation
+                            && !attempt.cancellation.is_cancelled()
+                    })
+            })
     }
 
     fn update_ssh_host_metadata(

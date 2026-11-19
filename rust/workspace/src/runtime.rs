@@ -56,6 +56,7 @@ pub(crate) struct Runtime {
     pub(crate) operation_sequence: AtomicU64,
     pub(crate) host: Mutex<Option<Published<HostContext>>>,
     pub(crate) remote_hosts: Mutex<HashMap<String, RemoteEntry>>,
+    pub(crate) rex_connections: crate::rex::Connections,
     pub(crate) remote_runner: SharedCommandRunner,
     pub(crate) remote_controller: Option<KwtSshExecutable>,
     pub(crate) ssh_executable: Option<SshExecutable>,
