@@ -286,8 +286,12 @@ machine. Reconnect checks the route before it reads the listing. A changed route
 stops with a prompt to reopen, whatever the other machine lists. On the
 original route, a terminal that is still listed reattaches with a new client,
 and one that is gone closes its presentation. A dropped SSH connection (status 255), an SSH transport failure, or a
-surface that could not be created yet reconnects automatically with backoff; a
-clean detach, a failed launch, or an ended program waits for **Retry**. A
+surface that could not be created yet reconnects automatically with backoff.
+When the attach client exits otherwise, Ghosthub lists the host once on the
+original route, because the client exits the same way when its program ends
+and when it detaches. A terminal that is gone closes its presentation. A
+terminal still listed, a failed launch, or a failed listing waits for
+**Retry**. A
 reconnect that needs authentication or host-key approval stops and offers
 **Review Connection**, then resumes after approval. Closing the terminal
 withdraws that request.

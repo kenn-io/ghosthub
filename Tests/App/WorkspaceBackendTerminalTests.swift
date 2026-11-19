@@ -406,6 +406,37 @@ struct WorkspaceBackendTerminalTests {
         await model.shutdown()
     }
 
+    @Test("a terminal whose program ends closes; one still listed keeps Reconnect")
+    func programEnds() async throws {
+        let environment = try environment()
+        let store = RecordingNativeSessionSurfaceStore()
+        let fake = FakeHost([Self.attachedTerminal])
+        let model = try makeTerminalModel(environment, store: store, fake: fake)
+        let opened = environment.selection(Self.attachedTerminal)
+        try await model.openBackendTerminal(opened)
+        await launchSurface(model, store: store)
+
+        // The attach client exits, but Herdr Core still lists the terminal.
+        var closed: Set<UUID> = []
+        let attachments = store.requestedKeys.count
+        try closeNewestSurface(store, closed: &closed, exitCode: 0)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(model.activeBackendTerminalSelection == opened)
+        #expect(model.activeBorrowedBackendTerminalConnectionState != .connected)
+        #expect(store.requestedKeys.count == attachments, "No attach starts by itself")
+
+        model.reconnectActiveBackendTerminalNow()
+        await launchSurface(model, store: store, after: attachments)
+
+        // The program ended, so Herdr Core no longer lists the terminal.
+        fake.terminals.withLock { $0 = [] }
+        try closeNewestSurface(store, closed: &closed, exitCode: 0)
+        await waitUntilMainActor { model.activeBackendTerminalSelection == nil }
+        #expect(model.snapshot.host(id: environment.host.id)?.backendTerminals
+            .contains(Self.attachedTerminal) == false)
+        await model.shutdown()
+    }
+
     @Test("a dropped SSH connection reattaches by itself and a clean detach stays detached")
     func automaticReconnect() async throws {
         let environment = try environment(remote: true)

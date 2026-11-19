@@ -16051,8 +16051,10 @@ extension WorkspaceSceneModel {
     }
 
     /// A lost connection or a terminal view that could not be created yet
-    /// reconnects by itself. A clean detach, a failed launch, and a program
-    /// that exited stay as they are until the user retries.
+    /// reconnects by itself. When the attach client exits otherwise, the
+    /// host is listed once: a terminal it no longer lists has ended, so its
+    /// view closes. A terminal still listed, a failed launch, and a failed
+    /// listing stay as they are until the user retries.
     private func nativeBackendTerminalStateChanged(
         handle: BorrowedBackendTerminalHandle,
         state: ConnectionState
@@ -16069,6 +16071,37 @@ extension WorkspaceSceneModel {
         else { return }
         if nativeBackendTerminalCoordinator.reconnectsAutomatically(handle) {
             startBackendTerminalReconnect(selection, host: host, afterDelay: true)
+        } else {
+            switch nativeBackendTerminalCoordinator.attachmentClosure(handle) {
+            case .detached, .processExited:
+                closeBackendTerminalIfEnded(handle, host: host)
+            default:
+                break
+            }
+        }
+    }
+
+    /// The attach client exits 0 both when its program ends and when it
+    /// detaches, so only the backend's listing tells them apart.
+    private func closeBackendTerminalIfEnded(
+        _ handle: BorrowedBackendTerminalHandle,
+        host: CommandHost
+    ) {
+        let selection = handle.selection
+        let openedRoute = activeBackendTerminalRouteIdentity
+        Task { [weak self] in
+            do {
+                _ = try await self?.validatedBackendTerminal(
+                    selection, title: selection.address, on: host, requiredRoute: openedRoute
+                )
+            } catch BackendTerminalPresentationError.ended {
+                guard let self, activeBackendTerminalHandle == handle,
+                      isBackendTerminalClosed(handle)
+                else { return }
+                closeBackendTerminal(selection)
+            } catch {
+                // Reconnect stays for the user.
+            }
         }
     }
 
