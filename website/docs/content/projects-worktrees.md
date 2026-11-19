@@ -97,6 +97,8 @@ Use **… → Hide Unregistered Folders** to show only registered children and
 folders leading to registered projects or directories. **Show Unregistered
 Folders** restores the full listing. This choice applies to that folder while
 it remains in the sidebar.
+For a registered directory with a running session, the same **…** menu includes
+**Kill Session…**, which asks for confirmation.
 Browsing is available on the local Mac and remote macOS/Linux hosts. It omits
 hidden folders and symbolic links and inspects up to 1,000 filesystem entries
 per expansion. Known registrations remain reachable even when their folders

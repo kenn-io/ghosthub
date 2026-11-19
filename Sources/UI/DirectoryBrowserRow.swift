@@ -17,6 +17,7 @@ struct DirectoryBrowserRow: View {
     let registerDirectory: DirectoryRegistration?
     let registerProject: DirectoryRegistration?
     let directoryContent: (DirectoryWorkspaceSummary) -> AnyView
+    let directoryActions: (DirectoryWorkspaceSummary) -> AnyView
     let projectContent: (WorkspaceSidebarProject) -> AnyView
 
     @State private var expanded = false
@@ -96,6 +97,9 @@ struct DirectoryBrowserRow: View {
                             expanded = true
                             reload += 1
                         }
+                        if let directory {
+                            directoryActions(directory)
+                        }
                     } label: {
                         Image(systemName: "ellipsis")
                             .frame(width: 24, height: 28)
@@ -161,7 +165,8 @@ struct DirectoryBrowserRow: View {
         AnyView(DirectoryBrowserRow(
             host: host, entry: child, directories: directories, projects: projects,
             load: load, registerDirectory: registerDirectory, registerProject: registerProject,
-            directoryContent: directoryContent, projectContent: projectContent
+            directoryContent: directoryContent, directoryActions: directoryActions,
+            projectContent: projectContent
         ))
     }
 

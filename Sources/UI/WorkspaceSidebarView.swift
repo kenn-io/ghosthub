@@ -800,8 +800,12 @@ struct WorkspaceSidebarView: View {
                                 subtitle: directory.path,
                                 sessionIsRunning: directory.sessionLive
                             )
-                            return tmuxPreviewRow(row, content: AnyView(sidebarButton(row)))
+                            return tmuxPreviewRow(
+                                row,
+                                content: AnyView(sidebarButton(row, showsSessionMenu: false))
+                            )
                         },
+                        directoryActions: { AnyView(directorySessionActions($0)) },
                         projectContent: { AnyView(projectGroup($0)) }
                     )
                     .id("\(directory.id)-\(section.host.sshDestination ?? "")")
@@ -1005,8 +1009,24 @@ struct WorkspaceSidebarView: View {
         })
     }
 
+    @ViewBuilder
+    private func directorySessionActions(_ directory: DirectoryWorkspaceSummary) -> some View {
+        let session = WorkspaceSidebarModel.tmuxSessionSelection(for: directory)
+        if WorkspaceSidebarModel.canRequestKill(
+            session, in: snapshot,
+            activeSelection: activeTmuxSession,
+            activeSelectionIsConnected: activeTmuxSessionIsConnected
+        ) {
+            Divider()
+            Button("Kill Session…", role: .destructive) {
+                onRequestKillTmuxSession(session)
+            }
+        }
+    }
+
     private func sidebarButton(
         _ row: WorkspaceSidebarRow,
+        showsSessionMenu: Bool = true,
         reservedTrailingActionWidth: CGFloat = 0,
         isWorktreeFlagged: Bool = false
     ) -> some View {
@@ -1085,7 +1105,7 @@ struct WorkspaceSidebarView: View {
             zellijSelection: zellijSelection,
             herdrActions: herdrActions
         )
-        let hasSessionActions = !sessionActionGroups.isEmpty
+        let hasSessionActions = showsSessionMenu && !sessionActionGroups.isEmpty
         let isActionHovered = hasSessionActions
             && hoveredSessionActionControlRowID == row.id
         let actionPresentation = WorkspaceSessionActionPresentation(
