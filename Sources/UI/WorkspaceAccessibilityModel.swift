@@ -81,10 +81,14 @@ enum WorkspaceAccessibilityModel {
             hint = "Open this directory workspace."
         case .tmuxSession:
             hint = "Attach to this tmux session."
-        case let .backendTerminal(_, kind, _):
-            hint = kind == .rex
-                ? "Open this Rex window."
-                : "Attach to this Herdr terminal."
+        case let .backendTerminal(_, kind, address):
+            hint = if kind == .rex {
+                "Open this Rex window."
+            } else if WorkspaceBackendTerminalSelection.isHerdrCoreTabAddress(address) {
+                "Open this Herdr tab."
+            } else {
+                "Attach to this Herdr terminal."
+            }
         case .herdrSession:
             hint = row.herdrSessionState == .stopped
                 ? "Restart and attach to this Herdr TUI session."

@@ -144,6 +144,9 @@ struct WorkspaceBackendTerminalTests {
             _ in .unavailable
         },
         rexChannels: RexChannels = RexChannels(),
+        herdrTabChannelFactory: @escaping HerdrTabChannelFactory = { _, _, _ in
+            FakeRexControlChannel()
+        },
         startServices: Bool = false
     ) throws -> WorkspaceSceneModel {
         let fake = fake ?? FakeHost(environment.host.backendTerminals)
@@ -168,6 +171,7 @@ struct WorkspaceBackendTerminalTests {
                 rexChannels.started.append((command, channel))
                 return channel
             },
+            herdrTabChannelFactory: herdrTabChannelFactory,
             nativeTmuxPathProvider: { successfulTmuxResolution("/usr/bin/tmux") },
             nativeHerdrPathProvider: { _ in .success("/opt/test/herdr") },
             nativeZellijPathProvider: { _ in .success("/usr/bin/zellij") },
@@ -1403,6 +1407,75 @@ struct WorkspaceBackendTerminalTests {
         await waitUntilMainActor { channels.latest != nil }
         #expect(channels.started.count == 1)
         await model.shutdown()
+    }
+
+    // MARK: Herdr desktop tabs
+
+    private nonisolated static let herdrTab = BackendTerminalSummary(
+        kind: .herdrCore, address: "tab:tb1", title: "ready", detail: "Review · 2 panes"
+    )
+
+    @Test("a Herdr desktop tab shows its panes together, and only Herdr changes its layout")
+    func herdrTabOpens() async throws {
+        let environment = try environment(terminals: [Self.herdrTab, Self.coreTerminal])
+        let store = RecordingNativeSessionSurfaceStore(viewPerSurface: true)
+        var commands: [String] = []
+        let events = FakeHerdrCoreEvents()
+        let model = try makeTerminalModel(
+            environment, store: store,
+            herdrTabChannelFactory: { address, command, _ in
+                commands.append(command)
+                return HerdrTabChannel(tabAddress: address, events: events) {
+                    .success(HerdrCoreListing(
+                        rows: [Self.herdrTab],
+                        tabs: [HerdrCoreTab(
+                            address: "tab:tb1", name: "ready", spaceName: "Review",
+                            root: .split(
+                                id: "r#0", axis: .horizontal, ratio: 0.5,
+                                first: .pane("t1"), second: .pane("t2")
+                            )
+                        )],
+                        paneNames: ["t1": "sh", "t2": "build-watch"],
+                        paneDirectories: [:]
+                    ))
+                }
+            }
+        )
+
+        try await model.openBackendTerminal(environment.selection(Self.herdrTab))
+        await waitUntilMainActor {
+            model.shownRexWindow != nil && store.requestedKeys.count == 2
+        }
+        let window = try #require(model.shownRexWindow)
+        window.container.frame = CGRect(x: 0, y: 0, width: 1000, height: 600)
+
+        let command = try #require(commands.first)
+        #expect(command.contains("/opt/test/herdr-core"))
+        #expect(command.contains("connect"))
+        #expect(command.contains("GHOSTHUB_HC_EVENTS"))
+        let attaches = store.requestedConfigurations.compactMap(\.command)
+        #expect(attaches
+            .contains {
+                $0.contains("/opt/test/herdr-core") && $0.contains("attach") && $0.contains("t1")
+            })
+        #expect(attaches.contains { $0.contains("t2") })
+        #expect(model.activeBorrowedBackendTerminalConnectionState == .connected)
+
+        #expect(!model.canSplitActivePane)
+        #expect(!window.container.isLayoutEditable)
+        #expect(model.availablePaletteApplicationShortcuts.contains(.zoomPane))
+        #expect(model.availablePaletteApplicationShortcuts.isDisjoint(
+            with: [.splitRight, .splitDown, .closePane, .newFloatingPane, .toggleFloatingPane]
+        ))
+        #expect(!model.performApplicationShortcut(.closePane, invocation: .menu))
+        #expect(!model.performApplicationShortcut(.toggleFloatingPane, invocation: .menu))
+
+        #expect(model.performApplicationShortcut(.focusPaneRight, invocation: .menu))
+        await waitUntilMainActor { model.shownRexWindow?.tree?.focusedPaneID == "t2" }
+        #expect(model.performApplicationShortcut(.zoomPane, invocation: .menu))
+        await waitUntilMainActor { model.shownRexWindow?.tree?.zoomedPaneID == "t2" }
+        await model.shutdown()
+        #expect(events.stopped)
     }
 
     @Test("a Rex window whose session ends closes")

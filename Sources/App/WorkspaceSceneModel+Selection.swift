@@ -149,7 +149,7 @@ extension WorkspaceSceneModel {
         case .focusPreviousPane:
             return moveRexPaneFocus(.previous)
         case .zoomPane:
-            return withShownRexWindow { $0.toggleZoom() }
+            return withShownRexWindow(changingLayout: false) { $0.toggleZoom() }
         case .closePane:
             return requestRexPaneClose()
         case .newFloatingPane:
@@ -286,8 +286,11 @@ extension WorkspaceSceneModel {
         if canSplitActivePane {
             actions.formUnion([.splitRight, .splitDown])
         }
-        if let window = shownRexWindow {
-            actions.formUnion([.zoomPane, .closePane, .newFloatingPane, .toggleFloatingPane])
+        if shownRexWindow != nil {
+            actions.insert(.zoomPane)
+        }
+        if let window = shownRexWindow, window.isLayoutEditable {
+            actions.formUnion([.closePane, .newFloatingPane, .toggleFloatingPane])
             if window.canMinimizeFocusedFloatingWindow {
                 actions.insert(.minimizeFloatingWindow)
             }

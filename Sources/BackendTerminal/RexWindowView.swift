@@ -68,6 +68,12 @@ public struct RexControlView: Equatable, Sendable {
         public var label: String
         /// The window's panes, tiled and floating, or nil when it has none.
         public var tree: TerminalSplitTree?
+
+        public init(id: String, label: String, tree: TerminalSplitTree?) {
+            self.id = id
+            self.label = label
+            self.tree = tree
+        }
     }
 
     public var revision: Int
@@ -79,6 +85,22 @@ public struct RexControlView: Equatable, Sendable {
     public var paneNames: [String: String]
     /// Each terminal pane's working directory on the Rex host, when known.
     public var paneDirectories: [String: String]
+
+    public init(
+        revision: Int,
+        sessionID: String,
+        sessionLabel: String,
+        windows: [Window],
+        paneNames: [String: String],
+        paneDirectories: [String: String]
+    ) {
+        self.revision = revision
+        self.sessionID = sessionID
+        self.sessionLabel = sessionLabel
+        self.windows = windows
+        self.paneNames = paneNames
+        self.paneDirectories = paneDirectories
+    }
 
     fileprivate init(
         _ view: SessionView,

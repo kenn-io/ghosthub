@@ -56,25 +56,33 @@ public struct BackendTerminalAttachmentInfo: Equatable, Sendable {
         }
     }
 
-    /// Runs `kwt rex control WINDOW_ID` on the host, for `/bin/sh -c`.
-    /// The terminal's address is the Rex window ID. Its standard input and
-    /// output carry JSON lines, so SSH gets no terminal. Its output starts
-    /// with `RexInventory.controlMarker`, after anything login files print.
+    /// Runs the window's layout channel on the host, for `/bin/sh -c`:
+    /// `kwt rex control WINDOW_ID` for a Rex window, or `herdr-core
+    /// connect` for a Herdr desktop tab. Its standard input and output
+    /// carry JSON lines, so SSH gets no terminal. Its output starts with
+    /// `RexInventory.controlMarker` or `HerdrCoreInventory.eventsMarker`,
+    /// after anything login files print.
     public func controlCommand(
         executablePath: String,
         sshConnectionArguments: [String] = []
     ) throws -> String {
-        guard terminal.kind == .rex, RexInventory.isWindowID(terminal.address) else {
+        let script: String
+        switch terminal.kind {
+        case .rex where RexInventory.isWindowID(terminal.address):
+            script = "printf '%s\\n' '\(RexInventory.controlMarker)'; exec "
+                + [executablePath, "rex", "control", terminal.address]
+                .map(shellQuotedCommandArgument).joined(separator: " ")
+        case .herdrCore where HerdrCoreInventory.isTabAddress(terminal.address):
+            script = HerdrEnvironment.unsetCommand
+                + "; printf '%s\\n' '\(HerdrCoreInventory.eventsMarker)'; exec "
+                + [executablePath, "connect"].map(shellQuotedCommandArgument)
+                .joined(separator: " ")
+        default:
             throw BackendTerminalCommandError.invalidAddress(
                 terminal.kind, address: terminal.address
             )
         }
-        let control = shellCommand([
-            "/bin/sh", "-c",
-            "printf '%s\\n' '\(RexInventory.controlMarker)'; exec "
-                + [executablePath, "rex", "control", terminal.address]
-                .map(shellQuotedCommandArgument).joined(separator: " "),
-        ])
+        let control = shellCommand(["/bin/sh", "-c", script])
         switch host {
         case .local:
             return surfaceAccountLoginShellCommand(control)

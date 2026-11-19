@@ -985,7 +985,7 @@ Ghosthub does not scan the host for repositories.
 | `Sources/Transport/` | Shared local/SSH routing, quoting, and command execution primitives |
 | `Sources/Tmux/` | Native tmux discovery and attachment command model |
 | `Sources/Herdr/` | Native Herdr discovery and attachment command model |
-| `Sources/BackendTerminal/` | Herdr Core and Rex discovery, attachment commands, and the Rex window layout model |
+| `Sources/BackendTerminal/` | Herdr Core and Rex discovery, attachment commands, and the Rex window and Herdr desktop tab layout models |
 | `Sources/Zellij/` | Native Zellij discovery and attachment command model |
 | `Sources/Workspace/` | Pure workspace, host, project, worktree, and session models |
 | `Sources/Persistence/` | GRDB repositories for app-local state |

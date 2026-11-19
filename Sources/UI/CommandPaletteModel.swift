@@ -792,7 +792,13 @@ public enum CommandPaletteModel {
                         hostID: hostID, kind: kind, address: address
                     )
                     let backend = kind == .rex ? "Rex" : "Herdr"
-                    let noun = kind == .rex ? "window" : "terminal"
+                    let noun = if kind == .rex {
+                        "window"
+                    } else if terminal.showsWindow {
+                        "tab"
+                    } else {
+                        "terminal"
+                    }
                     return WorkspaceCommandItem(
                         id: "open-backend-terminal-\(terminal.id)",
                         title: "Open \(backend) \(noun): \(row.title)",

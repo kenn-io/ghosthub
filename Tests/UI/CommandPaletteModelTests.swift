@@ -8,10 +8,15 @@ import Testing
 struct CommandPaletteModelTests {
     @Test(
         "backend-terminal hosts expose attachment without Herdr TUI lifecycle commands",
-        arguments: [BackendTerminalKind.herdrCore, .rex]
+        arguments: [
+            (BackendTerminalKind.herdrCore, "t7", "Open Herdr terminal: review"),
+            (.herdrCore, "tab:tb1", "Open Herdr tab: review"),
+            (.rex, "window:aa", "Open Rex window: review"),
+        ]
     )
-    func backendTerminalCommands(_ kind: BackendTerminalKind) throws {
-        let address = kind == .rex ? "window:aa" : "t7"
+    func backendTerminalCommands(
+        _ kind: BackendTerminalKind, address: String, title: String
+    ) throws {
         let host = HostSummary.fixture(
             herdrAvailable: false,
             backendTerminals: [.init(kind: kind, address: address, title: "review")]
@@ -23,8 +28,7 @@ struct CommandPaletteModelTests {
             snapshot: .fixture(hosts: [host]), selection: .init(selectedHostID: host.id)
         )
         let open = try #require(commands.first { $0.action == .openBackendTerminal(terminal) })
-        #expect(open.title == (kind == .rex
-                ? "Open Rex window: review" : "Open Herdr terminal: review"))
+        #expect(open.title == title)
         #expect(!commands.contains { $0.action == .newHerdrSession(host.id) })
         #expect(!commands.contains {
             if case .stopHerdrSession = $0.action {
