@@ -84,6 +84,46 @@ struct DirectoryBrowserModelTests {
         #expect(shown.map(\.name) == ["checkout", "notes", "team", "unloaded", "unused"])
     }
 
+    @Test("registered projects remain reachable through every ancestor before browsing")
+    func coldRegisteredTree() throws {
+        let registered = project(path: "/hub/team/widget/main")
+        for (parent, expected) in [
+            ("/hub", "/hub/team"),
+            ("/hub/team", "/hub/team/widget"),
+            ("/hub/team/widget", "/hub/team/widget/main"),
+        ] {
+            let children = DirectoryBrowserModel.children(
+                of: parent, entries: [], directories: [], projects: [registered],
+                showUnregisteredFolders: false
+            )
+            #expect(children.map(\.path) == [expected])
+            if expected == registered.project.rootPath {
+                let child = try #require(children.first)
+                #expect(DirectoryBrowserModel.project(for: child, in: [registered])?.id
+                    == registered.id)
+            }
+        }
+    }
+
+    @Test("show then hide retains a recognized registered container and removes unrelated folders")
+    func registeredContainerAfterBrowse() throws {
+        let registered = project(path: "/hub/widget/main")
+        let entries = [
+            DirectoryEntry(name: "widget", path: "/hub/widget", projectPath: "/hub/widget/main"),
+            DirectoryEntry(name: "unused", path: "/hub/unused"),
+        ]
+        for showUnregistered in [false, true, false] {
+            let children = DirectoryBrowserModel.children(
+                of: "/hub", entries: entries, directories: [], projects: [registered],
+                showUnregisteredFolders: showUnregistered
+            )
+            #expect(children.map(\.name) == (showUnregistered ? ["unused", "widget"] : ["widget"]))
+            let container = try #require(children.first { $0.name == "widget" })
+            #expect(DirectoryBrowserModel.project(for: container, in: [registered])?.id
+                == registered.id)
+        }
+    }
+
     @Test("large listings retain exactly the registered projects")
     func largeListing() {
         let entries = (0 ..< 1000).map {
