@@ -68,7 +68,9 @@ layer, as subject to direct iteration.
   Authenticode-signed.
 - Fresh remote hosts gain project context through the explicit Host Settings
   **Add Project** action, which delegates one absolute repository path to kwt;
-  Ghosthub never scans the remote filesystem or edits kwt configuration.
+  Ghosthub never scans the remote filesystem automatically or edits kwt
+  configuration. Explicit directory expansion delegates one level of folder
+  browsing to kwt; registering a discovered child requires its menu action.
 - Ghosthub never uses `tmux -CC` or reconstructs tmux panes, windows, layouts,
   history, or terminal output in Swift.
 - Ghosthub never reconstructs Herdr workspaces, tabs, panes, history, or

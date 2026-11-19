@@ -300,6 +300,10 @@ public struct RootView: View {
                         }
                         return await registerProject(host, path)
                     },
+                    onAddDirectory: { path in
+                        await handlers.registerDirectory?(host, path)
+                            ?? .failure(.message("Directory registration is unavailable."))
+                    },
                     onCancel: { addProjectHost = nil },
                     onAdded: { addProjectHost = nil }
                 )
@@ -809,6 +813,9 @@ public struct RootView: View {
             onAddProject: { host in
                 addProjectHost = host
             },
+            browseDirectory: handlers.browseDirectory,
+            registerDirectory: handlers.registerDirectory,
+            registerProject: handlers.registerProject,
             onRefreshInventory: {
                 handlers.refreshWorkspaceInventory?()
             },

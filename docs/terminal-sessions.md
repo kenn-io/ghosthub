@@ -1002,6 +1002,11 @@ group passes one user-supplied absolute checkout path to kwt's noninteractive
 registration command, then refreshes inventory. Immediately before
 registration, Ghosthub re-resolves the host ID and rejects the operation if its
 endpoint changed while Add Project was open. No filesystem scan occurs.
+The Directory choice registers a plain directory through `kwt workspace add`.
+Directory chevrons explicitly request one level of child-folder inventory from
+`kwt workspace browse`; browsing does not register projects or start sessions.
+Gray rows offer registration only in their **…** menus. Clicking a registered
+directory continues to open its canonical kwt session at the directory root.
 The project row's confirmed **Remove Project** action similarly revalidates the
 project path and host endpoint, then asks kwt to unregister only that project
 metadata. Repository and worktree directories are untouched. Before

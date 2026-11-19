@@ -1182,6 +1182,12 @@ struct WorkspaceWindow: View {
                 registerProject: { [sceneModel] host, path in
                     await sceneModel.registerProject(path, on: host)
                 },
+                registerDirectory: { [sceneModel] host, path in
+                    await sceneModel.registerDirectory(path, on: host)
+                },
+                browseDirectory: { [sceneModel] host, path in
+                    await sceneModel.browseDirectory(path, on: host)
+                },
                 recoverProject: { [sceneModel] host, project, path in
                     await sceneModel.recoverProject(project, to: path, on: host)
                 },

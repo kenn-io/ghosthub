@@ -25,7 +25,8 @@ reconnect is always a fresh attachment.
 - **Project:** a git repository reported by kwt on a host.
 - **Worktree:** a kwt workspace with an exact tmux session name.
 - **Directory workspace:** one kwt-registered plain directory with an exact
-  tmux session name and no Git children.
+  tmux session name. The sidebar can browse its child folders and group
+  independently registered projects beneath it; the directory owns no Git state.
 - **Session:** an ordinary tmux session, running/stopped Herdr TUI session,
   backend terminal (a live Herdr core terminal or Rex window), or active Zellij
   session on a host. Backend terminal support is currently macOS-only.
@@ -39,7 +40,7 @@ backends apart. The options menu beside the sidebar title and **Settings →
 Sidebar** both set the label, sort, row height, and which worktree rows show. The list follows one saved
 manual order or a sort by name, backend, or agent attention; stopped Herdr
 sessions always sit last. A quiet **Projects** group below the sessions shows
-repository hierarchies followed by flat registered-directory rows. The
+repository hierarchies and browsable registered directories. The
 inventories are independent; kwt worktrees and directory workspaces remain
 tmux-backed. Users may hide matching standalone tmux sessions
 from navigation with case-sensitive wildcard patterns; discovery retains the
@@ -798,7 +799,26 @@ On a macOS or Linux host with no existing kwt registry, the user adds one
 absolute repository path at a time through **Add Project**. Ghosthub delegates
 registration to `kwt projects add --json`, then refreshes ordinary kwt
 inventory; it does not search the host's filesystem or write kwt's
-configuration itself. A project's sidebar context menu exposes a confirmed
+configuration itself.
+
+The macOS Add Project sheet also offers **Directory**, backed by
+`kwt workspace add <path>`. Clicking a registered directory opens its existing
+directory-session attachment flow. Its chevron requests
+`kwt workspace browse <path>`, which returns visible immediate child folders
+and optional primary checkout paths. Gray folders are not registered. Only
+their **…** menu's **Add Project** or **Add Directory** action registers them.
+Browsing never registers children or creates sessions.
+
+Kwt owns filesystem enumeration and Git recognition on both local and remote
+POSIX hosts. Each expansion inspects at most 1,000 filesystem entries, omits
+hidden and symlink entries, and reports truncation. The UI also retains known
+registrations when an entry is missing, hidden, or omitted by that limit.
+Projects match the primary checkout path supplied by kwt, including `.bare`
+containers with a sibling `main` checkout; linked worktrees still belong to the registered project. Folder
+grouping is host-scoped presentation only. The command palette and terminal
+selection continue to use the unchanged authoritative inventory.
+
+A project's sidebar context menu exposes a confirmed
 **Remove Project** action backed by
 `kwt projects remove <path> --expected-repository <identity>
 --expected-registration <fingerprint> --json`. Ghosthub supplies the exact

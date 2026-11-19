@@ -192,6 +192,11 @@ It also includes `projects add <path> --json` as the supported registration
 boundary for fresh hosts. Argument, flag, configuration, and repository
 failures must retain the structured error contract, and repeated registration
 must converge across clone paths using the host-aware repository identity.
+Directory browsing requires `workspace browse <absolute-path>` and directory
+registration uses `workspace add <absolute-path>`. The pinned-helper contract
+test registers a directory, browses its child checkout without registering it,
+then explicitly registers that checkout and verifies both inventories. Ship
+the matching helper revision for local and remote POSIX hosts together.
 The matching
 `projects remove <exact-path> --expected-repository <identity>
 --expected-registration <fingerprint> --json` boundary unregisters metadata

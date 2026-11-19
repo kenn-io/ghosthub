@@ -247,6 +247,9 @@ struct WorkspaceSidebarView: View {
     let onNewHerdrSession: (HostSummary) -> Void
     let onNewZellijSession: (HostSummary) -> Void
     let onAddProject: (HostSummary) -> Void
+    let browseDirectory: DirectoryBrowserLoader?
+    let registerDirectory: DirectoryRegistration?
+    let registerProject: DirectoryRegistration?
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
     let onReviewSSHHostKey: (UUID, String) -> Void
@@ -362,6 +365,9 @@ struct WorkspaceSidebarView: View {
         onNewHerdrSession: @escaping (HostSummary) -> Void = { _ in },
         onNewZellijSession: @escaping (HostSummary) -> Void = { _ in },
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
+        browseDirectory: DirectoryBrowserLoader? = nil,
+        registerDirectory: DirectoryRegistration? = nil,
+        registerProject: DirectoryRegistration? = nil,
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
         onReviewSSHHostKey: @escaping (UUID, String) -> Void = { _, _ in },
@@ -426,6 +432,9 @@ struct WorkspaceSidebarView: View {
         self.onNewHerdrSession = onNewHerdrSession
         self.onNewZellijSession = onNewZellijSession
         self.onAddProject = onAddProject
+        self.browseDirectory = browseDirectory
+        self.registerDirectory = registerDirectory
+        self.registerProject = registerProject
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
         self.onReviewSSHHostKey = onReviewSSHHostKey
@@ -763,14 +772,50 @@ struct WorkspaceSidebarView: View {
         )
         .accessibilityIdentifier("sidebar-section-disclosure-\(projectsKey)")
         if expanded {
-            ForEach(section.projects) { project in
-                projectGroup(project)
-            }
-            ForEach(section.directoryWorkspaceRows) { row in
-                tmuxPreviewRow(
-                    row,
-                    content: AnyView(sidebarButton(row))
-                )
+            if let browseDirectory, section.host.canRegisterProjects {
+                let directories = snapshot.directoryWorkspaces
+                    .filter { $0.hostID == section.host.id }
+                ForEach(section.projects.filter { project in
+                    !directories.contains { DirectoryPaths.contains(
+                        $0.path,
+                        project.project.rootPath
+                    ) }
+                }) { project in
+                    projectGroup(project)
+                }
+                ForEach(DirectoryBrowserModel.roots(directories)) { directory in
+                    DirectoryBrowserRow(
+                        host: section.host,
+                        entry: DirectoryEntry(name: directory.name, path: directory.path),
+                        directories: directories,
+                        projects: section.projects,
+                        load: browseDirectory,
+                        registerDirectory: registerDirectory,
+                        registerProject: registerProject,
+                        directoryContent: { directory in
+                            let row = WorkspaceSidebarRow(
+                                target: .directoryWorkspace(directory.id),
+                                icon: .directoryWorkspace,
+                                title: directory.name,
+                                subtitle: directory.path,
+                                sessionIsRunning: directory.sessionLive
+                            )
+                            return tmuxPreviewRow(row, content: AnyView(sidebarButton(row)))
+                        },
+                        projectContent: { AnyView(projectGroup($0)) }
+                    )
+                    .id("\(directory.id)-\(section.host.sshDestination ?? "")")
+                }
+            } else {
+                ForEach(section.projects) { project in
+                    projectGroup(project)
+                }
+                ForEach(section.directoryWorkspaceRows) { row in
+                    tmuxPreviewRow(
+                        row,
+                        content: AnyView(sidebarButton(row))
+                    )
+                }
             }
         }
     }

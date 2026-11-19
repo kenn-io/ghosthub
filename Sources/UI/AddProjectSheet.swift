@@ -7,10 +7,12 @@ struct AddProjectSheet: View {
     let host: HostSummary
     var recoveringProject: ProjectSummary?
     let onAdd: (String) async -> Result<String, HostProbeError>
+    var onAddDirectory: ((String) async -> Result<String, HostProbeError>)?
     let onCancel: () -> Void
     let onAdded: () -> Void
 
     @State private var projectPath = ""
+    @State private var isDirectory = false
     @State private var isAdding = false
     @State private var errorMessage: String?
     @FocusState private var isPathFieldFocused: Bool
@@ -28,7 +30,8 @@ struct AddProjectSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(recoveringProject == nil ? "Add Project" : "Locate Folder")
+                Text(recoveringProject == nil ? (isDirectory ? "Add Directory" : "Add Project") :
+                    "Locate Folder")
                     .font(.headline)
                 Spacer()
                 Label(
@@ -44,10 +47,20 @@ struct AddProjectSheet: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 10) {
+                if recoveringProject == nil, onAddDirectory != nil {
+                    Picker("Add", selection: $isDirectory) {
+                        Text("Git Project").tag(false)
+                        Text("Directory").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(isAdding)
+                }
                 Text(recoveringProject.map {
                     "The folder for \($0.name) is unavailable at \($0.rootPath). Enter the new location of its main checkout."
                 } ?? (
-                    "Enter the absolute path of an existing Git checkout."
+                    isDirectory
+                        ? "Add a folder to open its root terminal and browse child folders. Register children explicitly from their … menus."
+                        : "Enter the absolute path of an existing Git checkout."
                         + " Ghosthub delegates registration to kwt and does"
                         + " not scan the host."
                 ))
@@ -63,7 +76,7 @@ struct AddProjectSheet: View {
                 .focused($isPathFieldFocused)
                 .onSubmit(addProject)
 
-                if recoveringProject != nil, host.kind == .selfHost {
+                if host.kind == .selfHost {
                     Button("Choose Folder…") {
                         let panel = NSOpenPanel()
                         panel.canChooseDirectories = true
@@ -100,7 +113,7 @@ struct AddProjectSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .disabled(isAdding)
                 Button(recoveringProject == nil
-                    ? (isAdding ? "Adding…" : "Add Project")
+                    ? (isAdding ? "Adding…" : (isDirectory ? "Add Directory" : "Add Project"))
                     : (isAdding ? "Locating…" : "Use Folder")) {
                         addProject()
                     }
@@ -122,7 +135,7 @@ struct AddProjectSheet: View {
         errorMessage = nil
         isAdding = true
         Task {
-            let result = await onAdd(normalizedPath)
+            let result = await (isDirectory ? (onAddDirectory ?? onAdd) : onAdd)(normalizedPath)
             isAdding = false
             switch result {
             case .success:

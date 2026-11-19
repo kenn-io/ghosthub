@@ -82,6 +82,26 @@ Windows hosts.
 
 ## Register a plain directory
 
+**Development preview:** the macOS Add Project sheet now has a **Directory**
+choice. Enter or choose a folder, then select **Add Directory**. The folder
+does not need Git.
+
+Select its name to open the root terminal. Select its chevron to browse child
+folders. Unregistered folders appear gray with a “Not registered” tooltip.
+Browsing never registers anything. Use a child row's **…** menu to **Add
+Project** when kwt recognizes a checkout, or **Add Directory** to give the folder
+its own root terminal. Registered projects show their normal worktree rows.
+
+Use **… → Refresh Folders** to reload a folder after filesystem changes.
+Browsing is available on the local Mac and remote macOS/Linux hosts. It omits
+hidden folders and symbolic links and inspects up to 1,000 filesystem entries
+per expansion. Known registrations remain reachable even when their folders
+are missing or outside that listing limit.
+Directory names containing a dollar sign can be browsed but cannot currently
+be registered because kwt expands environment variables in stored paths.
+
+### Register from a shell
+
 A hub, notes tree, or other directory that is not a Git checkout can still use
 the same kwt layouts and Ghosthub terminal flow. Register it on the target host:
 
@@ -89,9 +109,10 @@ the same kwt layouts and Ghosthub terminal flow. Register it on the target host:
 kwt workspace add /absolute/path/to/directory
 ```
 
-Refresh Ghosthub. The directory appears as one flat row in **Projects**, after
-the repository rows. It has no expandable worktree children because one
-registered directory owns one workspace session.
+Refresh Ghosthub. The directory appears in **Projects**. In the development
+preview it expands into browsable child folders; older builds show a flat row.
+Each registered directory owns one workspace session. Projects nested beneath
+it retain their own independently registered worktrees.
 
 Select the row to let kwt create or repair its configured layout and attach the
 ordinary tmux client. Removing the registration with `kwt workspace remove`
