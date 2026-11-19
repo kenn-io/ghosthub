@@ -191,6 +191,19 @@ the header asks first, because it ends the pane's program. Changes go to Rex,
 so Rex.app and other clients show them too, and changes made in Rex show in
 Ghosthub.
 
+Rex can also float panes in windows over the split layout:
+
+- **New Floating Pane** in the Command Palette opens a shell in a new floating
+  window, in the focused pane's directory.
+- **Float Pane** in a pane's header moves the pane into a floating window. In a
+  floating pane, **Tile Pane** returns it to the split layout.
+- Drag a floating pane's header to move its window, or the window's edge to
+  resize it. Click a pane to bring its window to the front.
+- **Minimize** hides the window as a button in the lower-right corner. Click
+  the button to show the window again.
+
+These commands have no default shortcut. Assign one in Settings → **Keyboard**.
+
 Switching away or pressing ++cmd+w++ detaches and leaves every pane running.
 Press ++ctrl+tab++ or ++ctrl+shift+tab++ to move to the next or previous session
 in the host's list. Closing the window in Rex closes it in Ghosthub. If one

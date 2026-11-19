@@ -1174,8 +1174,11 @@ public final class TerminalSurfaceView: NSView, ObservableObject {
               event.window != nil,
               window == event.window else { return event }
 
-        let location = convert(event.locationInWindow, from: nil)
-        guard hitTest(location) == self else { return event }
+        // Ask the window, not this view: a sibling drawn over this terminal,
+        // such as another pane's floating window, owns the click there.
+        guard let root = window.contentView?.superview ?? window.contentView,
+              root.hitTest(event.locationInWindow) === self
+        else { return event }
         notifyPrimaryInteraction()
         if window.firstResponder === self, focused {
             return event

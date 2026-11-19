@@ -47,14 +47,17 @@ struct RexWindowViewTests {
         #expect(view.paneDirectories == [a: "/home/user-a", b: "/home/user-a/src/app"])
     }
 
-    @Test("a zoomed pane and an empty window come through")
+    @Test("a zoomed pane, a floating layer, and an empty window come through")
     func zoomAndEmpty() throws {
         let line = #"""
         {"type":"view","terminals":{},"view":{"revision":2,"session_id":"session:s","label":"","windows":[
           {"window_id":"window:1","label":"build","focused_block_id":"block:a","zoomed_block_id":"block:a",
-           "layers":[{"kind":"floating","layout":{"block_id":"block:f"},"blocks":[]},
-                     {"kind":"tiled","layout":{"block_id":"block:a"},
-                      "blocks":[{"block_id":"block:a","label":"notes","creator_name":"com.example.notes"}]}]},
+           "layers":[{"kind":"tiled","layout":{"block_id":"block:a"},
+                      "blocks":[{"block_id":"block:a","label":"notes","creator_name":"com.example.notes"}]},
+                     {"kind":"floating","layer_id":"layer:f","bounds":[0.25,0.1,0.5,0.4],
+                      "state":"minimized","layout":{"block_id":"block:f"},
+                      "blocks":[{"block_id":"block:f","label":"scratch"}]},
+                     {"kind":"sidebar","layer_id":"layer:s","bounds":[0,0,0.2,1],"layout":null}]},
           {"window_id":"window:2","label":"empty","layers":[]}]}}
         """#
         guard case let .view(view) = try decode(line) else {
@@ -62,10 +65,15 @@ struct RexWindowViewTests {
             return
         }
         #expect(view.windows.first?.tree == TerminalSplitTree(
-            root: .pane("block:a"), focusedPaneID: "block:a", zoomedPaneID: "block:a"
+            root: .pane("block:a"),
+            floatingLayers: [.init(
+                id: "layer:f", bounds: CGRect(x: 0.25, y: 0.1, width: 0.5, height: 0.4),
+                root: .pane("block:f"), isMinimized: true
+            )],
+            focusedPaneID: "block:a", zoomedPaneID: "block:a"
         ))
         #expect(view.windows.last?.tree == nil)
-        #expect(view.paneNames == ["block:a": "notes"])
+        #expect(view.paneNames == ["block:a": "notes", "block:f": "scratch"])
     }
 
     @Test("a split in a direction Rex has not named yet is drawn side by side")

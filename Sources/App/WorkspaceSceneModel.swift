@@ -16122,9 +16122,10 @@ extension WorkspaceSceneModel {
         shownRexWindow?.moveFocus(move) == true
     }
 
-    func toggleRexPaneZoom() -> Bool {
+    /// Runs a pane command on the shown Rex window, if there is one.
+    func withShownRexWindow(_ command: (RexWindowPresentation) -> Void) -> Bool {
         guard let window = shownRexWindow else { return false }
-        window.toggleZoom()
+        command(window)
         return true
     }
 

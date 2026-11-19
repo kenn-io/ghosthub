@@ -361,8 +361,8 @@ view instead of waiting for the next listing. Only window IDs of the form
 Opening a window starts one `kwt rex control <window-id>`, which writes the
 session view as a JSON line at the start and after each change, and carries
 Ghosthub's layout requests and Rex's replies. Over SSH it runs without a TTY.
-Ghosthub shows the window's tiled layer as a split tree of pane cards, and
-attaches each pane with `kwt rex attach <block-id>` in its own surface. A pane
+Ghosthub shows the window's tiled layer as a split tree of pane cards, its
+floating layers as windows over it, back to front, and attaches each pane with `kwt rex attach <block-id>` in its own surface. A pane
 that stays in the layout keeps its attachment. Rex keeps each block's size in
 step with its surface; a divider drag holds terminal resizes until release.
 
@@ -380,6 +380,22 @@ Rex owns the layout, and a change shows once Rex reports it:
 - Zoom sends `session.zoom_block`; the zoomed pane fills the window.
 - Close Pane asks first, then sends `block.close`, which ends the pane's
   program.
+- New Floating Pane sends `session.new_layer` with a shell in the focused
+  pane's directory. Float Pane sends `session.float_block`; on a floating
+  pane it becomes Tile Pane, which sends `session.move_block` beside the
+  tiled pane under the floating window's middle.
+- Dragging a floating pane's header moves its window, and dragging the
+  window's edge resizes it. Release sends one `session.resize_layer`; if Rex
+  refuses, the window returns to Rex's bounds.
+- Clicking a pane in a floating window behind another sends
+  `session.raise_layer`, since Rex does not raise a layer on focus.
+- Minimize Floating Window sends `session.set_layer_state`. A minimized
+  window shows as a capsule in the lower-right corner, and clicking it shows
+  the window again. Rex refuses to minimize the last panes on screen, so
+  Ghosthub offers Minimize only while another pane stays shown.
+
+The palette lists New Floating Pane, Float or Tile Pane, and Minimize Floating
+Window. They have no default shortcut; Settings → **Keyboard** can assign one.
 
 ++cmd+w++ closes the view and leaves every pane running. Closing the window
 or ending its session in Rex closes the view. If `kwt rex control` stops
@@ -396,7 +412,7 @@ becomes key.
 
 Run `make test-rex REX_BINARY=/absolute/path/to/rex` to verify listing, the
 control channel, pane attachment and keyboard input, and splitting, resizing,
-focus, zoom, and closing through libghostty. The test starts a
+focus, zoom, floating windows, and closing through libghostty. The test starts a
 private Rex server with its own socket and state directory, and stops it during
 teardown. `REX_BINARY` is the `rex` command inside Rex Server (on macOS,
 `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).
