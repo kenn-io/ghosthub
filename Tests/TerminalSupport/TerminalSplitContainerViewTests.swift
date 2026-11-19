@@ -282,6 +282,46 @@ struct TerminalSplitContainerViewTests {
         }
     }
 
+    @Test("capsules that do not fit in the view move to a menu that restores them")
+    func capsuleOverflow() throws {
+        let view = TerminalSplitContainerView(frame: CGRect(x: 0, y: 0, width: 150, height: 120))
+        let ids = (1 ... 8).map { "M\($0)" }
+        let tree = TerminalSplitTree(
+            root: .pane("A"),
+            floatingLayers: ids.map { .init(
+                id: "layer:\($0)", bounds: CGRect(x: 0, y: 0, width: 0.2, height: 0.2),
+                root: .pane($0), isMinimized: true
+            ) },
+            focusedPaneID: "A"
+        )
+        let panes: [TerminalSplitContainerView.Pane] = (["A"] + ids).map {
+            .init(id: $0, title: "a long pane title \($0)", content: nil)
+        }
+        view.apply(tree: tree, panes: panes)
+        view.layoutSubtreeIfNeeded()
+
+        let more = try #require(view.capsuleOverflow)
+        let shown = ids.filter { view.capsules["layer:\($0)"]?.isHidden == false }
+        #expect(!shown.isEmpty)
+        #expect(([more] + shown.compactMap { view.capsules["layer:\($0)"] })
+            .allSatisfy { view.bounds.contains($0.frame) })
+        #expect(view.subviews.last === more)
+        let menu = view.capsuleOverflowMenu()
+        #expect(menu.items.map(\.title) == ids.filter { !shown.contains($0) }
+            .map { "a long pane title \($0)" })
+
+        var restored: [String] = []
+        view.onLayerRestored = { restored.append($0) }
+        menu.performActionForItem(at: menu.items.count - 1)
+        #expect(restored == ["layer:M8"])
+
+        // Once everything fits again, the menu button goes away.
+        view.frame.size = CGSize(width: 1000, height: 600)
+        view.layoutSubtreeIfNeeded()
+        #expect(view.capsuleOverflow == nil)
+        #expect(ids.allSatisfy { view.capsules["layer:\($0)"]?.isHidden == false })
+    }
+
     @Test("a floating window with an uneven split shrinks only until its smaller share is minimal")
     func floatingResizeKeepsRatios() {
         let view = container()

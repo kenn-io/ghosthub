@@ -83,6 +83,8 @@ public final class TerminalSplitContainerView: NSView {
     public private(set) var floatingLayerFrames: [TerminalSplitLayoutResult.LayerFrame] = []
     /// The capsules of minimized floating windows by layer ID.
     public private(set) var capsules: [String: NSButton] = [:]
+    /// Shown when the capsules do not all fit; it lists the hidden ones.
+    public private(set) var capsuleOverflow: NSButton?
     private var tree: TerminalSplitTree?
     /// Ratios the user set that the backend has not reported yet, with the
     /// ratio the backend reported when the drag started.
@@ -232,7 +234,8 @@ public final class TerminalSplitContainerView: NSView {
     /// in front of every window.
     override public func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        if !capsules.values.contains(where: { $0.frame.contains(local) }),
+        let buttons = capsules.values.filter { !$0.isHidden } + [capsuleOverflow].compactMap(\.self)
+        if !buttons.contains(where: { $0.frame.contains(local) }),
            let layer = floatingLayerFrames.last(where: {
                $0.frame.insetBy(dx: -Self.edgeGrip, dy: -Self.edgeGrip).contains(local)
            }), !Self.edges(of: layer.frame, at: local).isEmpty,
@@ -496,6 +499,7 @@ public final class TerminalSplitContainerView: NSView {
             ids.forEach { place(paneViews[$0]) }
         }
         capsules.values.sorted { $0.tag < $1.tag }.forEach(place)
+        place(capsuleOverflow)
         let current = subviews.map { rank[ObjectIdentifier($0)] ?? 0 }
         guard current != current.sorted() else { return }
         let order = SubviewOrder(rank)
@@ -551,31 +555,84 @@ public final class TerminalSplitContainerView: NSView {
         return capsule
     }
 
-    /// Lines up the capsules from the bottom-right corner, leftward, and
-    /// starts a row above when one is full, so every capsule stays in view.
+    /// Shows as many capsules as fit, and a menu button for the rest.
     private func layoutCapsules() {
+        let ordered = capsules.values.sorted { $0.tag < $1.tag }
+        var shown = placeInRows(ordered)
+        if shown < ordered.count {
+            let more = capsuleOverflow ?? makeCapsuleOverflow()
+            shown = placeInRows([more] + ordered) - 1
+        } else if let more = capsuleOverflow {
+            more.removeFromSuperview()
+            capsuleOverflow = nil
+        }
+        for (index, capsule) in ordered.enumerated() {
+            capsule.isHidden = index >= shown
+        }
+    }
+
+    /// Lines up `buttons` from the bottom-right corner, leftward, and starts
+    /// a row above when one is full. Returns how many fit in the view; the
+    /// first always counts.
+    private func placeInRows(_ buttons: [NSButton]) -> Int {
         let margin: CGFloat = 8, spacing: CGFloat = 6
         var trailing = bounds.maxX - margin
         var bottom = bounds.maxY - margin
         var rowHeight: CGFloat = 0
-        for capsule in capsules.values.sorted(by: { $0.tag < $1.tag }) {
-            let size = capsule.fittingSize
+        for (index, button) in buttons.enumerated() {
+            let size = button.fittingSize
             let width = min(size.width, 200, max(bounds.width - 2 * margin, 0))
             if trailing - width < bounds.minX + margin, rowHeight > 0 {
                 trailing = bounds.maxX - margin
                 bottom -= rowHeight + spacing
                 rowHeight = 0
             }
+            if index > 0, bottom - size.height < bounds.minY + margin {
+                return index
+            }
             trailing -= width
-            capsule.frame = CGRect(
+            button.frame = CGRect(
                 x: trailing, y: bottom - size.height, width: width, height: size.height
             )
             trailing -= spacing
             rowHeight = max(rowHeight, size.height)
         }
+        return buttons.count
     }
 
-    @objc private func capsulePressed(_ sender: NSButton) {
+    private func makeCapsuleOverflow() -> NSButton {
+        let more = NSButton(title: "", target: self, action: #selector(capsuleOverflowPressed(_:)))
+        more.bezelStyle = .push
+        more.controlSize = .small
+        more.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil)
+        more.toolTip = "More Floating Windows"
+        more.setAccessibilityLabel("More Floating Windows")
+        capsuleOverflow = more
+        addSubview(more)
+        return more
+    }
+
+    /// The minimized floating windows whose capsules do not fit.
+    func capsuleOverflowMenu() -> NSMenu {
+        let menu = NSMenu()
+        for capsule in capsules.values.sorted(by: { $0.tag < $1.tag }) where capsule.isHidden {
+            let item = NSMenuItem(
+                title: capsule.title, action: #selector(capsulePressed(_:)), keyEquivalent: ""
+            )
+            item.target = self
+            item.identifier = capsule.identifier
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func capsuleOverflowPressed(_ sender: NSButton) {
+        capsuleOverflowMenu().popUp(
+            positioning: nil, at: CGPoint(x: sender.bounds.minX, y: sender.bounds.maxY), in: sender
+        )
+    }
+
+    @objc private func capsulePressed(_ sender: NSUserInterfaceItemIdentification) {
         guard let id = sender.identifier?.rawValue else { return }
         onLayerRestored?(id)
     }
