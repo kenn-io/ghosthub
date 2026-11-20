@@ -6,18 +6,16 @@ import Testing
 @Suite("Directory browser")
 struct DirectoryBrowserModelTests {
     @Test(
-        "folder reads occur only for an expanded uncached full listing",
+        "first expansion resolves project containers even with unregistered folders hidden",
         arguments: [
-            (false, false, false), (false, false, true),
-            (false, true, false), (false, true, true),
-            (true, false, false), (true, false, true),
-            (true, true, false), (true, true, true),
+            (false, false, false), (false, true, false),
+            (true, false, true), (true, true, false),
         ]
     )
-    func loadingPolicy(expanded: Bool, showUnregistered: Bool, cached: Bool) {
+    func loadingPolicy(expanded: Bool, cached: Bool, expectedRead: Bool) {
         #expect(DirectoryBrowserModel.shouldLoad(
-            expanded: expanded, showUnregisteredFolders: showUnregistered, hasListing: cached
-        ) == (expanded && showUnregistered && !cached))
+            expanded: expanded, hasListing: cached
+        ) == expectedRead)
     }
 
     private func project(path: String) -> WorkspaceSidebarProject {

@@ -98,7 +98,9 @@ Folders** to see the full listing. **Hide Unregistered Folders** shows only
 registered children and folders leading to registered projects or directories.
 This choice applies to that folder while
 it remains in the sidebar.
-The registered-only view uses existing inventory without a filesystem request.
+The registered-only view shows existing inventory immediately. First expansion
+also requests a folder listing to recognize nested project containers and show
+their worktrees directly, without requiring a visibility toggle.
 Ancestor folders containing registered projects or directories use normal text
 even before browsing. Expand them to reach the registered project and its
 worktrees; gray text is reserved for folders with no known registrations.

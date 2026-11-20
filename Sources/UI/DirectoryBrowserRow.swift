@@ -165,10 +165,9 @@ struct DirectoryBrowserRow: View {
         }
         .onChange(of: directory?.id) { _, _ in registered = false }
         .onChange(of: project?.id) { _, _ in registered = false }
-        .task(id: "\(expanded)-\(showUnregisteredFolders)-\(reload)") {
+        .task(id: "\(expanded)-\(reload)") {
             guard DirectoryBrowserModel.shouldLoad(
-                expanded: expanded, showUnregisteredFolders: showUnregisteredFolders,
-                hasListing: listing != nil
+                expanded: expanded, hasListing: listing != nil
             ), project == nil || directory != nil else { return }
             error = nil
             let result = await load(host, entry.path)
@@ -215,9 +214,9 @@ enum DirectoryBrowserModel {
     }
 
     static func shouldLoad(
-        expanded: Bool, showUnregisteredFolders: Bool, hasListing: Bool
+        expanded: Bool, hasListing: Bool
     ) -> Bool {
-        expanded && showUnregisteredFolders && !hasListing
+        expanded && !hasListing
     }
 
     /// Merge known registrations into the visible filesystem level so missing,

@@ -809,9 +809,10 @@ and optional primary checkout paths. Gray folders are not registered. Only
 their **…** menu's **Add Project** or **Add Directory** action registers them.
 Browsing never registers children or creates sessions.
 
-The default registered-only folder view projects existing host inventory and
-does not run a browse command. Showing unregistered folders loads one listing
-on demand. Each row retains that listing across collapse/reopen until Refresh
+The registered-only folder view immediately projects existing host inventory.
+First expansion also loads one listing to resolve project containers such as
+`ReportingHub/main` through kwt's authoritative checkout mapping, even while
+unregistered folders are hidden. Each row retains that listing across collapse/reopen until Refresh
 Folders clears it or the row leaves the view hierarchy. There is no background
 folder polling. Child projection indexes registered paths before filtering.
 
