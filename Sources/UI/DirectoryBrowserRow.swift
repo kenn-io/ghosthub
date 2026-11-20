@@ -19,9 +19,10 @@ struct DirectoryBrowserRow: View {
     let directoryContent: (DirectoryWorkspaceSummary) -> AnyView
     let directoryActions: (DirectoryWorkspaceSummary) -> AnyView
     let projectContent: (WorkspaceSidebarProject, [NativePopupMenuAction], Binding<Bool>) -> AnyView
+    let projectExpansion: (UUID) -> Binding<Bool>
     var routeIdentity: String?
 
-    @State private var expanded = false
+    @State private var folderExpanded = false
     @State private var listing: DirectoryListing?
     @State private var error: String?
     @State private var reload = 0
@@ -37,6 +38,18 @@ struct DirectoryBrowserRow: View {
 
     private var project: WorkspaceSidebarProject? {
         DirectoryBrowserModel.project(for: entry, in: projects)
+    }
+
+    private var expansion: Binding<Bool> {
+        if let project, entry.presentsProject {
+            return projectExpansion(project.project.id)
+        }
+        return $folderExpanded
+    }
+
+    private var expanded: Bool {
+        get { expansion.wrappedValue }
+        nonmutating set { expansion.wrappedValue = newValue }
     }
 
     private var containsRegistrations: Bool {
@@ -60,7 +73,7 @@ struct DirectoryBrowserRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             if let project, entry.presentsProject {
-                projectContent(project, folderActions, $expanded)
+                projectContent(project, folderActions, expansion)
             }
             Group {
                 if project == nil || !entry.presentsProject || directory != nil {
@@ -205,6 +218,7 @@ struct DirectoryBrowserRow: View {
             load: load, registerDirectory: registerDirectory, registerProject: registerProject,
             directoryContent: directoryContent, directoryActions: directoryActions,
             projectContent: projectContent,
+            projectExpansion: projectExpansion,
             routeIdentity: listing?.routeIdentity ?? routeIdentity
         ))
     }

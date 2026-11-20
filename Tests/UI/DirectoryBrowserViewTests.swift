@@ -154,6 +154,9 @@ struct DirectoryBrowserViewTests {
         try press("Collapse Studio")
         try press("Expand Studio")
         #expect(reads.filter { $0 == "/code/Studio" }.count == 1)
+        #expect(find("Collapse Atlas", in: view) != nil)
+        #expect(find("Collapse Docs", in: view) != nil)
+        #expect(find("Expand Notes", in: view) != nil)
     }
 
     private func find(

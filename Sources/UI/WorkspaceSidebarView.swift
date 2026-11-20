@@ -808,6 +808,17 @@ struct WorkspaceSidebarView: View {
                         directoryActions: { AnyView(directorySessionActions($0)) },
                         projectContent: {
                             AnyView(projectGroup($0, folderActions: $1, folderExpansion: $2))
+                        },
+                        projectExpansion: { id in
+                            let key = WorkspaceSidebarDisclosureState.project(id)
+                            return Binding(
+                                get: { isExpanded(key) },
+                                set: { value in
+                                    if value != isExpanded(key) {
+                                        toggle(key)
+                                    }
+                                }
+                            )
                         }
                     )
                     .id("\(directory.id)-\(section.host.sshDestination ?? "")")
