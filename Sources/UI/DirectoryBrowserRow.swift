@@ -44,9 +44,20 @@ struct DirectoryBrowserRow: View {
         )
     }
 
+    private var childProjects: [WorkspaceSidebarProject] {
+        guard let id = project?.id else { return projects }
+        return projects.filter { $0.id != id }
+    }
+
+    private var hasNestedRegistrations: Bool {
+        DirectoryBrowserModel.containsRegistrations(
+            beneath: entry.path, directories: directories, projects: childProjects
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            if let project, directory == nil {
+            if let project, directory == nil, !hasNestedRegistrations {
                 projectContent(project)
             } else {
                 HStack(spacing: 2) {
@@ -84,7 +95,7 @@ struct DirectoryBrowserRow: View {
                     }
                     Menu {
                         if directory == nil {
-                            if entry.projectPath != nil, let registerProject {
+                            if project == nil, entry.projectPath != nil, let registerProject {
                                 Button("Add Project") {
                                     register(
                                         using: registerProject,
@@ -132,10 +143,13 @@ struct DirectoryBrowserRow: View {
                 }
                 if expanded {
                     VStack(alignment: .leading, spacing: 1) {
+                        if let project {
+                            projectContent(project)
+                        }
                         let children = DirectoryBrowserModel.children(
                             of: listing?.path ?? entry.path,
                             entries: listing?.entries ?? [],
-                            directories: directories, projects: projects,
+                            directories: directories, projects: childProjects,
                             showUnregisteredFolders: showUnregisteredFolders
                         )
                         ForEach(children) { child in
@@ -168,7 +182,7 @@ struct DirectoryBrowserRow: View {
         .task(id: "\(expanded)-\(reload)") {
             guard DirectoryBrowserModel.shouldLoad(
                 expanded: expanded, hasListing: listing != nil
-            ), project == nil || directory != nil else { return }
+            ), project == nil || directory != nil || hasNestedRegistrations else { return }
             error = nil
             let result = await load(host, entry.path)
             guard !Task.isCancelled else { return }
@@ -181,7 +195,7 @@ struct DirectoryBrowserRow: View {
 
     private func childRow(_ child: DirectoryEntry) -> AnyView {
         AnyView(DirectoryBrowserRow(
-            host: host, entry: child, directories: directories, projects: projects,
+            host: host, entry: child, directories: directories, projects: childProjects,
             load: load, registerDirectory: registerDirectory, registerProject: registerProject,
             directoryContent: directoryContent, directoryActions: directoryActions,
             projectContent: projectContent

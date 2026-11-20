@@ -91,6 +91,10 @@ folders. Unregistered folders appear gray with a “Not registered” tooltip.
 Browsing never registers anything. Use a child row's **…** menu to **Add
 Project** when kwt recognizes a checkout, or **Add Directory** to give the folder
 its own root terminal. Registered projects show their normal worktree rows.
+If a project also contains registered projects or directories, its folder
+expands to show both its project row and those nested registrations.
+
+![Directory browsing with nested projects and a registered Notes folder](https://raw.githubusercontent.com/sarcasticbird/ghosthub/e738f1e18034180ee0c0973586669a913c767362/guide-directory-browser.png)
 
 Use **… → Refresh Folders** to reload a folder after filesystem changes.
 Unregistered folders are hidden by default. Use **… → Show Unregistered
