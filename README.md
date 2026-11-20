@@ -108,6 +108,8 @@ desktop app. Its [split layout stays in Herdr desktop](https://ghosthub.ai/docs/
 See [Herdr desktop terminals](https://ghosthub.ai/docs/sessions/#herdr-desktop-terminals)
 for setup and scope. It also opens [Rex windows](https://ghosthub.ai/docs/sessions/#rex-windows),
 with their split panes, on this Mac and on SSH hosts.
+The Linux client opens [remote Rex windows and their split panes](https://ghosthub.ai/docs/sessions/#linux-remote-rex-windows)
+over SSH, including SSH over Tailscale.
 
 ## Work with your agents
 

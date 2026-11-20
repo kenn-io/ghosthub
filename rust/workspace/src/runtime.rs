@@ -56,6 +56,7 @@ pub(crate) struct Runtime {
     pub(crate) operation_sequence: AtomicU64,
     pub(crate) host: Mutex<Option<Published<HostContext>>>,
     pub(crate) remote_hosts: Mutex<HashMap<String, RemoteEntry>>,
+    pub(crate) rex_connections: crate::rex::Connections,
     pub(crate) remote_runner: SharedCommandRunner,
     pub(crate) remote_controller: Option<KwtSshExecutable>,
     pub(crate) ssh_executable: Option<SshExecutable>,
@@ -997,7 +998,7 @@ pub(crate) fn require_host_session_actions(
                 "refresh Zellij inventory before changing a session",
             ));
         }
-        SessionKind::Tmux | SessionKind::Herdr | SessionKind::Zellij => {}
+        SessionKind::Tmux | SessionKind::Herdr | SessionKind::Zellij | SessionKind::Rex => {}
     }
     Ok(())
 }

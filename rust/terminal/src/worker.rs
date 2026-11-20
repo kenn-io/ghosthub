@@ -200,6 +200,36 @@ pub struct TerminalWorker {
 }
 
 impl TerminalWorker {
+    /// Attach to one existing Rex terminal without creating a session.
+    ///
+    /// # Errors
+    /// Returns an error when the PTY or client cannot be started.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The Rex SSH lease must outlive the terminal client."
+    )]
+    pub fn attach_rex_with_metadata(
+        plan: &session::RexPlan,
+        connection: Box<dyn Send>,
+        size: GridSize,
+        resize_sequence: u64,
+        pixel_size: PixelSize,
+        clipboard_policy: ClipboardPolicy,
+        default_colors: DefaultColors,
+        default_cursor_shape: CursorShape,
+    ) -> Result<Self, WorkerError> {
+        Self::launch(
+            plan.program(),
+            plan.args(),
+            size,
+            resize_sequence,
+            pixel_size,
+            clipboard_policy,
+            default_colors,
+            default_cursor_shape,
+            Some(connection),
+        )
+    }
     /// Spawn the resolved attach client inside a native pseudoterminal.
     ///
     /// # Errors
@@ -243,6 +273,7 @@ impl TerminalWorker {
             clipboard_policy,
             default_colors,
             default_cursor_shape,
+            None,
         )
     }
 
@@ -270,6 +301,7 @@ impl TerminalWorker {
             clipboard_policy,
             default_colors,
             default_cursor_shape,
+            None,
         )
     }
 
@@ -299,6 +331,7 @@ impl TerminalWorker {
             clipboard_policy,
             default_colors,
             default_cursor_shape,
+            None,
         )
     }
 
@@ -326,6 +359,7 @@ impl TerminalWorker {
             clipboard_policy,
             default_colors,
             default_cursor_shape,
+            None,
         )
     }
 
@@ -353,6 +387,7 @@ impl TerminalWorker {
             clipboard_policy,
             default_colors,
             default_cursor_shape,
+            None,
         )
     }
 
@@ -382,6 +417,7 @@ impl TerminalWorker {
             clipboard_policy,
             default_colors,
             default_cursor_shape,
+            None,
         )
     }
 
@@ -412,6 +448,7 @@ impl TerminalWorker {
             clipboard_policy,
             default_colors,
             default_cursor_shape,
+            None,
         )
     }
 
@@ -431,6 +468,7 @@ impl TerminalWorker {
             ClipboardPolicy::default(),
             DefaultColors::default(),
             CursorShape::Block,
+            None,
         )
     }
 
@@ -448,6 +486,7 @@ impl TerminalWorker {
         clipboard_policy: ClipboardPolicy,
         default_colors: DefaultColors,
         default_cursor_shape: CursorShape,
+        lifetime: Option<Box<dyn Send>>,
     ) -> Result<Self, WorkerError> {
         let SpawnedPty {
             process,
@@ -516,6 +555,8 @@ impl TerminalWorker {
                     &worker_clipboard_visibility,
                     &worker_clipboard_write_allowed,
                 );
+                // Release resources held for this client after the PTY has closed.
+                drop(lifetime);
             });
         let worker_thread = match worker_result {
             Ok(handle) => handle,

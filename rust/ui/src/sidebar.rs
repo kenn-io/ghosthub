@@ -5,13 +5,24 @@ use workspace::{BackendLabel, SidebarPreferences, SidebarRowHeight, SidebarSort}
 pub(super) enum SidebarSession {
     Session(TreeSession),
     Herdr(TreeHerdrSession),
+    Rex {
+        selection: SessionSelection,
+        title: String,
+        detail: String,
+        active: bool,
+        available: bool,
+    },
 }
 
 impl SidebarSession {
     pub(super) fn title(&self) -> String {
+        if let Self::Rex { title, .. } = self {
+            return title.clone();
+        }
         let show_endpoint = match self {
             Self::Session(row) => row.show_endpoint,
             Self::Herdr(row) => row.show_endpoint,
+            Self::Rex { .. } => false,
         };
         let selection = self.selection();
         if show_endpoint {
@@ -25,6 +36,7 @@ impl SidebarSession {
         match self {
             Self::Session(row) => &row.selection,
             Self::Herdr(row) => &row.selection,
+            Self::Rex { selection, .. } => selection,
         }
     }
 
@@ -32,6 +44,7 @@ impl SidebarSession {
         match self {
             Self::Session(row) => &row.kill_selection,
             Self::Herdr(row) => &row.selection,
+            Self::Rex { selection, .. } => selection,
         }
     }
 
@@ -43,12 +56,16 @@ impl SidebarSession {
         match self {
             Self::Session(row) => row.state.is_active(),
             Self::Herdr(row) => row.active,
+            Self::Rex { active, .. } => *active,
         }
     }
 
     fn can_navigate(&self) -> bool {
         match self {
             Self::Session(row) => row.state.can_open(),
+            Self::Rex {
+                available, active, ..
+            } => *available || *active,
             Self::Herdr(row) => {
                 !self.stopped()
                     && row.access.can_open()
@@ -69,7 +86,7 @@ impl SidebarSession {
     fn activity(&self) -> Option<&workspace::AgentActivity> {
         match self {
             Self::Session(row) => row.agent_activity.as_ref(),
-            Self::Herdr(_) => None,
+            Self::Herdr(_) | Self::Rex { .. } => None,
         }
     }
 
@@ -83,6 +100,13 @@ impl SidebarSession {
 
     fn actions(&self, host: &HostItem) -> Vec<SessionRowAction> {
         match self {
+            Self::Rex { active, .. } => {
+                if *active {
+                    vec![SessionRowAction::Detach]
+                } else {
+                    Vec::new()
+                }
+            }
             Self::Session(row) => {
                 let mut actions = tmux_row_actions(row.state.is_active(), row.state.can_kill());
                 if workspace::can_rename_session(host, &row.selection) {
@@ -107,6 +131,7 @@ fn backend_rank(kind: workspace::SessionKind) -> u8 {
         workspace::SessionKind::Tmux => 0,
         workspace::SessionKind::Zellij => 1,
         workspace::SessionKind::Herdr => 2,
+        workspace::SessionKind::Rex => 3,
     }
 }
 
@@ -165,18 +190,27 @@ pub(super) fn sessions(
                     .map(SidebarSession::Herdr),
             )
             .collect();
+    rows.extend(host.rex_windows().iter().map(|window| {
+        let selection = SessionSelection::rex(host.id(), host.endpoint(), &window.id);
+        let is_active = active == Some(&selection);
+        SidebarSession::Rex {
+            selection,
+            title: window.title.clone(),
+            detail: window.detail.clone(),
+            active: is_active,
+            available: host.accepts_session_actions() && host.rex_diagnostic().is_none(),
+        }
+    }));
     rows.sort_by(|left, right| {
         backend_rank(left.selection().kind())
             .cmp(&backend_rank(right.selection().kind()))
-            .then_with(|| compare_names(left.selection().session(), right.selection().session()))
+            .then_with(|| compare_names(&left.title(), &right.title()))
             .then_with(|| order_id(left.selection()).cmp(&order_id(right.selection())))
     });
     match preferences.session_sort {
         SidebarSort::Backend => {}
         SidebarSort::Name => {
-            rows.sort_by(|left, right| {
-                compare_names(left.selection().session(), right.selection().session())
-            });
+            rows.sort_by(|left, right| compare_names(&left.title(), &right.title()));
         }
         SidebarSort::Manual | SidebarSort::Attention => {
             let positions: HashMap<_, _> = preferences
@@ -235,6 +269,7 @@ pub(super) fn backend_label(kind: workspace::SessionKind) -> &'static str {
         workspace::SessionKind::Tmux => "tmux",
         workspace::SessionKind::Zellij => "zellij",
         workspace::SessionKind::Herdr => "herdr tui",
+        workspace::SessionKind::Rex => "rex",
     }
 }
 
@@ -243,6 +278,7 @@ fn backend_tint(kind: workspace::SessionKind) -> u32 {
         workspace::SessionKind::Tmux => 0x54_c4bd,
         workspace::SessionKind::Zellij => 0xd9_b552,
         workspace::SessionKind::Herdr => 0x85_a3f2,
+        workspace::SessionKind::Rex => 0xc3_9ff0,
     }
 }
 
@@ -309,6 +345,14 @@ fn content(row: &SidebarSession, preferences: &SidebarPreferences) -> gpui::AnyE
                 .text_color(rgb(if row.stopped() { 0x84_8c9a } else { 0xd4_dae4 }))
                 .child(row.title()),
         );
+    if let SidebarSession::Rex { detail, .. } = row {
+        body = body.child(
+            div()
+                .text_size(px(10.0))
+                .text_color(rgb(0x84_8c9a))
+                .child(detail.clone()),
+        );
+    }
     if row.stopped() {
         body = body.child(
             div()

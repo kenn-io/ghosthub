@@ -630,8 +630,20 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         snapshot: &RemoteTmuxSnapshot,
         cancellation: &CancellationToken,
     ) -> Result<AttachTerm, RemoteTmuxError> {
+        self.probe_term_on_lease(snapshot.lease(), cancellation)
+    }
+
+    /// Verify terminfo on an already reviewed SSH connection.
+    ///
+    /// # Errors
+    /// Returns the classified SSH or terminfo probe failure.
+    pub fn probe_term_on_lease(
+        &self,
+        lease: &SshLease,
+        cancellation: &CancellationToken,
+    ) -> Result<AttachTerm, RemoteTmuxError> {
         let output = self.run_framed_remote_shell(
-            snapshot.lease(),
+            lease,
             TERMINFO_PROBE_SCRIPT,
             TERMINFO_PROBE_PREFIX,
             cancellation,

@@ -103,6 +103,7 @@ pub(crate) struct Scene {
     #[cfg(test)]
     pub(crate) before_navigation_lock: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     pub(crate) remote_active: Mutex<Option<RemoteActive>>,
+    pub(crate) rex: Mutex<Option<crate::rex::Window>>,
     pub(crate) interrupted_tmux: Mutex<Option<crate::remote_recovery::InterruptedTmux>>,
     pub(crate) remote_retained: Mutex<RemoteRetainedPresentations>,
     pub(crate) worker: Mutex<WorkerState<TerminalWorker>>,
@@ -174,6 +175,7 @@ pub(crate) fn attach_scene(
         #[cfg(test)]
         before_navigation_lock: Mutex::new(None),
         remote_active: Mutex::new(None),
+        rex: Mutex::new(None),
         interrupted_tmux: Mutex::new(None),
         remote_retained: Mutex::new(RemoteRetainedPresentations::new()),
         worker: Mutex::new(WorkerState::new()),
@@ -262,6 +264,7 @@ pub(crate) fn join_runtime(runtime: Arc<Runtime>) -> Arc<Scene> {
 /// operation id, and cancel its superseded un-launched constructive
 /// operations. Other scenes' confirmations and attempts are untouched.
 pub(crate) fn begin_scene_navigation(scene: &Scene) -> u64 {
+    crate::rex::detach(scene);
     scene
         .interrupted_tmux
         .lock()
@@ -394,6 +397,7 @@ pub(crate) fn release_scene(scene: &Scene) {
     }
     unregister_scene(&scene.runtime, scene.id);
     crate::remote_kwt::cancel_scene(scene);
+    crate::rex::cancel_scene(scene);
     crate::agent_hooks::cancel_scene(scene);
     {
         // The detach denies the withheld paste at the worker before killing
@@ -534,8 +538,9 @@ pub(crate) fn request_ssh_prompt(
     generation: u64,
     prompt: &SshLeasePrompt,
     cancellation: &CancellationToken,
+    connecting_host: bool,
 ) -> Result<String, host::SshError> {
-    if scene.closed.load(Ordering::Acquire) {
+    if cancellation.is_cancelled() || scene.closed.load(Ordering::Acquire) {
         return Err(host::SshError::prompt_cancelled());
     }
     let wait = prompt.remaining()?.min(SSH_PROMPT_TIMEOUT);
@@ -547,6 +552,7 @@ pub(crate) fn request_ssh_prompt(
     let request = SshPromptRequest {
         host_id: host_id.to_owned(),
         generation,
+        connecting_host,
         prompt: prompt.clone(),
         response: Arc::new(Mutex::new(Some(sender))),
     };
@@ -563,7 +569,7 @@ pub(crate) fn request_ssh_prompt(
             Ok(Some(value)) => {
                 // A value that raced the scene's close is refused: scene
                 // disappearance fails the operation, never the reverse.
-                if scene.closed.load(Ordering::Acquire) {
+                if cancellation.is_cancelled() || scene.closed.load(Ordering::Acquire) {
                     break Err(host::SshError::prompt_cancelled());
                 }
                 break Ok(value);
@@ -676,6 +682,7 @@ pub(crate) fn publish_remote_connection(
     crate::remote_recovery::restore_pending(&scene.runtime, host_id);
     drop(publication);
     crate::remote_kwt::start(scene, host_id);
+    crate::rex::refresh(scene, host_id);
     if let Some((host, snapshot, target)) = pending_reconciliation {
         reconcile_remote_constructive_after_connection(
             scene, host_id, generation, &host, snapshot, &target,
@@ -1298,6 +1305,7 @@ pub(crate) fn capture_attach_request(
             ));
         }
         let (target, name) = match selection.kind() {
+            SessionKind::Rex => return Err(WorkspaceError::new("Rex requires an SSH host.")),
             SessionKind::Tmux => {
                 if let Some(mode) = selection.tmux_attach_mode() {
                     require_current_kwt_selection(&scene.runtime, selection)?;
@@ -1577,6 +1585,7 @@ pub(crate) fn capture_kill_request(
             ));
         }
         match selection.kind() {
+            SessionKind::Rex => Err(WorkspaceError::new("Use Close Pane for Rex terminals.")),
             SessionKind::Tmux => {
                 if selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected)
                     && selection.tmux_socket_name().is_none()
@@ -2294,6 +2303,17 @@ pub(crate) fn schedule_kwt_refresh(scene: &Arc<Scene>) -> std::io::Result<()> {
             if inventory_polling_wanted(&scene.runtime) {
                 start_kwt_refresh(&scene, false);
                 crate::remote_kwt::refresh_all(&scene);
+                let ids: Vec<_> = scene
+                    .runtime
+                    .remote_hosts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .keys()
+                    .cloned()
+                    .collect();
+                for id in ids {
+                    crate::rex::refresh(&scene, &id);
+                }
             }
             if let Err(error) = schedule_kwt_refresh(&scene) {
                 scene

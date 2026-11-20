@@ -19,6 +19,7 @@ mod kwt;
 mod local;
 mod remote;
 mod rename;
+pub mod rex;
 mod ssh;
 #[cfg(windows)]
 mod windows_system;

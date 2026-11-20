@@ -930,6 +930,7 @@ struct PromptResponse<'a> {
 pub struct KwtSshLeaseClient {
     command: CommandPrefix,
     inactivity_timeout: Duration,
+    connection: u8,
 }
 
 impl KwtSshLeaseClient {
@@ -944,6 +945,7 @@ impl KwtSshLeaseClient {
         Self {
             command: CommandPrefix::native(executable.0),
             inactivity_timeout: LEASE_INACTIVITY_TIMEOUT,
+            connection: 0,
         }
     }
 
@@ -951,7 +953,13 @@ impl KwtSshLeaseClient {
         Self {
             command,
             inactivity_timeout: LEASE_INACTIVITY_TIMEOUT,
+            connection: 0,
         }
+    }
+
+    pub(crate) const fn with_connection(mut self, connection: u8) -> Self {
+        self.connection = connection;
+        self
     }
 
     #[cfg(test)]
@@ -978,7 +986,9 @@ impl KwtSshLeaseClient {
         require_active_acquisition(cancellation)?;
         let mut command = Command::new(self.command.program());
         command_process::prepare(&mut command);
-        let args = self.command.with_arguments(lease_arguments(route));
+        let args = self
+            .command
+            .with_arguments(lease_arguments(route, self.connection));
         let mut child = command
             .args(&args)
             .stdin(Stdio::piped())
@@ -1149,7 +1159,7 @@ fn while_acquisition_active<T>(
     }
 }
 
-fn lease_arguments(route: &SshRouteSnapshot) -> Vec<OsString> {
+fn lease_arguments(route: &SshRouteSnapshot, connection: u8) -> Vec<OsString> {
     let mut args = vec![
         "ssh".into(),
         "lease".into(),
@@ -1161,6 +1171,9 @@ fn lease_arguments(route: &SshRouteSnapshot) -> Vec<OsString> {
         "--host-key-policy".into(),
         "review".into(),
     ];
+    if connection != 0 {
+        args.extend(["--connection".into(), connection.to_string().into()]);
+    }
     if let Some(user) = route.logical_target().user() {
         args.extend(["--user".into(), user.into()]);
     }
@@ -2077,7 +2090,7 @@ mod tests {
     #[test]
     fn lease_arguments_bind_the_reviewed_route_and_logical_target() {
         assert_eq!(
-            lease_arguments(&route()),
+            lease_arguments(&route(), 0),
             [
                 "ssh",
                 "lease",

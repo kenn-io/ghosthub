@@ -40,6 +40,9 @@ mod pump;
 mod remote_attention;
 mod remote_herdr;
 mod remote_kwt;
+mod rex;
+pub use host::rex::Direction as RexDirection;
+pub use rex::{RexDivider, RexPaneSnapshot, RexRect, RexWindowSnapshot};
 mod remote_recovery;
 mod remote_workspace;
 mod remote_zellij;
@@ -366,6 +369,7 @@ pub enum SessionKind {
     Tmux,
     Herdr,
     Zellij,
+    Rex,
 }
 
 impl SessionSelection {
@@ -403,6 +407,7 @@ impl SessionSelection {
             SessionKind::Tmux => Self::new(host_id, endpoint, session),
             SessionKind::Herdr => Self::herdr(host_id, endpoint, session),
             SessionKind::Zellij => Self::zellij(host_id, endpoint, session),
+            SessionKind::Rex => Self::rex(host_id, endpoint, session),
         }
     }
 
@@ -462,6 +467,17 @@ impl SessionSelection {
             worktree_path: None,
             worktree_generation: None,
         }
+    }
+
+    #[must_use]
+    pub fn rex(
+        host_id: impl Into<String>,
+        endpoint: impl Into<String>,
+        window: impl Into<String>,
+    ) -> Self {
+        let mut selection = Self::new(host_id, endpoint, window);
+        selection.kind = SessionKind::Rex;
+        selection
     }
 
     #[must_use]
@@ -586,6 +602,9 @@ pub struct HostItem {
     kwt_diagnostic: Option<HostDiagnostic>,
     kwt_tmux_diagnostic: Option<HostDiagnostic>,
     kwt_sessions: Vec<SessionItem>,
+    rex_windows: Vec<host::rex::Window>,
+    rex_helper: Option<String>,
+    rex_diagnostic: Option<HostDiagnostic>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -888,6 +907,9 @@ impl HostItem {
             kwt_diagnostic: None,
             kwt_tmux_diagnostic: None,
             kwt_sessions: Vec::new(),
+            rex_windows: Vec::new(),
+            rex_helper: None,
+            rex_diagnostic: None,
         }
     }
 
@@ -922,6 +944,9 @@ impl HostItem {
             kwt_diagnostic: None,
             kwt_tmux_diagnostic: None,
             kwt_sessions: Vec::new(),
+            rex_windows: Vec::new(),
+            rex_helper: None,
+            rex_diagnostic: None,
         }
     }
 
@@ -1069,6 +1094,16 @@ impl HostItem {
     #[must_use]
     pub const fn zellij_diagnostic(&self) -> Option<&HostDiagnostic> {
         self.zellij_diagnostic.as_ref()
+    }
+
+    #[must_use]
+    pub fn rex_windows(&self) -> &[host::rex::Window] {
+        &self.rex_windows
+    }
+
+    #[must_use]
+    pub fn rex_diagnostic(&self) -> Option<&HostDiagnostic> {
+        self.rex_diagnostic.as_ref()
     }
 
     #[must_use]
@@ -1221,6 +1256,7 @@ pub struct WorkspaceSnapshot {
     notice: Option<WorkspaceNotice>,
     active_selection: Option<SessionSelection>,
     retained_selections: Vec<SessionSelection>,
+    rex_window: Option<RexWindowSnapshot>,
 }
 
 impl WorkspaceSnapshot {
@@ -1242,6 +1278,7 @@ impl WorkspaceSnapshot {
             notice: None,
             active_selection: None,
             retained_selections: Vec::new(),
+            rex_window: None,
         }
     }
 
@@ -1257,6 +1294,7 @@ impl WorkspaceSnapshot {
             notice: None,
             active_selection: None,
             retained_selections: Vec::new(),
+            rex_window: None,
         }
     }
 
@@ -1298,6 +1336,11 @@ impl WorkspaceSnapshot {
     #[must_use]
     pub fn retained_selections(&self) -> &[SessionSelection] {
         &self.retained_selections
+    }
+
+    #[must_use]
+    pub fn rex_window(&self) -> Option<&RexWindowSnapshot> {
+        self.rex_window.as_ref()
     }
 
     #[must_use]
@@ -1367,6 +1410,7 @@ impl From<&SshHostSettings> for SshHostDraft {
 pub struct SshPromptRequest {
     host_id: String,
     generation: u64,
+    connecting_host: bool,
     prompt: SshLeasePrompt,
     response: Arc<Mutex<Option<SyncSender<Option<String>>>>>,
 }
@@ -2010,6 +2054,7 @@ struct RemoteHostContext {
 struct RemoteEntry {
     reconnect: remote_recovery::retry::Retry,
     kwt: remote_kwt::State,
+    rex_refresh: Option<rex::Refresh>,
     config: RemoteTmuxConfig,
     native_host: Option<RuntimeRemoteHost>,
     context: Option<RemoteHostContext>,
@@ -3435,17 +3480,12 @@ impl AttachRequest {
                 None,
             );
         }
-        match self.target.kind() {
-            SessionKind::Tmux => {
-                SessionSelection::new(&self.host_id, self.endpoint.name(), &self.name)
-            }
-            SessionKind::Herdr => {
-                SessionSelection::herdr(&self.host_id, self.endpoint.name(), &self.name)
-            }
-            SessionKind::Zellij => {
-                SessionSelection::zellij(&self.host_id, self.endpoint.name(), &self.name)
-            }
-        }
+        SessionSelection::for_kind(
+            &self.host_id,
+            self.endpoint.name(),
+            &self.name,
+            self.target.kind(),
+        )
     }
 }
 
@@ -4188,6 +4228,7 @@ impl Workspace {
             notice: None,
             active_selection: None,
             retained_selections: Vec::new(),
+            rex_window: None,
         })
     }
 
@@ -4216,6 +4257,7 @@ impl Workspace {
                     operation_sequence: AtomicU64::new(0),
                     host: Mutex::new(None),
                     remote_hosts: Mutex::new(HashMap::new()),
+                    rex_connections: rex::Connections::default(),
                     remote_runner: Arc::new(StdCommandRunner),
                     remote_controller: None,
                     ssh_executable: None,
@@ -4334,6 +4376,7 @@ impl Workspace {
                         RemoteEntry {
                             reconnect: remote_recovery::retry::Retry::default(),
                             kwt: remote_kwt::State::default(),
+                            rex_refresh: None,
                             config: spec.config.clone(),
                             native_host: spec.runtime_host(&ssh_kwt_home, Arc::clone(&runner)),
                             context: None,
@@ -4412,6 +4455,7 @@ impl Workspace {
                 operation_sequence: AtomicU64::new(0),
                 host: Mutex::new(None),
                 remote_hosts: Mutex::new(HashMap::new()),
+                rex_connections: rex::Connections::default(),
                 remote_runner: Arc::new(StdCommandRunner),
                 remote_controller: None,
                 ssh_executable: None,
@@ -4474,6 +4518,7 @@ impl Workspace {
                     operation_sequence: AtomicU64::new(0),
                     host: Mutex::new(None),
                     remote_hosts: Mutex::new(HashMap::new()),
+                    rex_connections: rex::Connections::default(),
                     remote_runner: Arc::new(StdCommandRunner),
                     remote_controller: None,
                     ssh_executable: None,
@@ -4994,6 +5039,7 @@ impl Workspace {
                 cancel_remote_attachment(entry);
                 agent_hooks::cancel_host(&self.scene.runtime, id);
                 remote_kwt::cancel_for_reconnect(entry);
+                rex::cancel(entry);
                 if let Some(previous) = entry.cancellation.replace(cancellation.clone()) {
                     previous.cancel();
                 }
@@ -5041,6 +5087,7 @@ impl Workspace {
                                         generation,
                                         prompt,
                                         &prompt_cancel,
+                                        true,
                                     )
                                 },
                                 |_| {},
@@ -5089,6 +5136,17 @@ impl Workspace {
 
     #[must_use]
     pub fn cancel_host_connection(&self, id: &str) -> bool {
+        self.cancel_host_connection_scoped(id, None)
+    }
+
+    pub fn cancel_ssh_prompt(&self, request: &SshPromptRequest) {
+        if request.connecting_host {
+            self.cancel_host_connection_scoped(request.host_id(), Some(request.generation));
+        }
+        request.respond(None);
+    }
+
+    fn cancel_host_connection_scoped(&self, id: &str, generation: Option<u64>) -> bool {
         // Publication before the fence, matching connect_host; a retained
         // handle of a closed scene cannot cancel work active scenes use or
         // publish shared disconnected state, so the cancellation is
@@ -5115,6 +5173,11 @@ impl Workspace {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 entries.get_mut(id).and_then(|entry| {
+                    if generation.is_some_and(|generation| {
+                        entry.generation != generation || entry.cancellation.is_none()
+                    }) {
+                        return None;
+                    }
                     let waiting = entry.reconnect.pause();
                     let cancellation = entry.cancellation.take();
                     if cancellation.is_none() && !waiting {
@@ -5149,13 +5212,22 @@ impl Workspace {
 
     #[must_use]
     pub fn ssh_prompt_is_current(&self, host_id: &str, generation: u64) -> bool {
+        let rex_generation = rex::prompt_connection_generation(&self.scene, host_id, generation);
         self.scene
             .runtime
             .remote_hosts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(host_id)
-            .is_some_and(|entry| entry.generation == generation && entry.cancellation.is_some())
+            .is_some_and(|entry| {
+                (entry.generation == generation && entry.cancellation.is_some())
+                    || rex_generation == Some(entry.generation)
+                    || entry.attachment_attempts.iter().any(|attempt| {
+                        attempt.scene == self.scene.id
+                            && attempt.navigation_generation == generation
+                            && !attempt.cancellation.is_cancelled()
+                    })
+            })
     }
 
     fn update_ssh_host_metadata(
@@ -5283,6 +5355,7 @@ impl Workspace {
                     RemoteEntry {
                         reconnect: remote_recovery::retry::Retry::default(),
                         kwt: remote_kwt::State::default(),
+                        rex_refresh: None,
                         config,
                         native_host: runtime,
                         context: None,
@@ -5343,6 +5416,7 @@ impl Workspace {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = entries.get(id) {
                 remote_kwt::cancel(entry);
+                rex::cancel(entry);
             }
             entries.remove(id)
         };
@@ -5399,7 +5473,7 @@ impl Workspace {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
                 .is_some_and(|active| active.selection.host_id() == id);
-            if active_matches {
+            if active_matches || rex::is_on_host(&scene, id) {
                 workspace.detach_locked();
             }
             remote_recovery::forget_tmux_host(&scene, id);
@@ -6219,6 +6293,12 @@ impl Workspace {
                 );
                 selections
             };
+            rex::project_inventory(&self.scene, &mut hosts);
+            let rex_window = rex::snapshot(&self.scene);
+            let active_selection = rex_window
+                .as_ref()
+                .map(|w| w.selection.clone())
+                .or(active_selection);
             WorkspaceSnapshot {
                 revision,
                 appearance: self.effective_appearance(),
@@ -6228,6 +6308,7 @@ impl Workspace {
                 notice,
                 active_selection,
                 retained_selections,
+                rex_window,
             }
         })
     }
@@ -6239,6 +6320,9 @@ impl Workspace {
     /// Returns an error if another presentation is active or the requested
     /// session is not in the latest resolved inventory.
     pub fn attach(&self, selection: &SessionSelection) -> Result<(), WorkspaceError> {
+        if selection.kind() == SessionKind::Rex {
+            return rex::open(self, selection);
+        }
         if self.is_remote_host(selection.host_id()) {
             if self
                 .scene
@@ -6295,6 +6379,9 @@ impl Workspace {
             return Err(WorkspaceError::new(
                 "this Herdr session is already starting or changing lifecycle",
             ));
+        }
+        if selection.kind() == SessionKind::Rex {
+            return rex::open(self, selection);
         }
         if self.is_remote_host(selection.host_id()) {
             if selection.tmux_attach_mode() == Some(host::KwtTmuxAttachMode::Protected) {
@@ -6435,6 +6522,7 @@ impl Workspace {
                     .name()
                     .to_owned(),
             ),
+            SessionKind::Rex => return None,
         };
         Some(RemotePresentationKey {
             host_id: selection.host_id().to_owned(),

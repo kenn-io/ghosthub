@@ -172,6 +172,7 @@ fn consumed_remote_launch_failure_remains_pending_for_reconciliation() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -279,6 +280,7 @@ fn queued_remote_attachment_recaptures_newer_same_connection_inventory() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -3032,6 +3034,7 @@ fn terminfo_retry_unpublishes_terminal_and_preserves_session_kind() {
         notice: None,
         active_selection: None,
         retained_selections: Vec::new(),
+        rex_window: None,
     });
     *workspace.scene.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
         worker_generation: 1,
@@ -7171,6 +7174,7 @@ fn legacy_inventory_publication_still_updates_top_level_content() {
         notice: None,
         active_selection: None,
         retained_selections: Vec::new(),
+        rex_window: None,
     });
 
     set_inventory_state(
@@ -7273,6 +7277,7 @@ fn cancelled_remote_connection_cannot_publish_a_late_failure() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -7335,6 +7340,7 @@ fn remote_cancellation_waits_for_inventory_publication() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -7440,6 +7446,7 @@ fn stale_lease_exit_cannot_cancel_its_replacement_connection() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -7508,6 +7515,7 @@ fn newer_navigation_cancels_a_queued_remote_attachment() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -7575,6 +7583,7 @@ fn navigation_in_one_scene_leaves_other_scenes_remote_attempts_in_flight() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -7676,6 +7685,7 @@ fn concurrent_scene_attachment_attempts_coexist_on_one_host() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -7770,6 +7780,7 @@ fn navigation_in_another_scene_leaves_remote_construction_active() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -7842,6 +7853,7 @@ fn superseded_remote_attachment_cannot_cross_the_launch_fence() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -7938,6 +7950,7 @@ fn refresh_after_remote_launch_transfers_inventory_reconciliation() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -8009,6 +8022,7 @@ fn navigation_cancels_only_prelaunch_remote_construction() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -8131,6 +8145,7 @@ fn concurrent_remote_inventory_publication_settles_pending_reconciliation() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -8257,6 +8272,7 @@ fn stale_remote_inventory_cannot_overwrite_the_published_generation() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -8364,6 +8380,7 @@ pub(super) fn remote_kill_refresh_fixture() -> (Workspace, RemoteTmuxAttachReque
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -8552,6 +8569,7 @@ fn display_only_ssh_host_edits_preserve_runtime_and_selection() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config: config.clone(),
                 native_host: None,
                 context: None,
@@ -8643,6 +8661,7 @@ fn connection_changing_ssh_host_edits_disconnect_and_move_selection() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config: config.clone(),
                 native_host: None,
                 context: None,
@@ -9049,6 +9068,7 @@ fn stale_generation_remote_publication_cannot_touch_another_scenes_presentation(
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -10581,6 +10601,7 @@ fn queued_remote_construction_recaptures_newer_same_connection_inventory() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -10753,6 +10774,7 @@ fn queued_remote_tmux_creation_stops_when_scene_closes() {
         RemoteEntry {
             reconnect: remote_recovery::retry::Retry::default(),
             kwt: remote_kwt::State::default(),
+            rex_refresh: None,
             config,
             native_host: Some(host.clone()),
             context: Some(RemoteHostContext {
@@ -10856,6 +10878,7 @@ fn queued_zellij_construction_consults_recaptured_inventory_before_launching() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -11026,6 +11049,7 @@ fn queued_herdr_restart_revalidates_the_stopped_record_before_launching() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -11195,6 +11219,7 @@ fn queued_construction_acquires_the_lane_before_recapturing() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
@@ -12815,6 +12840,7 @@ fn connect_never_holds_navigation_while_waiting_on_publication() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host),
                 context: None,
@@ -12950,6 +12976,7 @@ fn cancellations_are_rejected_from_a_closed_scene() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: None,
                 context: None,
@@ -14125,6 +14152,7 @@ fn overflowing_inbox_cancels_a_dropped_prompt_and_keeps_fifo_survivors() {
         WorkspaceEvent::SshPrompt(SshPromptRequest {
             host_id: "ssh:studio".to_owned(),
             generation: 7,
+            connecting_host: true,
             prompt: host::SshLeasePrompt::test_fixture(),
             response: Arc::new(Mutex::new(Some(sender))),
         }),
@@ -14398,6 +14426,7 @@ fn overflow_evicts_the_oldest_sheddable_entry_never_a_lossless_one() {
         WorkspaceEvent::SshPrompt(SshPromptRequest {
             host_id: "ssh:studio".to_owned(),
             generation: 7,
+            connecting_host: true,
             prompt: host::SshLeasePrompt::test_fixture(),
             response: Arc::new(Mutex::new(Some(sender))),
         }),
@@ -14624,6 +14653,7 @@ fn spawn_prompt(
             generation,
             &host::SshLeasePrompt::test_fixture(),
             &cancellation,
+            true,
         )
     })
 }
@@ -14869,6 +14899,7 @@ fn closing_a_scene_releases_worker_presentations_attempts_and_lease() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(remote_host.clone()),
                 context: Some(RemoteHostContext {
@@ -15088,6 +15119,7 @@ fn close_cancels_queued_addressed_requests_and_drops_lossless_settlements() {
         WorkspaceEvent::SshPrompt(SshPromptRequest {
             host_id: "ssh:studio".to_owned(),
             generation: 7,
+            connecting_host: true,
             prompt: host::SshLeasePrompt::test_fixture(),
             response: Arc::new(Mutex::new(Some(sender))),
         }),
@@ -15119,6 +15151,7 @@ fn close_cancels_queued_addressed_requests_and_drops_lossless_settlements() {
         WorkspaceEvent::SshPrompt(SshPromptRequest {
             host_id: "ssh:studio".to_owned(),
             generation: 8,
+            connecting_host: true,
             prompt: host::SshLeasePrompt::test_fixture(),
             response: Arc::new(Mutex::new(Some(late_sender))),
         }),
@@ -15241,6 +15274,7 @@ fn prompt_requested_on_an_already_closed_scene_fails_without_queueing() {
         9,
         &host::SshLeasePrompt::test_fixture(),
         &CancellationToken::new(),
+        true,
     );
 
     let error = result.expect_err("a closed scene mints no prompt request");
@@ -15880,6 +15914,7 @@ fn queued_remote_workspace_open_is_cancelled_by_close_and_detach() {
             RemoteEntry {
                 reconnect: remote_recovery::retry::Retry::default(),
                 kwt: remote_kwt::State::default(),
+                rex_refresh: None,
                 config,
                 native_host: Some(host.clone()),
                 context: Some(RemoteHostContext {
