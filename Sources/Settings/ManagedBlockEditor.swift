@@ -54,6 +54,18 @@ enum ManagedBlockEditor {
         )
     }
 
+    /// Replaces the marked block with `managedBlock` and leaves the file
+    /// otherwise as the user wrote it.
+    ///
+    /// Writing the same block twice must produce the same file. An earlier
+    /// version removed the block and its trailing newlines but kept the blank
+    /// line in front of it and then added another, so every save left one more
+    /// blank line behind; a live config reached roughly four thousand of them.
+    ///
+    /// Settings that also appear outside the block stay where they are. One of
+    /// them is inert, because libghostty keeps the last value it reads and the
+    /// block is written last, but a value cannot say whether Ghosthub's config
+    /// template wrote it or the person did.
     static func replacingManagedBlock(
         in contents: String,
         startMarker: String,
@@ -78,13 +90,15 @@ enum ManagedBlockEditor {
             updated.removeSubrange(startRange.lowerBound ..< removeEnd)
         }
 
-        if !updated.hasSuffix("\n") {
-            updated.append("\n")
+        // Drop the separator and trailing newlines an earlier write left, so
+        // this write restores them rather than stacking another copy.
+        while let last = updated.last, last.isWhitespace {
+            updated.removeLast()
         }
 
-        updated.append("\n")
-        updated.append(managedBlock)
-        updated.append("\n")
-        return updated
+        if updated.isEmpty {
+            return managedBlock + "\n"
+        }
+        return updated + "\n\n" + managedBlock + "\n"
     }
 }
