@@ -337,6 +337,9 @@ func makeModel(
     rexControlChannelFactory: @escaping RexControlChannelFactory = { _ in
         FakeRexControlChannel()
     },
+    herdrTabChannelFactory: @escaping HerdrTabChannelFactory = { _, _, _ in
+        FakeRexControlChannel()
+    },
     nativeTmuxPathProvider:
     (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
     nativeHerdrPathProvider: (@Sendable (CommandHost)
@@ -626,6 +629,7 @@ func makeModel(
         nativeBackendTerminalSurfaceStore: nativeBackendTerminalSurfaceStore,
         nativeBackendTerminalExecutableProvider: nativeBackendTerminalExecutableProvider,
         rexControlChannelFactory: rexControlChannelFactory,
+        herdrTabChannelFactory: herdrTabChannelFactory,
         nativeTmuxPathProvider: nativeTmuxPathProvider,
         nativeHerdrPathProvider: nativeHerdrPathProvider,
         nativeZellijPathProvider: nativeZellijPathProvider,

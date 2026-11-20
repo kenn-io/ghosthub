@@ -20,7 +20,12 @@ import XCTest
 
 @MainActor
 final class TerminalSurfaceViewInputTests: XCTestCase {
-    func testHerdrCoreTerminalAttachment() async throws {
+    /// A private Herdr Core: `herdr-core` behind a wrapper that keeps its
+    /// state, configuration, and sockets in a temporary fixture, stopped and
+    /// removed at teardown.
+    private func makeHerdrCoreFixture() throws -> (
+        root: URL, wrapper: URL, run: ([String]) -> AccountCommandOutput
+    ) {
         guard let binary = ProcessInfo.processInfo.environment["GHOSTHUB_TEST_HERDR_CORE_BINARY"]
         else {
             throw XCTSkip("Set GHOSTHUB_TEST_HERDR_CORE_BINARY to an upstream herdr-core binary")
@@ -43,7 +48,7 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         unset HC_TERMINAL_ID HC_TERMINAL_SOCKET
         exec \(shellQuotedCommandArgument(binary)) "$@"
         """)
-        func run(_ arguments: [String]) -> AccountCommandOutput {
+        let run = { (arguments: [String]) in
             AccountCommandRunner.runProcess(
                 executable: wrapper.path,
                 arguments: arguments,
@@ -58,6 +63,146 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             try? FileManager.default.removeItem(at: wrapper)
             try? FileManager.default.removeItem(at: root)
         }
+        return (root, wrapper, run)
+    }
+
+    /// Shows a Herdr desktop tab from a private core: both panes side by
+    /// side, typing into one, and the layout following the core's document.
+    func testHerdrCoreTabSplitView() async throws {
+        let (root, wrapper, run) = try makeHerdrCoreFixture()
+        for (name, ready) in [("left", "CORE_LEFT"), ("right", "CORE_RIGHT")] {
+            let started = run([
+                "run", "--bg", "--name", name, "--cwd", root.path,
+                "/bin/sh", "-c", "printf '\(ready)\\n'; exec /bin/cat",
+            ])
+            XCTAssertEqual(started.status, 0, started.stderr)
+        }
+        let inventoryCommand = HerdrCoreInventory.command(executable: wrapper.path)
+        let listing: @Sendable () -> Result<HerdrCoreListing, BackendTerminalCommandError> = {
+            let listed = AccountCommandRunner.runProcess(
+                executable: "/bin/sh", arguments: ["-c", inventoryCommand], timeout: 10
+            )
+            return HerdrCoreInventory.parseListing(
+                status: listed.status, stdout: listed.stdout, stderr: listed.stderr
+            )
+        }
+        let loose = try listing().get().rows
+        XCTAssertEqual(loose.map(\.title), ["left", "right"])
+        let left = loose[0].address, right = loose[1].address
+        // Write the layout the Herdr desktop app would keep in the core.
+        var version = 0
+        func setTabRoot(_ root: String?) throws {
+            let tabs = root.map { #"[{"id":"tb01","name":"ready","root":\#($0)}]"# } ?? "[]"
+            let request = """
+            {"jsonrpc":"2.0","id":1,"method":"doc.set","params":{"name":"herdr-app","version":\(version),\
+            "value":{"spaces":[{"id":"sp1","name":"Review","folder":"/tmp","tabs":\(tabs)}]}}}
+            """
+            let written = AccountCommandRunner.runProcess(
+                executable: "/bin/sh",
+                arguments: [
+                    "-c",
+                    "printf '%s\\n' \(shellQuotedCommandArgument(request)) | "
+                        + "\(shellQuotedCommandArgument(wrapper.path)) connect",
+                ],
+                timeout: 10
+            )
+            XCTAssertTrue(written.stdout.contains(#""result""#), written.stdout + written.stderr)
+            version += 1
+        }
+        func block(_ terminal: String) -> String {
+            #"{"id":"p\#(terminal)","type":"block","content":{"terminal":"\#(terminal)"}}"#
+        }
+        try setTabRoot(#"{"id":"r","type":"row","children":[\#(block(left)),\#(block(right))]}"#)
+        let row = try XCTUnwrap(listing().get().rows.first)
+        XCTAssertEqual(row.address, "tab:tb01")
+        XCTAssertEqual(row.detail, "Review · 2 panes")
+
+        // Build the tab's view as the app does: the core's event stream and
+        // listings for the layout, herdr-core attach for each pane.
+        let presentation = try RexWindowPresentation(
+            selection: WorkspaceBackendTerminalSelection(
+                hostID: UUID(), kind: .herdrCore, address: row.address
+            ),
+            host: .local,
+            validated: SSHConnectionArgumentsSnapshot(arguments: []),
+            channel: HerdrTabChannel(
+                tabAddress: row.address,
+                events: HerdrCoreEventStream(
+                    command: BackendTerminalAttachmentInfo(terminal: row, host: .local)
+                        .controlCommand(executablePath: wrapper.path)
+                ),
+                list: { listing() }
+            ),
+            coordinator: NativeBackendTerminalCoordinator(
+                terminalCoordinator: TerminalSurfaceCoordinator(runtime: retainedRuntime()),
+                executableProvider: { _, _, _ in .success(wrapper.path) }
+            )
+        )
+        var closed = false
+        presentation.onWindowClosed = { closed = true }
+        addTeardownBlock { @MainActor in await presentation.shutdown() }
+        let window = makeTestWindow(
+            contentView: presentation.container,
+            size: CGSize(width: 1000, height: 640)
+        )
+        defer { window.orderOut(nil) }
+        func waitFor(_ what: String, _ condition: () -> Bool) async {
+            let deadline = ContinuousClock.now + .seconds(20)
+            while !condition(), ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            XCTAssertTrue(
+                condition(),
+                "Timed out waiting for \(what): \(String(describing: presentation.tree))"
+            )
+        }
+        func surface(_ address: String) -> TerminalSurfaceView? {
+            presentation.container.paneViews[address]?.content as? TerminalSurfaceView
+        }
+
+        await waitFor("both panes") { presentation.tree?.paneIDs == [left, right] }
+        await waitFor("both terminals") { surface(left) != nil && surface(right) != nil }
+        let leftSurface = try XCTUnwrap(surface(left))
+        let rightSurface = try XCTUnwrap(surface(right))
+        await waitForViewportTextYielding("CORE_LEFT", in: leftSurface)
+        await waitForViewportTextYielding("CORE_RIGHT", in: rightSurface)
+        let frames = presentation.container.paneViews.mapValues(\.frame)
+        XCTAssertLessThan(try XCTUnwrap(frames[left]).maxX, try XCTUnwrap(frames[right]).minX)
+        XCTAssertEqual(presentation.container.paneViews[right]?.actions, [.zoom])
+
+        window.makeFirstResponder(rightSurface)
+        typeText("tab-input\r", into: rightSurface, window: window)
+        await waitForViewportTextYielding("tab-input", in: rightSurface)
+        let read = run(["read", right])
+        XCTAssertTrue(read.stdout.contains("tab-input"), read.stdout)
+
+        presentation.paneFocused(right)
+        await waitFor("focus on the right pane") { presentation.tree?.focusedPaneID == right }
+        XCTAssertTrue(presentation.moveFocus(.left))
+        await waitFor("focus on the left pane") { presentation.tree?.focusedPaneID == left }
+        presentation.toggleZoom()
+        await waitFor("the zoom") { presentation.tree?.zoomedPaneID == left }
+        presentation.toggleZoom()
+        await waitFor("the unzoom") { presentation.tree?.zoomedPaneID == nil }
+
+        // The desktop app stacks the panes the other way round.
+        try setTabRoot(#"{"id":"c","type":"column","children":[\#(block(right)),\#(block(left))]}"#)
+        await waitFor("the new layout") {
+            guard case let .split(_, axis, _, .pane(first), _) = presentation.tree?.root else {
+                return false
+            }
+            return axis == .vertical && first == right
+        }
+        XCTAssertTrue(surface(left) === leftSurface, "A pane that stays keeps its terminal")
+
+        // Closing the tab in the desktop app closes the view; programs run on.
+        try setTabRoot(nil)
+        await waitFor("the view to close") { closed }
+        XCTAssertTrue(run(["ls", "--json"]).stdout.contains(right))
+    }
+
+    func testHerdrCoreTerminalAttachment() async throws {
+        let (root, wrapper, run) = try makeHerdrCoreFixture()
         let started = run([
             "run",
             "--bg",
@@ -293,6 +438,22 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         presentation.toggleZoom()
         await waitFor("the unzoom") { presentation.tree?.zoomedPaneID == nil }
 
+        // Drag the second pane below the first, then onto it to swap them.
+        presentation.dropPane(second, on: .init(paneID: first, zone: .bottom))
+        await waitFor("the pane below") {
+            guard case let .split(_, axis, _, .pane(top), .pane(bottom)) = presentation.tree?.root
+            else { return false }
+            return axis == .vertical && top == first && bottom == second
+        }
+        presentation.dropPane(second, on: .init(paneID: first, zone: .center))
+        await waitFor("the swap") {
+            guard case let .split(_, axis, _, .pane(top), _) = presentation.tree?.root else {
+                return false
+            }
+            return axis == .vertical && top == second
+        }
+        XCTAssertTrue(surface(first) === firstSurface, "A moved pane keeps its terminal")
+
         presentation.closePane(second)
         await waitFor("the close") { presentation.tree?.paneIDs == [first] }
 
@@ -309,6 +470,62 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
         XCTAssertEqual(exited.status, 0, exited.stderr)
         await waitFor("the exited pane to leave") { presentation.tree?.paneIDs == [first] }
         XCTAssertNil(presentation.container.paneViews[third])
+
+        // Floating windows: open one, tile and float it again, float the
+        // last tiled pane, then move, raise, minimize, and restore.
+        func layer(holding blockID: String) -> TerminalSplitTree.FloatingLayer? {
+            presentation.tree?.floatingLayer(holding: blockID)
+        }
+        presentation.newFloatingPane()
+        await waitFor("a floating pane") { presentation.tree?.floatingLayers.count == 1 }
+        let floating = try XCTUnwrap(presentation.tree?.floatingLayers.first?.root.paneIDs.first)
+        await waitFor("the floating pane's terminal") { surface(floating) != nil }
+        let floatingProcess = await shellProcess(floating)
+        XCTAssertTrue(floatingProcess.contains(#"/work""#), floatingProcess)
+        let floatingFrame = try XCTUnwrap(presentation.container.paneViews[floating]?.frame)
+        XCTAssertEqual(floatingFrame.width, 600, accuracy: 1)
+
+        presentation.toggleFloating(floating)
+        await waitFor("the floating pane to tile") {
+            presentation.tree?.root?.paneIDs == [first, floating]
+        }
+        XCTAssertEqual(presentation.tree?.floatingLayers.count, 0)
+        presentation.toggleFloating(floating)
+        await waitFor("the pane to float again") { layer(holding: floating) != nil }
+
+        presentation.toggleFloating(first)
+        await waitFor("the last tiled pane to float") { layer(holding: first) != nil }
+        XCTAssertNil(presentation.tree?.root, "Only floating windows remain")
+        XCTAssertEqual(presentation.tree?.floatingLayers.last?.id, layer(holding: first)?.id)
+
+        let moved = CGRect(x: 0.05, y: 0.1, width: 0.4, height: 0.5)
+        presentation.container.onLayerBoundsCommitted?(
+            try XCTUnwrap(layer(holding: first)?.id),
+            moved
+        )
+        await waitFor("Rex to report the moved window") {
+            guard let bounds = layer(holding: first)?.bounds else { return false }
+            return abs(bounds.minX - 0.05) < 0.001 && abs(bounds.width - 0.4) < 0.001
+        }
+
+        presentation.paneFocused(floating)
+        await waitFor("the clicked window to come to the front") {
+            presentation.tree?.floatingLayers.last?.id == layer(holding: floating)?.id
+        }
+
+        presentation.minimizeFloatingWindow(first)
+        await waitFor("the minimize") { layer(holding: first)?.isMinimized == true }
+        presentation.container.layoutSubtreeIfNeeded()
+        XCTAssertEqual(presentation.container.paneViews[first]?.isHidden, true)
+        let capsule = try XCTUnwrap(presentation.container
+            .capsules[layer(holding: first)?.id ?? ""])
+        capsule.performClick(nil)
+        await waitFor("the restore") { layer(holding: first)?.isMinimized == false }
+
+        // With no tiled panes, Rex cannot tile a pane beside one; close the
+        // floating shell so the first pane's window stays.
+        presentation.closePane(floating)
+        await waitFor("the floating shell to close") { presentation.tree?.paneIDs == [first] }
 
         presentation.stop()
         XCTAssertEqual(
@@ -1038,12 +1255,19 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
     private func waitForViewportTextYielding(
         _ expected: String,
         in view: TerminalSurfaceView,
-        timeout: Duration = .seconds(20)
+        timeout: Duration = .seconds(20),
+        file: StaticString = #filePath,
+        line: UInt = #line
     ) async {
         let deadline = ContinuousClock.now + timeout
         while !readViewportText(from: view).contains(expected), ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
+        XCTAssertTrue(
+            readViewportText(from: view).contains(expected),
+            "Timed out waiting for \(expected) in the viewport",
+            file: file, line: line
+        )
     }
 
     private enum HostMode {
@@ -1729,6 +1953,41 @@ final class TerminalSurfaceViewInputTests: XCTestCase {
             1,
             "An unfocused pane click should repair focus state exactly once."
         )
+    }
+
+    func testClickOnOverlappingTerminalsReachesOnlyTheFrontOne() throws {
+        let appHandle = try requireAppHandle()
+        let back = makeSurface(app: appHandle, configuration: TerminalSurfaceConfiguration())
+        let front = makeSurface(app: appHandle, configuration: TerminalSurfaceConfiguration())
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
+        back.frame = container.bounds
+        front.frame = NSRect(x: 0, y: 0, width: 300, height: 300)
+        container.addSubview(back)
+        container.addSubview(front)
+        let window = makeTestWindow(contentView: container, settleDelay: 0.1)
+        window.makeFirstResponder(nil)
+        var backInteractions = 0
+        var frontInteractions = 0
+        back.onPrimaryInteraction = { backInteractions += 1 }
+        front.onPrimaryInteraction = { frontInteractions += 1 }
+
+        dispatch(
+            makeLeftMouseDownEvent(windowNumber: window.windowNumber),
+            to: window,
+            route: .application
+        )
+        XCTAssertEqual(frontInteractions, 1)
+        XCTAssertEqual(backInteractions, 0, "A covered terminal must not claim the click.")
+
+        dispatch(
+            makeLeftMouseDownEvent(
+                windowNumber: window.windowNumber, location: NSPoint(x: 600, y: 400)
+            ),
+            to: window,
+            route: .application
+        )
+        XCTAssertEqual(backInteractions, 1)
+        XCTAssertEqual(frontInteractions, 1)
     }
 
     func testRemovingOlderPaneObserverDoesNotClearNewerPaneObserver() throws {

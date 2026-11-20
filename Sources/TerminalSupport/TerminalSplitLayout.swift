@@ -31,11 +31,23 @@ public struct TerminalSplitDivider: Equatable, Sendable {
     /// the divider. Rex names a border by one pane on each side of it.
     public var firstPaneID: String
     public var secondPaneID: String
+    /// The floating layer the divider is in, or nil in the tiled layout.
+    public var layerID: String?
 }
 
 public struct TerminalSplitLayoutResult: Equatable, Sendable {
+    /// Where a floating layer is drawn.
+    public struct LayerFrame: Equatable, Sendable {
+        public var id: String
+        public var frame: CGRect
+    }
+
     public var panes: [String: CGRect]
+    /// Dividers from back to front: the tiled layout's, then each floating
+    /// layer's.
     public var dividers: [TerminalSplitDivider]
+    /// The floating layers on screen, from back to front.
+    public var floatingLayers: [LayerFrame] = []
 }
 
 /// Places a split tree's panes. Frames use a top-left origin, so a view
@@ -48,17 +60,56 @@ public enum TerminalSplitLayout {
         in bounds: CGRect,
         metrics: TerminalSplitMetrics,
         scale: CGFloat,
-        ratioOverrides: [String: Double] = [:]
+        ratioOverrides: [String: Double] = [:],
+        layerBoundsOverrides: [String: CGRect] = [:]
     ) -> TerminalSplitLayoutResult {
-        if let zoomed = tree.zoomedPaneID, tree.paneIDs.contains(zoomed) {
+        if let zoomed = tree.zoomedPaneID, tree.visiblePaneIDs.contains(zoomed) {
             return TerminalSplitLayoutResult(panes: [zoomed: bounds], dividers: [])
         }
+        let scale = max(scale, 1)
         var result = TerminalSplitLayoutResult(panes: [:], dividers: [])
-        place(
-            tree.root, in: bounds, metrics: metrics,
-            scale: max(scale, 1), overrides: ratioOverrides, into: &result
-        )
+        if let root = tree.root {
+            place(
+                root, in: bounds, layerID: nil, metrics: metrics,
+                scale: scale, overrides: ratioOverrides, into: &result
+            )
+        }
+        for layer in tree.floatingLayers where !layer.isMinimized {
+            let frame = Self.frame(
+                of: layerBoundsOverrides[layer.id] ?? layer.bounds, in: bounds, scale: scale
+            )
+            result.floatingLayers.append(.init(id: layer.id, frame: frame))
+            place(
+                layer.root, in: frame, layerID: layer.id, metrics: metrics,
+                scale: scale, overrides: ratioOverrides, into: &result
+            )
+        }
         return result
+    }
+
+    /// A floating layer's frame from its fractional bounds, on whole device
+    /// pixels.
+    public static func frame(of fraction: CGRect, in bounds: CGRect, scale: CGFloat) -> CGRect {
+        let scale = max(scale, 1)
+        func align(_ value: CGFloat) -> CGFloat {
+            (value * scale).rounded() / scale
+        }
+        let minX = align(bounds.minX + fraction.minX * bounds.width)
+        let minY = align(bounds.minY + fraction.minY * bounds.height)
+        let maxX = align(bounds.minX + fraction.maxX * bounds.width)
+        let maxY = align(bounds.minY + fraction.maxY * bounds.height)
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    /// A frame's bounds as fractions of `bounds`, the form a backend takes.
+    public static func fraction(of frame: CGRect, in bounds: CGRect) -> CGRect {
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
+        return CGRect(
+            x: (frame.minX - bounds.minX) / bounds.width,
+            y: (frame.minY - bounds.minY) / bounds.height,
+            width: frame.width / bounds.width,
+            height: frame.height / bounds.height
+        )
     }
 
     /// The ratio that puts `splitID`'s divider under `point`, kept within
@@ -82,6 +133,7 @@ public enum TerminalSplitLayout {
     private static func place(
         _ node: TerminalSplitTree.Node,
         in rect: CGRect,
+        layerID: String?,
         metrics: TerminalSplitMetrics,
         scale: CGFloat,
         overrides: [String: Double],
@@ -155,11 +207,13 @@ public enum TerminalSplitLayout {
             splitRect: rect,
             ratioRange: ratioRange,
             firstPaneID: first.edgePane(facing: axis, trailing: true),
-            secondPaneID: second.edgePane(facing: axis, trailing: false)
+            secondPaneID: second.edgePane(facing: axis, trailing: false),
+            layerID: layerID
         ))
         place(
             first,
             in: firstRect,
+            layerID: layerID,
             metrics: metrics,
             scale: scale,
             overrides: overrides,
@@ -168,6 +222,7 @@ public enum TerminalSplitLayout {
         place(
             second,
             in: secondRect,
+            layerID: layerID,
             metrics: metrics,
             scale: scale,
             overrides: overrides,
@@ -245,7 +300,7 @@ extension TerminalSplitLayout {
         in bounds: CGRect,
         metrics: TerminalSplitMetrics
     ) -> String? {
-        let ids = tree.paneIDs
+        let ids = tree.visiblePaneIDs
         guard let focused = tree.focusedPaneID, let index = ids.firstIndex(of: focused),
               ids.count > 1
         else { return nil }

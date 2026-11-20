@@ -433,6 +433,7 @@ final class WorkspaceSceneModel: ObservableObject {
     /// A Rex pane the user asked to close, waiting for confirmation.
     @Published var rexPaneCloseRequest: RexPaneCloseRequest?
     private let rexControlChannelFactory: RexControlChannelFactory
+    private let herdrTabChannelFactory: HerdrTabChannelFactory
     private var backendTerminalExecutableProvider:
         NativeBackendTerminalCoordinator.ExecutableProvider = { _, _, _ in
             .failure(.unavailable(.rex))
@@ -807,7 +808,8 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     var canSplitActivePane: Bool {
-        canSplitActiveTmuxPane || canSplitActiveHerdrPane || shownRexWindow != nil
+        canSplitActiveTmuxPane || canSplitActiveHerdrPane
+            || shownRexWindow?.isLayoutEditable == true
     }
 
     func splitActivePane(
@@ -827,7 +829,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 handle: handle,
                 requiresKeyboardFocus: requiresKeyboardFocus
             )
-        } else if let window = shownRexWindow,
+        } else if let window = shownRexWindow, window.isLayoutEditable,
                   !requiresKeyboardFocus || window.hasKeyboardFocus {
             window.split(shortcut)
         }
@@ -1243,6 +1245,11 @@ final class WorkspaceSceneModel: ObservableObject {
         NativeBackendTerminalCoordinator.ExecutableProvider? = nil,
         rexControlChannelFactory: @escaping RexControlChannelFactory = {
             try RexControlChannel.started(command: $0)
+        },
+        herdrTabChannelFactory: @escaping HerdrTabChannelFactory = { address, command, list in
+            try HerdrTabChannel(
+                tabAddress: address, events: HerdrCoreEventStream(command: command), list: list
+            )
         },
         nativeTmuxPathProvider:
         (@Sendable () -> Result<ResolvedTmuxBinary, TmuxBinaryError>)? = nil,
@@ -1712,6 +1719,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.presentationSSHConnectionProvider =
             presentationSSHConnectionProvider
         self.rexControlChannelFactory = rexControlChannelFactory
+        self.herdrTabChannelFactory = herdrTabChannelFactory
         self.presentationSSHAcquisitionCoordinator =
             presentationSSHAcquisitionCoordinator
         self.presentationSSHEnvironment = presentationSSHEnvironment
@@ -15595,7 +15603,7 @@ extension WorkspaceSceneModel {
         guard let window = activeRexWindow, !window.isStopped,
               window.selection.hostID == hostID, let row = window.row
         else { return terminals }
-        return terminals.map { $0.kind == .rex && $0.address == row.address ? row : $0 }
+        return terminals.map { $0.kind == row.kind && $0.address == row.address ? row : $0 }
     }
 
     private func showLiveRexRow(hostID: UUID) {
@@ -15812,7 +15820,7 @@ extension WorkspaceSceneModel {
             detachBackendTerminal(selection)
             backendTerminalConnectionStates.removeValue(forKey: handle.id)
         }
-        let handle = selection.kind == .rex
+        let handle = selection.showsWindow
             ? openRexWindow(selection, host: host, validated: validated)
             : nativeBackendTerminalCoordinator.attach(
                 selection, host: host, validated: validated
@@ -16180,15 +16188,25 @@ extension WorkspaceSceneModel {
         shownRexWindow?.moveFocus(move) == true
     }
 
-    func toggleRexPaneZoom() -> Bool {
-        guard let window = shownRexWindow else { return false }
-        window.toggleZoom()
+    /// Runs a pane command on the shown Rex window, if there is one. A
+    /// command that changes the layout needs a window whose layout can
+    /// change here, which a Herdr desktop tab's cannot.
+    func withShownRexWindow(
+        changingLayout: Bool = true,
+        _ command: (RexWindowPresentation) -> Void
+    ) -> Bool {
+        guard let window = shownRexWindow, !changingLayout || window.isLayoutEditable else {
+            return false
+        }
+        command(window)
         return true
     }
 
     /// Asks to close the shown Rex window's focused pane.
     func requestRexPaneClose() -> Bool {
-        guard let window = shownRexWindow, let blockID = window.focusedPaneID else {
+        guard let window = shownRexWindow, window.isLayoutEditable,
+              let blockID = window.focusedPaneID
+        else {
             return false
         }
         window.onCloseRequested?(blockID)
@@ -16206,7 +16224,7 @@ extension WorkspaceSceneModel {
     /// Whether the terminal's attach client, or a Rex window's control
     /// channel, has closed, so presenting it again starts a new one.
     private func isBackendTerminalClosed(_ handle: BorrowedBackendTerminalHandle) -> Bool {
-        guard handle.selection.kind == .rex else {
+        guard handle.selection.showsWindow else {
             return nativeBackendTerminalCoordinator.attachmentClosure(handle) != nil
         }
         guard activeBackendTerminalHandle == handle else { return true }
@@ -16217,7 +16235,7 @@ extension WorkspaceSceneModel {
     }
 
     private func detachBackendTerminal(_ selection: WorkspaceBackendTerminalSelection) {
-        if selection.kind == .rex {
+        if selection.showsWindow {
             stopRexWindow()
         } else {
             nativeBackendTerminalCoordinator.detach(selection)
@@ -16228,7 +16246,7 @@ extension WorkspaceSceneModel {
         _ suspended: Bool,
         handle: BorrowedBackendTerminalHandle
     ) {
-        if handle.selection.kind == .rex {
+        if handle.selection.showsWindow {
             if activeBackendTerminalHandle == handle {
                 activeRexWindow?.setKeyboardInteractionSuspended(suspended)
             }
@@ -16240,7 +16258,7 @@ extension WorkspaceSceneModel {
     }
 
     private func requestBackendTerminalKeyboardFocus(_ handle: BorrowedBackendTerminalHandle) {
-        if handle.selection.kind == .rex {
+        if handle.selection.showsWindow {
             if activeBackendTerminalHandle == handle {
                 activeRexWindow?.requestKeyboardFocus()
             }
@@ -16290,23 +16308,37 @@ extension WorkspaceSceneModel {
                 arguments = try await connection.snapshot(validating: validated).arguments
             }
             let provider = backendTerminalExecutableProvider
+            let kind = handle.selection.kind
             let path = try await BlockingTask.run(priority: .userInitiated) { [arguments] in
-                provider(.rex, host, arguments)
+                provider(kind, host, arguments)
             }.get()
             try await sshConnection?.activateSessionReservation()
             try Task.checkCancellation()
             guard !isShutDown, activeBackendTerminalHandle == handle else {
                 throw CancellationError()
             }
+            let address = handle.selection.address
             let command = try BackendTerminalAttachmentInfo(
-                terminal: BackendTerminalSummary(kind: .rex, address: handle.selection.address),
+                terminal: BackendTerminalSummary(kind: kind, address: address),
                 host: host
             ).controlCommand(executablePath: path, sshConnectionArguments: arguments)
-            let presentation = try RexWindowPresentation(
+            let channel = switch kind {
+            case .rex:
+                try rexControlChannelFactory(command)
+            case .herdrCore:
+                try herdrTabChannelFactory(address, command) { [arguments] in
+                    await BlockingTask.run(priority: .userInitiated) {
+                        BackendTerminalInventoryClient().herdrCoreListing(
+                            on: host, sshConnectionArguments: arguments
+                        )
+                    }
+                }
+            }
+            let presentation = RexWindowPresentation(
                 selection: handle.selection,
                 host: host,
                 validated: validated,
-                channel: rexControlChannelFactory(command),
+                channel: channel,
                 coordinator: makeRexPaneCoordinator(),
                 sshConnection: sshConnection
             )
@@ -16452,7 +16484,7 @@ extension WorkspaceSceneModel {
                 self?.isSettingsPresented = true
             }
         )
-        guard terminal.kind == .rex else { return AnyView(session) }
+        guard terminal.showsWindow else { return AnyView(session) }
         let window = backendTerminalConnectionStates[handle.id] == .connected
             ? shownRexWindow : nil
         return AnyView(RexWindowContentView(

@@ -48,12 +48,13 @@ final class FakeRexControlChannel: RexControlChannelling {
     /// Delivers a view of `window:1` in session `session:s`.
     func deliver(
         layout: String, focused: String, window: String = "window:1", revision: Int? = nil,
-        terminals: String = "{}", windowLabel: String = "w", blocks: String = "[]"
+        terminals: String = "{}", windowLabel: String = "w", blocks: String = "[]",
+        floating: String = ""
     ) throws {
         let line = """
         {"type":"view","terminals":\(terminals),"view":{"revision":\(revision ?? self.revision),"session_id":"session:s","label":"work",
          "windows":[{"window_id":"\(window)","label":"\(windowLabel)","focused_block_id":"\(focused)",
-         "layers":[{"kind":"tiled","layout":\(layout),"blocks":\(blocks)}]}]}}
+         "layers":[{"kind":"tiled","layout":\(layout),"blocks":\(blocks)}\(floating)]}]}}
         """
         guard case let .view(view) = try RexControlMessage.decode(line: Data(line.utf8)) else {
             Issue.record("not a view")
@@ -226,6 +227,167 @@ struct RexWindowPresentationTests {
         #expect(request.params == [
             "before_block_id": "block:a", "after_block_id": "block:b",
             "direction": "horizontal", "ratio": 0.3,
+        ] as NSDictionary)
+    }
+
+    /// Floating windows over the tiled panes: C in the middle, D minimized
+    /// in the corner.
+    private static let floating = #"""
+    ,{"kind":"floating","layer_id":"layer:c","bounds":[0.25,0.25,0.5,0.5],
+      "layout":{"block_id":"block:c"}},
+     {"kind":"floating","layer_id":"layer:d","bounds":[0,0,0.2,0.2],"state":"minimized",
+      "layout":{"block_id":"block:d"}}
+    """#
+
+    @Test("a window with only floating panes stays open and attaches them")
+    func onlyFloating() async throws {
+        let presentation = presentation()
+        var closed = false
+        presentation.onWindowClosed = { closed = true }
+        try channel.deliver(layout: "null", focused: "block:c", floating: Self.floating)
+        await waitUntil { store.requestedKeys.count == 2 }
+        presentation.container.layoutSubtreeIfNeeded()
+        #expect(!closed)
+        #expect(presentation.tree?.root == nil)
+        #expect(presentation.paneHandles.keys.sorted() == ["block:c", "block:d"])
+        #expect(presentation.container.paneViews["block:c"]?.isHidden == false)
+        #expect(presentation.container.paneViews["block:d"]?.isHidden == true)
+    }
+
+    @Test("Float Pane floats a tiled pane; on a floating pane it tiles it beside the pane under it")
+    func toggleFloating() async throws {
+        let presentation = presentation()
+        try channel.deliver(layout: Self.two, focused: "block:a", floating: Self.floating)
+        presentation.container.layoutSubtreeIfNeeded()
+
+        presentation.toggleFloating()
+        let float = try #require(await lastRequest(1))
+        #expect(float.method == "session.float_block")
+        // One floating window shows, so the new one sits a step lower.
+        #expect(float.params == [
+            "block_id": "block:a", "bounds": [0.23, 0.18, 0.6, 0.6],
+        ] as NSDictionary)
+
+        // Over the right half, C returns beside B, not the first pane.
+        try channel.deliver(
+            layout: Self.two, focused: "block:a",
+            floating: Self.floating.replacingOccurrences(of: "0.25,0.25", with: "0.45,0.25")
+        )
+        presentation.container.layoutSubtreeIfNeeded()
+        presentation.toggleFloating("block:c")
+        let tile = try #require(await lastRequest(2))
+        #expect(tile.method == "session.move_block")
+        #expect(tile.params == [
+            "block_id": "block:c", "anchor_block_id": "block:b",
+            "direction": "horizontal", "side": "after",
+        ] as NSDictionary)
+    }
+
+    @Test("New Floating Pane opens a shell in the focused pane's directory, in front")
+    func newFloatingPane() async throws {
+        let presentation = presentation()
+        try channel.deliver(
+            layout: Self.two, focused: "block:b",
+            terminals: #"{"block:b":{"name":"zsh","cwd":"/home/user-a"}}"#
+        )
+        presentation.newFloatingPane()
+        let request = try #require(await lastRequest(1))
+        #expect(request.method == "session.new_layer")
+        #expect(request.params == [
+            "window_id": "window:1", "bounds": [0.2, 0.15, 0.6, 0.6], "focus": true,
+            "layout": ["block": [
+                "flavor": "com.superlogical.terminal.shell",
+                "options": ["cwd": "/home/user-a"],
+            ]],
+        ] as NSDictionary)
+    }
+
+    @Test("dropping a pane beside another moves it there; dropping it on one swaps them")
+    func dropPane() async throws {
+        let presentation = presentation()
+        try channel.deliver(layout: Self.two, focused: "block:a")
+        let drops: [(TerminalSplitPaneDrop.Zone, NSDictionary)] = [
+            (.left, [
+                "block_id": "block:a", "anchor_block_id": "block:b",
+                "direction": "horizontal", "side": "before",
+            ]),
+            (.bottom, [
+                "block_id": "block:a", "anchor_block_id": "block:b",
+                "direction": "vertical", "side": "after",
+            ]),
+        ]
+        for (index, (zone, params)) in drops.enumerated() {
+            presentation.container.onPaneDropped?("block:a", .init(paneID: "block:b", zone: zone))
+            let request = await lastRequest(index + 1)
+            #expect(request?.method == "session.move_block")
+            #expect(request?.params == params)
+        }
+
+        presentation.container.onPaneDropped?("block:a", .init(paneID: "block:b", zone: .center))
+        let swap = await lastRequest(3)
+        #expect(swap?.method == "session.swap_blocks")
+        #expect(swap?.params == [
+            "block_id": "block:a",
+            "other_block_id": "block:b",
+        ] as NSDictionary)
+    }
+
+    @Test("minimizing hides the pane's floating window; its capsule shows it again")
+    func minimizeAndRestore() async throws {
+        let presentation = presentation()
+        try channel.deliver(layout: Self.two, focused: "block:c", floating: Self.floating)
+        presentation.container.layoutSubtreeIfNeeded()
+        #expect(presentation.canMinimizeFocusedFloatingWindow)
+
+        presentation.minimizeFloatingWindow()
+        #expect(await lastRequest(1)?.params == [
+            "layer_id": "layer:c", "state": "minimized",
+        ] as NSDictionary)
+        #expect(channel.requests.last?.method == "session.set_layer_state")
+
+        presentation.container.capsules["layer:d"]?.performClick(nil)
+        #expect(await lastRequest(2)?.params == [
+            "layer_id": "layer:d", "state": "normal", "focus": true,
+        ] as NSDictionary)
+
+        try channel.deliver(layout: Self.two, focused: "block:a", floating: Self.floating)
+        #expect(!presentation.canMinimizeFocusedFloatingWindow)
+    }
+
+    @Test("clicking a pane in a floating window behind another brings it to the front")
+    func clickRaisesWindow() async throws {
+        let presentation = presentation()
+        let behind = #"""
+        ,{"kind":"floating","layer_id":"layer:c","bounds":[0.1,0.1,0.5,0.5],
+          "layout":{"block_id":"block:c"}},
+         {"kind":"floating","layer_id":"layer:e","bounds":[0.3,0.3,0.5,0.5],
+          "layout":{"block_id":"block:e"}}
+        """#
+        // Another Rex app raised layer:e; Ghosthub still has block:c focused.
+        try channel.deliver(layout: Self.two, focused: "block:c", floating: behind)
+
+        presentation.panePressed("block:c")
+        let request = try #require(await lastRequest(1))
+        #expect(request.method == "session.raise_layer")
+        #expect(request.params == ["layer_id": "layer:c"] as NSDictionary)
+
+        presentation.panePressed("block:e")
+        presentation.panePressed("block:a")
+        try await sendsSettle()
+        #expect(channel.requests.count == 1)
+    }
+
+    @Test("moving or resizing a floating window sends its new bounds")
+    func moveFloatingWindow() async throws {
+        let presentation = presentation()
+        try channel.deliver(layout: Self.two, focused: "block:a", floating: Self.floating)
+        presentation.container.onLayerBoundsCommitted?(
+            "layer:c", CGRect(x: 0.1, y: 0.2, width: 0.5, height: 0.25)
+        )
+        let request = try #require(await lastRequest(1))
+        #expect(request.method == "session.resize_layer")
+        #expect(request.params == [
+            "layer_id": "layer:c", "bounds": [0.1, 0.2, 0.5, 0.25],
         ] as NSDictionary)
     }
 

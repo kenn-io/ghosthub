@@ -149,9 +149,15 @@ extension WorkspaceSceneModel {
         case .focusPreviousPane:
             return moveRexPaneFocus(.previous)
         case .zoomPane:
-            return toggleRexPaneZoom()
+            return withShownRexWindow(changingLayout: false) { $0.toggleZoom() }
         case .closePane:
             return requestRexPaneClose()
+        case .newFloatingPane:
+            return withShownRexWindow { $0.newFloatingPane() }
+        case .toggleFloatingPane:
+            return withShownRexWindow { $0.toggleFloating() }
+        case .minimizeFloatingWindow:
+            return withShownRexWindow { $0.minimizeFloatingWindow() }
         case .reloadConfiguration:
             reloadTerminalConfig()
             return true
@@ -281,7 +287,13 @@ extension WorkspaceSceneModel {
             actions.formUnion([.splitRight, .splitDown])
         }
         if shownRexWindow != nil {
-            actions.formUnion([.zoomPane, .closePane])
+            actions.insert(.zoomPane)
+        }
+        if let window = shownRexWindow, window.isLayoutEditable {
+            actions.formUnion([.closePane, .newFloatingPane, .toggleFloatingPane])
+            if window.canMinimizeFocusedFloatingWindow {
+                actions.insert(.minimizeFloatingWindow)
+            }
         }
         if let controller = activeTerminalFindController,
            controller.isAvailable {

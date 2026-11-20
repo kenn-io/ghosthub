@@ -1,5 +1,6 @@
 import Testing
 @testable import GhosthubSettings
+import GhosthubTerminalSupport
 import GhosthubWorkspace
 
 struct ManagedBlockEditorTests {
@@ -77,7 +78,61 @@ struct ManagedBlockEditorTests {
         #expect(result.contains("inserted"))
     }
 
+    @Test func repeatedWritesConvergeOnTheSameFile() {
+        let block = "# >>> START >>>\nvalue = 1\n# <<< END <<<"
+        let first = ManagedBlockEditor.replacingManagedBlock(
+            in: "font-size = 14\n",
+            startMarker: "# >>> START >>>",
+            endMarker: "# <<< END <<<",
+            with: block
+        )
+
+        var repeated = first
+        for _ in 0 ..< 20 {
+            repeated = ManagedBlockEditor.replacingManagedBlock(
+                in: repeated,
+                startMarker: "# >>> START >>>",
+                endMarker: "# <<< END <<<",
+                with: block
+            )
+        }
+
+        #expect(repeated == first)
+    }
+
     // MARK: - replacingManagedTerminalBlock
+
+    @Test func savingTerminalSettingsRepeatedlyLeavesOneBlockAndNoPadding() {
+        let prefs = TerminalPreferences(
+            cursorStyle: .bar,
+            allowShellIntegrationToControlCursor: false,
+            hideMouseWhileTyping: true,
+            copySelectionToClipboard: true
+        )
+        let block = ManagedBlockEditor.renderManagedTerminalBlock(for: prefs)
+
+        var contents = LibghosttyConfigPipeline.defaultGlobalConfigContents
+        for _ in 0 ..< 25 {
+            contents = ManagedBlockEditor.replacingManagedTerminalBlock(
+                in: contents,
+                with: block
+            )
+        }
+
+        let lines = contents.split(separator: "\n", omittingEmptySubsequences: false)
+        let blankLines = lines.filter {
+            $0.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        // One between the template's two paragraphs, one before the trailing
+        // comment, one before the block, and the file's final newline.
+        #expect(blankLines.count <= 4)
+
+        #expect(contents.components(
+            separatedBy: ManagedBlockEditor.managedTerminalBlockStart
+        ).count == 2)
+        #expect(contents.contains("font-family = Berkeley Mono"))
+        #expect(contents.contains("cursor-style = bar"))
+    }
 
     @Test func terminalBlockUsesCorrectMarkers() {
         let result = ManagedBlockEditor.replacingManagedTerminalBlock(

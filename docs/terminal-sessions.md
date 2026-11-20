@@ -250,13 +250,15 @@ Windows sessions.
 ## Backend Terminals
 
 Herdr Core and Rex offer one terminal at a time to attach to. Ghosthub lists
-Herdr Core terminals and Rex windows per host. A Herdr Core terminal attaches
-in its own libghostty surface; a Rex window shows all of its panes, each in its
-own surface (see [Rex windows](#rex-windows)). The backend owns creation,
+Herdr desktop tabs, Herdr Core terminals in no tab, and Rex windows per host. A
+Herdr Core terminal attaches in its own libghostty surface; a desktop tab or a
+Rex window shows all of its panes, each in its own surface (see
+[Herdr Core terminals](#herdr-core-terminals) and [Rex windows](#rex-windows)). The backend owns creation,
 program lifetime, and layout; closing the view only detaches.
 
 A backend terminal's identity is its host, kind (`core` or `rex`), and address:
-a Herdr Core address such as `t7` or a Rex window ID. Titles and details are
+a Herdr Core address such as `t7`, a desktop tab's `tab:` address, or a Rex
+window ID. Titles and details are
 display text. A Herdr TUI session with the same name is a separate target.
 Selection, reconnect, sibling navigation, and restoration use that identity.
 
@@ -315,7 +317,7 @@ The macOS app resolves `herdr-core` separately from the older `herdr` TUI in
 each host account's login environment. It uses `herdr-core ls --json` for
 inventory and `herdr-core attach <address>` for presentation. The optional
 `hc` alias is not used because other programs may own that command. This
-contract is verified with upstream core 0.1.17.
+contract is verified with upstream core 0.1.21.
 
 Only `state: live` terminals with host-local `t…` addresses are listed.
 Finished terminals and `machine/t…` addresses are excluded; Ghosthub's own
@@ -323,11 +325,23 @@ host routes determine where discovery and attachment run. The terminal's
 optional name, desktop location (`where`, the space and tab), or agent label is
 display text, in that order; the address appears beneath it.
 
-Each desktop terminal pane has its own core address and sidebar row. Split
-panes in the same desktop tab share the same `where` value, so their displayed
-titles can match; the address beneath each title distinguishes them. Attaching
-opens only the selected terminal, with no split geometry or desktop tab
-grouping. See the [user guide's split limitation](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
+Discovery also reads the Herdr desktop app's layout, the `herdr-app` document
+the app keeps in the core, with `doc.get` through `herdr-core connect`. Each
+desktop tab that shows a live local terminal becomes one row addressed
+`tab:<tab id>`; its terminals get no rows of their own. A core without the
+document, or a document Ghosthub cannot read, leaves every terminal its own
+row. The document belongs to Herdr desktop, so Ghosthub reads it and never
+writes it.
+
+Opening a tab row shows the tab in the split view Rex windows use. Each row and
+column of the document becomes nested binary splits sized by its children's
+weights; a stack shows its active child; hidden nodes, blocks without a
+terminal, and edge floats are left out. Each pane attaches with
+`herdr-core attach`. A `herdr-core connect` subscription to every change keeps
+the tab current: a document, terminal-set, label, or title event, or a missed
+event, lists the host again, and changes during a listing cost one more listing.
+Focus and zoom are kept in Ghosthub; split, close, resize, and float are
+unavailable. See the [user guide](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
 
 Before discovery and attachment, Ghosthub clears inherited TUI routing variables
 and `HC_SESSION`, `HC_SOCKET`, `HC_TERMINAL_ID`, and `HC_TERMINAL_SOCKET`.
@@ -361,8 +375,8 @@ view instead of waiting for the next listing. Only window IDs of the form
 Opening a window starts one `kwt rex control <window-id>`, which writes the
 session view as a JSON line at the start and after each change, and carries
 Ghosthub's layout requests and Rex's replies. Over SSH it runs without a TTY.
-Ghosthub shows the window's tiled layer as a split tree of pane cards, and
-attaches each pane with `kwt rex attach <block-id>` in its own surface. A pane
+Ghosthub shows the window's tiled layer as a split tree of pane cards, its
+floating layers as windows over it, back to front, and attaches each pane with `kwt rex attach <block-id>` in its own surface. A pane
 that stays in the layout keeps its attachment. Rex keeps each block's size in
 step with its surface; a divider drag holds terminal resizes until release.
 
@@ -380,6 +394,22 @@ Rex owns the layout, and a change shows once Rex reports it:
 - Zoom sends `session.zoom_block`; the zoomed pane fills the window.
 - Close Pane asks first, then sends `block.close`, which ends the pane's
   program.
+- New Floating Pane sends `session.new_layer` with a shell in the focused
+  pane's directory. Float Pane sends `session.float_block`; on a floating
+  pane it becomes Tile Pane, which sends `session.move_block` beside the
+  tiled pane under the floating window's middle.
+- Dragging a floating pane's header moves its window, and dragging the
+  window's edge resizes it. Release sends one `session.resize_layer`; if Rex
+  refuses, the window returns to Rex's bounds.
+- Clicking a pane in a floating window behind another sends
+  `session.raise_layer`, since Rex does not raise a layer on focus.
+- Minimize Floating Window sends `session.set_layer_state`. A minimized
+  window shows as a capsule in the lower-right corner, and clicking it shows
+  the window again. Rex refuses to minimize the last panes on screen, so
+  Ghosthub offers Minimize only while another pane stays shown.
+
+The palette lists New Floating Pane, Float or Tile Pane, and Minimize Floating
+Window. They have no default shortcut; Settings → **Keyboard** can assign one.
 
 ++cmd+w++ closes the view and leaves every pane running. Closing the window
 or ending its session in Rex closes the view. If `kwt rex control` stops
@@ -396,7 +426,8 @@ becomes key.
 
 Run `make test-rex REX_BINARY=/absolute/path/to/rex` to verify listing, the
 control channel, pane attachment and keyboard input, and splitting, resizing,
-focus, zoom, and closing through libghostty. The test starts a
+moving and swapping panes, focus, zoom, floating windows, and closing through
+libghostty. The test starts a
 private Rex server with its own socket and state directory, and stops it during
 teardown. `REX_BINARY` is the `rex` command inside Rex Server (on macOS,
 `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).

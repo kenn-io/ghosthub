@@ -66,8 +66,14 @@ public struct RexControlView: Equatable, Sendable {
     public struct Window: Equatable, Sendable {
         public var id: String
         public var label: String
-        /// The window's tiled panes, or nil when it has none.
+        /// The window's panes, tiled and floating, or nil when it has none.
         public var tree: TerminalSplitTree?
+
+        public init(id: String, label: String, tree: TerminalSplitTree?) {
+            self.id = id
+            self.label = label
+            self.tree = tree
+        }
     }
 
     public var revision: Int
@@ -80,6 +86,22 @@ public struct RexControlView: Equatable, Sendable {
     /// Each terminal pane's working directory on the Rex host, when known.
     public var paneDirectories: [String: String]
 
+    public init(
+        revision: Int,
+        sessionID: String,
+        sessionLabel: String,
+        windows: [Window],
+        paneNames: [String: String],
+        paneDirectories: [String: String]
+    ) {
+        self.revision = revision
+        self.sessionID = sessionID
+        self.sessionLabel = sessionLabel
+        self.windows = windows
+        self.paneNames = paneNames
+        self.paneDirectories = paneDirectories
+    }
+
     fileprivate init(
         _ view: SessionView,
         terminals: [String: RexControlMessage.Terminal]
@@ -89,20 +111,24 @@ public struct RexControlView: Equatable, Sendable {
         sessionLabel = view.label ?? ""
         var names: [String: String] = [:]
         windows = try view.windows.map { window in
-            let tiled = window.layers.first { $0.kind == "tiled" }
-            for block in tiled?.blocks ?? [] {
+            for block in window.layers.flatMap({ $0.blocks ?? [] }) {
                 names[block.blockID] = terminals[block.blockID]?.name ?? block.label
             }
-            return try Window(
+            // Rex draws a layer of a kind it does not know as floating.
+            let tiled = window.layers.first { $0.kind == "tiled" }
+            let floating = try window.layers.filter { $0.kind != "tiled" }.compactMap { layer in
+                try layer.floatingLayer()
+            }
+            let root = try tiled?.layout?.node()
+            return Window(
                 id: window.windowID,
                 label: window.label ?? "",
-                tree: tiled?.layout.map { layout in
-                    try TerminalSplitTree(
-                        root: layout.node(),
-                        focusedPaneID: window.focusedBlockID,
-                        zoomedPaneID: window.zoomedBlockID
-                    )
-                }
+                tree: root == nil && floating.isEmpty ? nil : TerminalSplitTree(
+                    root: root,
+                    floatingLayers: floating,
+                    focusedPaneID: window.focusedBlockID,
+                    zoomedPaneID: window.zoomedBlockID
+                )
             )
         }
         paneNames = names
@@ -136,8 +162,31 @@ private struct SessionView: Decodable {
 
     struct Layer: Decodable {
         var kind: String
+        var layerID: String?
+        var bounds: [Double]?
+        var state: String?
         var layout: Layout?
         var blocks: [Block]?
+
+        /// The layer as a floating layer, or nil when it holds no panes.
+        func floatingLayer() throws -> TerminalSplitTree.FloatingLayer? {
+            guard let layout else { return nil }
+            guard let layerID, let bounds, bounds.count == 4 else {
+                throw RexControlError.malformed
+            }
+            return try TerminalSplitTree.FloatingLayer(
+                id: layerID,
+                bounds: CGRect(x: bounds[0], y: bounds[1], width: bounds[2], height: bounds[3]),
+                root: layout.node(),
+                isMinimized: state == "minimized"
+            )
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case kind
+            case layerID = "layer_id"
+            case bounds, state, layout, blocks
+        }
     }
 
     struct Block: Decodable {

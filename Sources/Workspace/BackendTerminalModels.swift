@@ -55,4 +55,16 @@ public struct WorkspaceBackendTerminalSelection:
     public var id: String {
         "\(kind.rawValue):\(hostID.uuidString):\(address)"
     }
+
+    /// True for a window of panes: a Rex window or a Herdr desktop tab.
+    /// Anything else is one terminal.
+    public var showsWindow: Bool {
+        kind == .rex || kind == .herdrCore && Self.isHerdrCoreTabAddress(address)
+    }
+
+    /// `tab:` and a Herdr desktop tab ID of letters, digits, `_`, and `-`,
+    /// not starting with `-`.
+    public static func isHerdrCoreTabAddress(_ value: String) -> Bool {
+        value.range(of: "^tab:[0-9A-Za-z_][0-9A-Za-z_-]*$", options: .regularExpression) != nil
+    }
 }
