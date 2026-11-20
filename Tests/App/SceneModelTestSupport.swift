@@ -489,6 +489,13 @@ func makeModel(
     },
     zellijSessionDiscovery: @escaping
     WorkspaceSceneModel.ZellijSessionDiscovery = { _ in .unavailable },
+    // Tests never reach the account's kwt state.
+    kwtSessionClient: KwtSessionClient = KwtSessionClient(
+        localRunner: { _ in (127, "") },
+        remoteRunner: { _, _, _ in
+            AccountCommandOutput(status: 127, stdout: "", stderr: "")
+        }
+    ),
     zellijSessionValidationDiscovery:
     WorkspaceSceneModel.ZellijSessionValidationDiscovery? = nil,
     zellijSessionKiller: @escaping
@@ -674,6 +681,7 @@ func makeModel(
         backendTerminalDiscovery: backendTerminalDiscovery,
         backendTerminalValidationDiscovery: backendTerminalValidationDiscovery,
         zellijSessionDiscovery: zellijSessionDiscovery,
+        kwtSessionClient: kwtSessionClient,
         zellijSessionValidationDiscovery:
         zellijSessionValidationDiscovery ?? { host, _ in
             await zellijSessionDiscovery(host)

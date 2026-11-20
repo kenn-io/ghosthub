@@ -11,6 +11,7 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case newHerdrSession(UUID)
     case newZellijSession(UUID)
     case addProject(UUID)
+    case restoreSavedTmuxSessions(UUID)
     case openTmuxSession(WorkspaceTmuxSessionSelection)
     case openHerdrSession(WorkspaceHerdrSessionSelection)
     case openBackendTerminal(WorkspaceBackendTerminalSelection)
@@ -505,6 +506,19 @@ public enum CommandPaletteModel {
                         host.name, host.sshDestination ?? "",
                     ],
                     action: .newZellijSession(host.id)
+                ))
+            }
+            if !host.savedTmuxSessions.isEmpty {
+                commands.append(WorkspaceCommandItem(
+                    id: "restore-saved-tmux-sessions-\(host.id.uuidString)",
+                    title: "\(host.restoreSavedTmuxSessionsTitle) on \(host.name)",
+                    subtitle: host.savedTmuxSessions.map(\.session)
+                        .joined(separator: ", "),
+                    keywords: [
+                        "restore", "saved", "reboot", "tmux", "session",
+                        host.name, host.sshDestination ?? "",
+                    ],
+                    action: .restoreSavedTmuxSessions(host.id)
                 ))
             }
             if host.canRegisterProjects {

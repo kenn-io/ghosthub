@@ -404,6 +404,29 @@ switch to Ghosthub and about every thirty seconds while it stays in front.
 Native Windows hosts and Herdr and Zellij sessions do not show agent
 badges yet.
 
+## Restore sessions after a reboot
+
+kwt saves your tmux sessions as they change: each session's windows, panes,
+and working directories, plus the Claude Code or Codex conversation running
+in each pane. After a host restarts, or its tmux server stops, Ghosthub offers
+to bring those sessions back.
+
+1. Open the host row's **+** menu, or the Command Palette.
+2. Choose **Restore Saved tmux Sessions**. The item shows how many sessions
+   kwt saved; hover it to see their names.
+
+Ghosthub rebuilds each session's windows and panes in their saved directories
+and resumes each saved conversation in its pane. Other panes come back as
+shells. If a session or pane does not come back, Ghosthub lists why, such as
+a session name already in use or a conversation kwt could not find.
+
+- Conversations resume only in panes where kwt's agent hooks recorded them.
+  To install the hooks, see [Agents waiting for you](#agents-waiting-for-you).
+- A session you end with **Kill Session…** is not offered again.
+- Ghosthub offers sessions from the default tmux server and kwt's server, on
+  this Mac and on macOS and Linux hosts. Native Windows hosts do not save
+  sessions.
+
 ## Reopen an exited standalone session
 
 If a standalone session exits while its presentation is still open, Ghosthub

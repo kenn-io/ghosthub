@@ -1132,6 +1132,9 @@ struct WorkspaceWindow: View {
                 refreshWorkspaceInventory: { [sceneModel] in
                     sceneModel.refreshWorkspaceInventory()
                 },
+                restoreSavedTmuxSessions: { [sceneModel] hostID in
+                    try await sceneModel.restoreSavedTmuxSessions(hostID: hostID)
+                },
                 reconnectActiveTmuxSessionNow: { [sceneModel] in
                     sceneModel.reconnectActiveTmuxSessionNow()
                 },

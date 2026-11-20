@@ -809,6 +809,7 @@ public struct RootView: View {
             onAddProject: { host in
                 addProjectHost = host
             },
+            onRestoreSavedTmuxSessions: restoreSavedTmuxSessions,
             onRefreshInventory: {
                 handlers.refreshWorkspaceInventory?()
             },
@@ -1676,6 +1677,32 @@ public struct RootView: View {
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
+        case let .savedTmuxSessionRestore(host, message):
+            return Alert(
+                title: Text("Some Sessions on \(host) Were Not Restored"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    /// Reports only what did not come back; restored sessions appear in
+    /// the sidebar on the next refresh.
+    private func restoreSavedTmuxSessions(_ host: HostSummary) {
+        guard let restore = handlers.restoreSavedTmuxSessions else { return }
+        Task {
+            let message: String
+            do {
+                let problems = try await restore(host.id).problems
+                guard !problems.isEmpty else { return }
+                message = problems.joined(separator: "\n")
+            } catch {
+                message = error.localizedDescription
+            }
+            presentNonWorktreeWorkspaceAlert(.savedTmuxSessionRestore(
+                host: host.sidebarTitle,
+                message: message
+            ))
         }
     }
 
@@ -2171,6 +2198,9 @@ public struct RootView: View {
         case let .addProject(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
             addProjectHost = host
+        case let .restoreSavedTmuxSessions(hostID):
+            guard let host = snapshot.host(id: hostID) else { return }
+            restoreSavedTmuxSessions(host)
         case let .openTmuxSession(tmuxSession):
             let routeSelection = WorkspacePresentationLifecycle
                 .selectionForTmuxCommand(
