@@ -1200,9 +1200,11 @@ Once a server is gone, its saved sessions become restorable.
 | After a confirmed Kill Session | `kwt session forget --socket-name <name> --session-id <id> --server-pid <pid> --created <time>` |
 
 Ghosthub runs `snapshot` in the background for the local Mac and each POSIX
-SSH host when kwt inventory starts, when hosts change, and on every inventory
-refresh. A failure, including a host whose kwt has no `session` command,
-shows no saved sessions. Ghosthub keeps only entries on the default and `kwt`
+SSH host when kwt inventory starts, when hosts change, on every manual and
+scheduled inventory refresh, and when a host's kwt inventory first loads. A
+scheduled refresh lets a listing already running finish. A failure,
+including a host whose managed kwt is not installed yet, shows no saved
+sessions until the next listing. Ghosthub keeps only entries on the default and `kwt`
 sockets, the servers it discovers and attaches, and stores them on
 `HostSummary.savedTmuxSessions`. The host **+** menu and Command Palette offer
 **Restore Saved tmux Sessions** while that list is not empty.

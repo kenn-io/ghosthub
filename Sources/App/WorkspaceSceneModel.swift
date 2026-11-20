@@ -5676,6 +5676,11 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         kwtInventoriesByHost[hostID] = reconciled
         if recordsSuccessfulLoad {
+            // A remote host's first saved-session listing can run before
+            // its managed kwt is installed; list again once kwt answers.
+            if kwtAvailabilityByHost[hostID] != true {
+                refreshSavedTmuxSessions(hostID: hostID)
+            }
             kwtAvailabilityByHost[hostID] = true
             kwtInventoryFailuresByHost.removeValue(forKey: hostID)
         }
@@ -5940,6 +5945,9 @@ final class WorkspaceSceneModel: ObservableObject {
         if !isZellijDiscoveryLoading {
             scheduleZellijSessionDiscovery()
         }
+        // A host that reboots while Ghosthub stays open has sessions to
+        // restore once it is back.
+        refreshSavedTmuxSessions(restarting: false)
     }
 
     func startHerdrSessionDiscovery() {
@@ -16484,10 +16492,18 @@ extension WorkspaceSceneModel {
 
     /// Lists the sessions kwt can restore on each POSIX host, in the
     /// background. A host where kwt cannot list them shows none.
-    private func refreshSavedTmuxSessions(hostID: UUID? = nil) {
+    /// A scheduled refresh passes `restarting: false` so a listing already
+    /// running finishes; other refreshes replace it with a fresh one.
+    private func refreshSavedTmuxSessions(
+        hostID: UUID? = nil,
+        restarting: Bool = true
+    ) {
         guard !isShutDown, kwtInventoryEnabled else { return }
         for (id, host) in inventoryHosts
             where (hostID == nil || hostID == id) && Self.keepsSavedTmuxSessions(host) {
+            if !restarting, savedTmuxSessionDiscoveryTasks[id] != nil {
+                continue
+            }
             savedTmuxSessionDiscoveryTasks[id]?.cancel()
             savedTmuxSessionDiscoveryTasks[id] = Task { [weak self, kwtSessionClient] in
                 let sessions = await (try? kwtSessionClient.savedSessions(on: host)) ?? []

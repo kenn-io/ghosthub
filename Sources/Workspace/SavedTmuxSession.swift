@@ -104,7 +104,8 @@ public struct TmuxRestoreReport: Decodable, Equatable, Sendable {
                 lines.append(line)
             }
             lines += (entry.notes ?? []).map { "\(name): \($0)" }
-            for pane in entry.panes ?? [] where pane.note != nil || pane.status == "failed" {
+            for pane in entry.panes ?? []
+                where pane.note != nil || pane.status == "failed" || pane.status == "waiting" {
                 var line = "\(name), window \(pane.window) pane \(pane.pane): "
                     + [pane.agent, pane.status == "none" ? "not started" : pane.status]
                     .compactMap { $0 }.joined(separator: " ")

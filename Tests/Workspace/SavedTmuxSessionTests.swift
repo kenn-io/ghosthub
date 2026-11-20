@@ -47,7 +47,8 @@ struct SavedTmuxSessionTests {
         let json = """
         {"entries": [
           {"id": "a1", "session": "api", "outcome": "partially restored",
-           "panes": [{"window": 0, "pane": 0, "agent": "claude", "status": "started"},
+           "panes": [{"window": 0, "pane": 0, "agent": "claude", "status": "waiting"},
+                     {"window": 0, "pane": 1, "agent": "claude", "status": "started"},
                      {"window": 1, "pane": 2, "agent": "codex", "status": "none",
                       "note": "conversation not found"}]},
           {"id": "b2", "session": "web", "outcome": "skipped", "reason": "name in use"},
@@ -57,6 +58,7 @@ struct SavedTmuxSessionTests {
         let report = try JSONDecoder().decode(TmuxRestoreReport.self, from: Data(json.utf8))
         #expect(report.problems == [
             "api: partially restored",
+            "api, window 0 pane 0: claude waiting",
             "api, window 1 pane 2: codex not started (conversation not found)",
             "web: skipped (name in use)",
             "c3: not found",
