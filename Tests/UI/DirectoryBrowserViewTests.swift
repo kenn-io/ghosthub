@@ -92,6 +92,23 @@ struct DirectoryBrowserViewTests {
             _ = element.perform(NSSelectorFromString("accessibilityPerformPress"))
             settle()
         }
+        func folderAction(_ name: String, project: String) throws {
+            let row = try #require(find("Folder actions for \(project)", in: view))
+            let actions = try #require(
+                row.value(forKey: "accessibilityCustomActions") as? [NSAccessibilityCustomAction]
+            )
+            let action = try #require(actions.first { $0.name == name })
+            if let handler = action.handler {
+                #expect(handler())
+            } else {
+                let target = try #require(action.target as? NSObject)
+                let selector = try #require(action.selector)
+                typealias Action = @convention(c) (AnyObject, Selector, AnyObject) -> Bool
+                let invoke = unsafeBitCast(target.method(for: selector), to: Action.self)
+                #expect(invoke(target, selector, action))
+            }
+            settle()
+        }
         settle()
         try press(
             "sidebar-section-disclosure-projects:\(host.id.uuidString)",
@@ -100,7 +117,9 @@ struct DirectoryBrowserViewTests {
         try press("Expand Studio")
         try press("Expand Atlas")
         #expect(reads == ["/code/Studio"], "worktree expansion must not scan folders")
-        try press("Expand folders in Atlas")
+        #expect(find("Expand folders in Atlas", in: view) == nil)
+        #expect(find("Expand Notes", in: view) == nil)
+        try folderAction("Browse Folders", project: "Atlas")
         try press("Expand Docs")
         #expect(find("Expand Notes", in: view) != nil)
         #expect(reads == ["/code/Studio", "/code/Studio/Atlas"])
@@ -119,8 +138,13 @@ struct DirectoryBrowserViewTests {
             try png.write(to: url, options: .atomic)
         }
         // Recognizing a project must not remove discovery of new descendants.
-        try press("Expand folders in Docs")
+        try folderAction("Browse Folders", project: "Docs")
         #expect(reads == ["/code/Studio", "/code/Studio/Atlas", "/code/Studio/Atlas/Docs"])
+        try folderAction("Hide Folders", project: "Atlas")
+        #expect(find("Expand Notes", in: view) == nil)
+        try folderAction("Browse Folders", project: "Atlas")
+        #expect(find("Expand Notes", in: view) != nil)
+        #expect(reads.filter { $0 == "/code/Studio/Atlas" }.count == 1)
         try press("Collapse Studio")
         try press("Expand Studio")
         #expect(reads.filter { $0 == "/code/Studio" }.count == 1)

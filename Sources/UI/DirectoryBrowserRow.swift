@@ -18,7 +18,7 @@ struct DirectoryBrowserRow: View {
     let registerProject: DirectoryRegistration?
     let directoryContent: (DirectoryWorkspaceSummary) -> AnyView
     let directoryActions: (DirectoryWorkspaceSummary) -> AnyView
-    let projectContent: (WorkspaceSidebarProject) -> AnyView
+    let projectContent: (WorkspaceSidebarProject, [NativePopupMenuAction]) -> AnyView
     var routeIdentity: String?
 
     @State private var expanded = false
@@ -60,83 +60,85 @@ struct DirectoryBrowserRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             if let project, entry.presentsProject {
-                projectContent(project)
+                projectContent(project, folderActions)
             }
             Group {
-                HStack(spacing: 2) {
-                    Button {
-                        expanded.toggle()
-                    } label: {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.caption2)
-                            .frame(width: 18, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(
-                        "\(expanded ? "Collapse" : "Expand") \(project == nil ? "" : "folders in ")\(entry.name)"
-                    )
-                    if let directory {
-                        directoryContent(directory)
-                    } else {
+                if project == nil || !entry.presentsProject || directory != nil {
+                    HStack(spacing: 2) {
                         Button {
                             expanded.toggle()
                         } label: {
-                            Label(
-                                project == nil ? entry.name : "Folders in \(entry.name)",
-                                systemImage: entry.projectPath == nil ? "folder" : "folder.badge.gearshape"
-                            )
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 5)
+                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                                .frame(width: 18, height: 28)
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(project != nil || containsRegistrations ? .primary :
-                            .secondary)
-                        .help(
-                            "\(entry.path)\n\(registrationDescription)"
-                        )
                         .accessibilityLabel(
-                            "\(entry.name), \(registrationDescription)"
+                            "\(expanded ? "Collapse" : "Expand") \(project == nil ? "" : "folders in ")\(entry.name)"
                         )
-                    }
-                    Menu {
-                        if directory == nil {
-                            if project == nil, entry.projectPath != nil, let registerProject {
-                                Button("Add Project") {
-                                    register(
-                                        using: registerProject,
-                                        path: entry.projectPath ?? entry.path
-                                    )
-                                }
-                            }
-                            if let registerDirectory {
-                                Button("Add Directory") {
-                                    register(using: registerDirectory, path: entry.path)
-                                }
-                            }
-                            Divider()
-                        }
-                        Button(showUnregisteredFolders ? "Hide Unregistered Folders" :
-                            "Show Unregistered Folders") {
-                                showUnregisteredFolders.toggle()
-                            }
-                        Button("Refresh Folders") {
-                            listing = nil
-                            expanded = true
-                            reload += 1
-                        }
                         if let directory {
-                            directoryActions(directory)
+                            directoryContent(directory)
+                        } else {
+                            Button {
+                                expanded.toggle()
+                            } label: {
+                                Label(
+                                    entry.name,
+                                    systemImage: entry.projectPath == nil ? "folder" : "folder.badge.gearshape"
+                                )
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 5)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(project != nil || containsRegistrations ? .primary :
+                                .secondary)
+                            .help(
+                                "\(entry.path)\n\(registrationDescription)"
+                            )
+                            .accessibilityLabel(
+                                "\(entry.name), \(registrationDescription)"
+                            )
                         }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .frame(width: 24, height: 28)
+                        Menu {
+                            if directory == nil {
+                                if project == nil, entry.projectPath != nil, let registerProject {
+                                    Button("Add Project") {
+                                        register(
+                                            using: registerProject,
+                                            path: entry.projectPath ?? entry.path
+                                        )
+                                    }
+                                }
+                                if let registerDirectory {
+                                    Button("Add Directory") {
+                                        register(using: registerDirectory, path: entry.path)
+                                    }
+                                }
+                                Divider()
+                            }
+                            Button(showUnregisteredFolders ? "Hide Unregistered Folders" :
+                                "Show Unregistered Folders") {
+                                    showUnregisteredFolders.toggle()
+                                }
+                            Button("Refresh Folders") {
+                                listing = nil
+                                expanded = true
+                                reload += 1
+                            }
+                            if let directory {
+                                directoryActions(directory)
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .frame(width: 24, height: 28)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .disabled(registering || (registered && directory == nil))
+                        .accessibilityLabel("Actions for \(entry.name)")
                     }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .disabled(registering || (registered && directory == nil))
-                    .accessibilityLabel("Actions for \(entry.name)")
                 }
                 if registering {
                     Text("Registering…").font(.caption).foregroundStyle(.secondary)
@@ -204,6 +206,33 @@ struct DirectoryBrowserRow: View {
             projectContent: projectContent,
             routeIdentity: listing?.routeIdentity ?? routeIdentity
         ))
+    }
+
+    private var folderActions: [NativePopupMenuAction] {
+        var actions = [
+            NativePopupMenuAction(expanded ? "Hide Folders" : "Browse Folders") {
+                expanded.toggle()
+            },
+            NativePopupMenuAction(
+                showUnregisteredFolders ? "Hide Unregistered Folders" : "Show Unregistered Folders"
+            ) {
+                showUnregisteredFolders.toggle()
+                expanded = true
+            },
+            NativePopupMenuAction("Refresh Folders") {
+                listing = nil
+                expanded = true
+                reload += 1
+            },
+        ]
+        if directory == nil, let registerDirectory {
+            actions.append(NativePopupMenuAction(
+                "Add Directory", isEnabled: !registering && !registered
+            ) {
+                register(using: registerDirectory, path: entry.path)
+            })
+        }
+        return actions
     }
 
     private func register(using action: @escaping DirectoryRegistration, path: String) {

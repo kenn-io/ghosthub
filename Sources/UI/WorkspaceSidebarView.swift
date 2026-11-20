@@ -806,7 +806,7 @@ struct WorkspaceSidebarView: View {
                             )
                         },
                         directoryActions: { AnyView(directorySessionActions($0)) },
-                        projectContent: { AnyView(projectGroup($0)) }
+                        projectContent: { AnyView(projectGroup($0, folderActions: $1)) }
                     )
                     .id("\(directory.id)-\(section.host.sshDestination ?? "")")
                 }
@@ -825,10 +825,13 @@ struct WorkspaceSidebarView: View {
     }
 
     @ViewBuilder
-    private func projectGroup(_ project: WorkspaceSidebarProject) -> some View {
+    private func projectGroup(
+        _ project: WorkspaceSidebarProject,
+        folderActions: [NativePopupMenuAction] = []
+    ) -> some View {
         let projectKey = WorkspaceSidebarDisclosureState
             .project(project.project.id)
-        projectHierarchyRow(project, disclosureKey: projectKey)
+        projectHierarchyRow(project, disclosureKey: projectKey, folderActions: folderActions)
             .contextMenu {
                 Button("New Worktree…") {
                     onNewWorktree(project.project)
@@ -2154,7 +2157,8 @@ struct WorkspaceSidebarView: View {
 
     private func projectHierarchyRow(
         _ project: WorkspaceSidebarProject,
-        disclosureKey: String
+        disclosureKey: String,
+        folderActions: [NativePopupMenuAction] = []
     ) -> some View {
         let canCreate = snapshot.canCreateWorktree(in: project.project)
         let canImport = snapshot.canImportPullRequest(in: project.project)
@@ -2168,6 +2172,22 @@ struct WorkspaceSidebarView: View {
             )
 
             sidebarButton(project.row)
+
+            if !folderActions.isEmpty {
+                NativePopupMenuButton(groups: [folderActions]) {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 24, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Folder actions")
+                .accessibilityLabel("Folder actions for \(project.project.sidebarTitle)")
+                .accessibilityActions {
+                    ForEach(Array(folderActions.enumerated()), id: \.offset) { _, action in
+                        Button(action.title) { action.action() }
+                    }
+                }
+            }
 
             if project.project.pathIssue != nil {
                 Button {
