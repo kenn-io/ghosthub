@@ -99,6 +99,9 @@ registered children and folders leading to registered projects or directories.
 This choice applies to that folder while
 it remains in the sidebar.
 The registered-only view uses existing inventory without a filesystem request.
+Ancestor folders containing registered projects or directories use normal text
+even before browsing. Expand them to reach the registered project and its
+worktrees; gray text is reserved for folders with no known registrations.
 Full folder listings are loaded on demand and reused when you collapse and
 reopen a folder. **Refresh Folders** clears that folder's cached listing.
 For a registered directory with a running session, the same **…** menu includes

@@ -87,6 +87,12 @@ struct DirectoryBrowserModelTests {
     @Test("registered projects remain reachable through every ancestor before browsing")
     func coldRegisteredTree() throws {
         let registered = project(path: "/hub/team/widget/main")
+        #expect(DirectoryBrowserModel.containsRegistrations(
+            beneath: "/hub/team/widget", directories: [], projects: [registered]
+        ))
+        #expect(!DirectoryBrowserModel.containsRegistrations(
+            beneath: "/hub/team/widget-other", directories: [], projects: [registered]
+        ))
         for (parent, expected) in [
             ("/hub", "/hub/team"),
             ("/hub/team", "/hub/team/widget"),

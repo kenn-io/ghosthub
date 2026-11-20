@@ -38,6 +38,12 @@ struct DirectoryBrowserRow: View {
         DirectoryBrowserModel.project(for: entry, in: projects)
     }
 
+    private var containsRegistrations: Bool {
+        DirectoryBrowserModel.containsRegistrations(
+            beneath: entry.path, directories: directories, projects: projects
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             if let project, directory == nil {
@@ -68,9 +74,13 @@ struct DirectoryBrowserRow: View {
                             .padding(.vertical, 5)
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("\(entry.path)\nNot registered")
-                        .accessibilityLabel("\(entry.name), not registered")
+                        .foregroundStyle(containsRegistrations ? .primary : .secondary)
+                        .help(
+                            "\(entry.path)\n\(containsRegistrations ? "Contains registered projects or directories" : "Not registered")"
+                        )
+                        .accessibilityLabel(
+                            "\(entry.name), \(containsRegistrations ? "contains registered projects or directories" : "not registered")"
+                        )
                     }
                     Menu {
                         if directory == nil {
@@ -195,6 +205,15 @@ struct DirectoryBrowserRow: View {
 }
 
 enum DirectoryBrowserModel {
+    static func containsRegistrations(
+        beneath path: String,
+        directories: [DirectoryWorkspaceSummary],
+        projects: [WorkspaceSidebarProject]
+    ) -> Bool {
+        projects.contains { DirectoryPaths.contains(path, $0.project.rootPath) }
+            || directories.contains { DirectoryPaths.contains(path, $0.path) }
+    }
+
     static func shouldLoad(
         expanded: Bool, showUnregisteredFolders: Bool, hasListing: Bool
     ) -> Bool {
