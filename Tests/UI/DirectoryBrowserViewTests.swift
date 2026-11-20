@@ -57,7 +57,7 @@ struct DirectoryBrowserViewTests {
                             path: parent.rootPath,
                             projectPath: parent.rootPath
                         )]
-                        : []
+                        : [DirectoryEntry(name: "Unregistered", path: path + "/Unregistered")]
                     return .success(DirectoryListing(
                         path: path,
                         entries: entries,
@@ -118,11 +118,17 @@ struct DirectoryBrowserViewTests {
         try press("Expand Atlas")
         #expect(reads == ["/code/Studio"], "worktree expansion must not scan folders")
         #expect(find("Expand folders in Atlas", in: view) == nil)
-        #expect(find("Expand Notes", in: view) == nil)
-        try folderAction("Browse Folders", project: "Atlas")
+        #expect(find("Expand Notes", in: view) != nil)
         try press("Expand Docs")
         #expect(find("Expand Notes", in: view) != nil)
+        #expect(reads == ["/code/Studio"])
+        #expect(find("Expand Unregistered", in: view) == nil)
+        try folderAction("Show Unregistered Folders", project: "Atlas")
         #expect(reads == ["/code/Studio", "/code/Studio/Atlas"])
+        #expect(find("Expand Unregistered", in: view) != nil)
+        try folderAction("Hide Unregistered Folders", project: "Atlas")
+        #expect(find("Expand Unregistered", in: view) == nil)
+        #expect(find("Expand Notes", in: view) != nil)
         #expect(opens == 0)
         if let directory = ProcessInfo.processInfo
             .environment["GHOSTHUB_DIRECTORY_SCREENSHOT_DIR"] {
@@ -138,11 +144,11 @@ struct DirectoryBrowserViewTests {
             try png.write(to: url, options: .atomic)
         }
         // Recognizing a project must not remove discovery of new descendants.
-        try folderAction("Browse Folders", project: "Docs")
+        try folderAction("Show Unregistered Folders", project: "Docs")
         #expect(reads == ["/code/Studio", "/code/Studio/Atlas", "/code/Studio/Atlas/Docs"])
-        try folderAction("Hide Folders", project: "Atlas")
+        try press("Collapse Atlas")
         #expect(find("Expand Notes", in: view) == nil)
-        try folderAction("Browse Folders", project: "Atlas")
+        try press("Expand Atlas")
         #expect(find("Expand Notes", in: view) != nil)
         #expect(reads.filter { $0 == "/code/Studio/Atlas" }.count == 1)
         try press("Collapse Studio")

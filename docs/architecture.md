@@ -815,9 +815,11 @@ First expansion also loads one listing to resolve project containers such as
 unregistered folders are hidden. Each row retains that listing across collapse/reopen until Refresh
 Folders clears it or the row leaves the view hierarchy. There is no background
 folder polling. Child projection indexes registered paths before filtering.
-Recognized projects expose **Browse Folders** in their **…** menu. It reveals
-children beneath the existing project group; **Hide Folders** hides them again.
-Expanding the project's worktree group does not scan the filesystem.
+Recognized projects use one disclosure for worktrees and nested registrations.
+Normal project expansion projects known registrations without scanning the
+filesystem. **Show Unregistered Folders** in the project's **…** menu loads
+immediate child folders for finding and explicitly registering nested projects.
+Hiding unregistered folders preserves registered descendants.
 Sibling checkouts share one project presentation, preferring the primary
 checkout or its container, but folders with independent registrations remain
 reachable. POSIX folder keys compare normalized UTF-8 bytes without collapsing

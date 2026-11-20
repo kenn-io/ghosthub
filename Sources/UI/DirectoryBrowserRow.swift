@@ -18,7 +18,7 @@ struct DirectoryBrowserRow: View {
     let registerProject: DirectoryRegistration?
     let directoryContent: (DirectoryWorkspaceSummary) -> AnyView
     let directoryActions: (DirectoryWorkspaceSummary) -> AnyView
-    let projectContent: (WorkspaceSidebarProject, [NativePopupMenuAction]) -> AnyView
+    let projectContent: (WorkspaceSidebarProject, [NativePopupMenuAction], Binding<Bool>) -> AnyView
     var routeIdentity: String?
 
     @State private var expanded = false
@@ -60,7 +60,7 @@ struct DirectoryBrowserRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             if let project, entry.presentsProject {
-                projectContent(project, folderActions)
+                projectContent(project, folderActions, $expanded)
             }
             Group {
                 if project == nil || !entry.presentsProject || directory != nil {
@@ -74,7 +74,7 @@ struct DirectoryBrowserRow: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(
-                            "\(expanded ? "Collapse" : "Expand") \(project == nil ? "" : "folders in ")\(entry.name)"
+                            "\(expanded ? "Collapse" : "Expand") \(entry.name)"
                         )
                         if let directory {
                             directoryContent(directory)
@@ -161,7 +161,7 @@ struct DirectoryBrowserRow: View {
                             childRow(child)
                         }
                         if !showUnregisteredFolders {
-                            if children.isEmpty {
+                            if children.isEmpty, project == nil {
                                 Text("No registered child folders").font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -184,10 +184,11 @@ struct DirectoryBrowserRow: View {
         }
         .onChange(of: directory?.id) { _, _ in registered = false }
         .onChange(of: project?.id) { _, _ in registered = false }
-        .task(id: "\(expanded)-\(reload)") {
-            guard DirectoryBrowserModel.shouldLoad(
-                expanded: expanded, hasListing: listing != nil
-            ) else { return }
+        .task(id: "\(expanded)-\(showUnregisteredFolders)-\(reload)") {
+            guard project == nil || showUnregisteredFolders || reload > 0,
+                  DirectoryBrowserModel.shouldLoad(
+                      expanded: expanded, hasListing: listing != nil
+                  ) else { return }
             error = nil
             let result = await load(host, entry.path)
             guard !Task.isCancelled else { return }
@@ -210,9 +211,6 @@ struct DirectoryBrowserRow: View {
 
     private var folderActions: [NativePopupMenuAction] {
         var actions = [
-            NativePopupMenuAction(expanded ? "Hide Folders" : "Browse Folders") {
-                expanded.toggle()
-            },
             NativePopupMenuAction(
                 showUnregisteredFolders ? "Hide Unregistered Folders" : "Show Unregistered Folders"
             ) {

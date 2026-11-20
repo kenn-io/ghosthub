@@ -91,9 +91,11 @@ folders. Unregistered folders appear gray with a “Not registered” tooltip.
 Browsing never registers anything. Use a child row's **…** menu to **Add
 Project** when kwt recognizes a checkout, or **Add Directory** to give the folder
 its own root terminal. Registered projects show their normal worktree rows.
-Use a recognized project's **…** menu and choose **Browse Folders** to browse
-or register subfolders beneath that project. Choose **Hide Folders** to hide
-them again. The project's chevron opens its worktrees without scanning folders. Sibling checkouts
+Expand a project to see its worktrees and nested registrations together.
+To find and add another nested project, choose **Show Unregistered Folders**
+from the project's **…** menu. Unregistered folders appear in gray; use their
+**…** menus to register them explicitly. **Hide Unregistered Folders** hides
+those candidates while keeping registered descendants visible. Sibling checkouts
 share one project group, while folders leading to other registrations stay
 reachable.
 

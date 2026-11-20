@@ -806,7 +806,9 @@ struct WorkspaceSidebarView: View {
                             )
                         },
                         directoryActions: { AnyView(directorySessionActions($0)) },
-                        projectContent: { AnyView(projectGroup($0, folderActions: $1)) }
+                        projectContent: {
+                            AnyView(projectGroup($0, folderActions: $1, folderExpansion: $2))
+                        }
                     )
                     .id("\(directory.id)-\(section.host.sshDestination ?? "")")
                 }
@@ -827,47 +829,51 @@ struct WorkspaceSidebarView: View {
     @ViewBuilder
     private func projectGroup(
         _ project: WorkspaceSidebarProject,
-        folderActions: [NativePopupMenuAction] = []
+        folderActions: [NativePopupMenuAction] = [],
+        folderExpansion: Binding<Bool>? = nil
     ) -> some View {
         let projectKey = WorkspaceSidebarDisclosureState
             .project(project.project.id)
-        projectHierarchyRow(project, disclosureKey: projectKey, folderActions: folderActions)
-            .contextMenu {
-                Button("New Worktree…") {
-                    onNewWorktree(project.project)
-                }
-                .disabled(!snapshot.canCreateWorktree(in: project.project))
-                Button("Import Pull Request…") {
-                    onImportPullRequest(project.project)
-                }
-                .disabled(!snapshot.canImportPullRequest(in: project.project))
-                Divider()
-                Button("Open All Worktrees as Tabs") {
-                    onOpenProjectWorktreesAsTabs(
-                        project.project,
-                        project.worktrees
-                    )
-                }
-                .disabled(
-                    !canOpenProjectWorktreesAsTabs(
-                        project.project,
-                        project.worktrees
-                    )
+        projectHierarchyRow(
+            project, disclosureKey: projectKey, folderActions: folderActions,
+            folderExpansion: folderExpansion
+        )
+        .contextMenu {
+            Button("New Worktree…") {
+                onNewWorktree(project.project)
+            }
+            .disabled(!snapshot.canCreateWorktree(in: project.project))
+            Button("Import Pull Request…") {
+                onImportPullRequest(project.project)
+            }
+            .disabled(!snapshot.canImportPullRequest(in: project.project))
+            Divider()
+            Button("Open All Worktrees as Tabs") {
+                onOpenProjectWorktreesAsTabs(
+                    project.project,
+                    project.worktrees
                 )
-                if snapshot.host(id: project.project.hostID)?
-                    .canRegisterProjects == true {
-                    Divider()
-                    if project.project.pathIssue != nil {
-                        Button("Locate Folder…") {
-                            onLocateProject(project.project)
-                        }
+            }
+            .disabled(
+                !canOpenProjectWorktreesAsTabs(
+                    project.project,
+                    project.worktrees
+                )
+            )
+            if snapshot.host(id: project.project.hostID)?
+                .canRegisterProjects == true {
+                Divider()
+                if project.project.pathIssue != nil {
+                    Button("Locate Folder…") {
+                        onLocateProject(project.project)
                     }
-                    Button("Remove Project…", role: .destructive) {
-                        onRequestRemoveProject(project.project)
-                    }
+                }
+                Button("Remove Project…", role: .destructive) {
+                    onRequestRemoveProject(project.project)
                 }
             }
-        if isExpanded(projectKey) {
+        }
+        if folderExpansion?.wrappedValue ?? isExpanded(projectKey) {
             let groupItems = sidebarDragItems(project.worktreeRows)
             let rows = ForEach(project.worktreeRows) { row in
                 worktreeButton(row, groupItems: groupItems)
@@ -2158,7 +2164,8 @@ struct WorkspaceSidebarView: View {
     private func projectHierarchyRow(
         _ project: WorkspaceSidebarProject,
         disclosureKey: String,
-        folderActions: [NativePopupMenuAction] = []
+        folderActions: [NativePopupMenuAction] = [],
+        folderExpansion: Binding<Bool>? = nil
     ) -> some View {
         let canCreate = snapshot.canCreateWorktree(in: project.project)
         let canImport = snapshot.canImportPullRequest(in: project.project)
@@ -2168,7 +2175,8 @@ struct WorkspaceSidebarView: View {
         return HStack(spacing: 0) {
             hierarchyDisclosureButton(
                 project.row,
-                disclosureKey: disclosureKey
+                disclosureKey: disclosureKey,
+                expansion: folderExpansion
             )
 
             sidebarButton(project.row)
@@ -2261,11 +2269,16 @@ struct WorkspaceSidebarView: View {
 
     private func hierarchyDisclosureButton(
         _ row: WorkspaceSidebarRow,
-        disclosureKey: String
+        disclosureKey: String,
+        expansion: Binding<Bool>? = nil
     ) -> some View {
-        let expanded = isExpanded(disclosureKey)
+        let expanded = expansion?.wrappedValue ?? isExpanded(disclosureKey)
         return Button {
-            toggle(disclosureKey)
+            if let expansion {
+                expansion.wrappedValue.toggle()
+            } else {
+                toggle(disclosureKey)
+            }
         } label: {
             hierarchyDisclosureIcon(isExpanded: expanded)
         }
