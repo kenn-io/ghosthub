@@ -7,6 +7,16 @@ import Testing
 
 @Suite("kwt directory client")
 struct KwtDirectoryClientTests {
+    @Test("login shell preserves metacharacters followed by combining marks")
+    func literalShellPaths() {
+        let path = "/hub/`\u{301}printf injected`/$\u{301}(printf injected)/'\u{301}\"\\"
+        let output = AccountCommandRunner().runLocalLoginShell(
+            command: "printf '%s' " + shellQuotedCommandArgument(path), timeout: 10
+        )
+        #expect(output.status == 0)
+        #expect(Array(output.stdout.utf8) == Array(path.utf8))
+    }
+
     @Test("reads directory JSON after login output")
     func listing() async throws {
         let client = KwtDirectoryClient(runner: { _ in
