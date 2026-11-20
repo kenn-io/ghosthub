@@ -197,8 +197,9 @@ registration uses `workspace add <absolute-path>`. The pinned-helper contract
 test registers a directory, browses its child checkout without registering it,
 then explicitly registers that checkout and verifies both inventories. Ship
 the matching helper revision for local and remote POSIX hosts together.
-Bare-container recognition uses one primary-checkout lookup; kwt's regression
-coverage bounds it to three Git processes per recognized container.
+Bare-container recognition verifies the live checkout and recorded inventory;
+kwt's regression coverage bounds it to three Git processes per recognized
+container.
 The matching
 `projects remove <exact-path> --expected-repository <identity>
 --expected-registration <fingerprint> --json` boundary unregisters metadata

@@ -5,7 +5,7 @@ import SwiftUI
 typealias DirectoryBrowserLoader =
     (HostSummary, String) async -> Result<DirectoryListing, HostProbeError>
 typealias DirectoryRegistration =
-    (HostSummary, String) async -> Result<String, HostProbeError>
+    (HostSummary, String, String?) async -> Result<String, HostProbeError>
 
 /// On-demand folder navigation. Only the menu actions may register a folder.
 struct DirectoryBrowserRow: View {
@@ -19,6 +19,7 @@ struct DirectoryBrowserRow: View {
     let directoryContent: (DirectoryWorkspaceSummary) -> AnyView
     let directoryActions: (DirectoryWorkspaceSummary) -> AnyView
     let projectContent: (WorkspaceSidebarProject) -> AnyView
+    var routeIdentity: String?
 
     @State private var expanded = false
     @State private var listing: DirectoryListing?
@@ -30,7 +31,7 @@ struct DirectoryBrowserRow: View {
 
     private var directory: DirectoryWorkspaceSummary? {
         directories.first {
-            DirectoryPaths.normalized($0.path) == DirectoryPaths.normalized(entry.path)
+            DirectoryPaths.key($0.path) == DirectoryPaths.key(entry.path)
         }
     }
 
@@ -44,22 +45,24 @@ struct DirectoryBrowserRow: View {
         )
     }
 
+    private var registrationDescription: String {
+        if project != nil {
+            return "Registered project"
+        }
+        return containsRegistrations ? "Contains registered projects or directories" : "Not registered"
+    }
+
     private var childProjects: [WorkspaceSidebarProject] {
         guard let id = project?.id else { return projects }
         return projects.filter { $0.id != id }
     }
 
-    private var hasNestedRegistrations: Bool {
-        DirectoryBrowserModel.containsRegistrations(
-            beneath: entry.path, directories: directories, projects: childProjects
-        )
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            if let project, directory == nil, !hasNestedRegistrations {
+            if let project, entry.presentsProject {
                 projectContent(project)
-            } else {
+            }
+            Group {
                 HStack(spacing: 2) {
                     Button {
                         expanded.toggle()
@@ -69,7 +72,9 @@ struct DirectoryBrowserRow: View {
                             .frame(width: 18, height: 28)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(entry.name)")
+                    .accessibilityLabel(
+                        "\(expanded ? "Collapse" : "Expand") \(project == nil ? "" : "folders in ")\(entry.name)"
+                    )
                     if let directory {
                         directoryContent(directory)
                     } else {
@@ -77,7 +82,7 @@ struct DirectoryBrowserRow: View {
                             expanded.toggle()
                         } label: {
                             Label(
-                                entry.name,
+                                project == nil ? entry.name : "Folders in \(entry.name)",
                                 systemImage: entry.projectPath == nil ? "folder" : "folder.badge.gearshape"
                             )
                             .lineLimit(1)
@@ -85,12 +90,13 @@ struct DirectoryBrowserRow: View {
                             .padding(.vertical, 5)
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(containsRegistrations ? .primary : .secondary)
+                        .foregroundStyle(project != nil || containsRegistrations ? .primary :
+                            .secondary)
                         .help(
-                            "\(entry.path)\n\(containsRegistrations ? "Contains registered projects or directories" : "Not registered")"
+                            "\(entry.path)\n\(registrationDescription)"
                         )
                         .accessibilityLabel(
-                            "\(entry.name), \(containsRegistrations ? "contains registered projects or directories" : "not registered")"
+                            "\(entry.name), \(registrationDescription)"
                         )
                     }
                     Menu {
@@ -135,7 +141,7 @@ struct DirectoryBrowserRow: View {
                 if registering {
                     Text("Registering…").font(.caption).foregroundStyle(.secondary)
                 } else if registered, directory == nil {
-                    Text("Added. Refreshing inventory…").font(.caption).foregroundStyle(.secondary)
+                    Text("Added. Updating the sidebar…").font(.caption).foregroundStyle(.secondary)
                 }
                 if let error {
                     Text(error).font(.caption).foregroundStyle(.secondary)
@@ -143,9 +149,6 @@ struct DirectoryBrowserRow: View {
                 }
                 if expanded {
                     VStack(alignment: .leading, spacing: 1) {
-                        if let project {
-                            projectContent(project)
-                        }
                         let children = DirectoryBrowserModel.children(
                             of: listing?.path ?? entry.path,
                             entries: listing?.entries ?? [],
@@ -182,7 +185,7 @@ struct DirectoryBrowserRow: View {
         .task(id: "\(expanded)-\(reload)") {
             guard DirectoryBrowserModel.shouldLoad(
                 expanded: expanded, hasListing: listing != nil
-            ), project == nil || directory != nil || hasNestedRegistrations else { return }
+            ) else { return }
             error = nil
             let result = await load(host, entry.path)
             guard !Task.isCancelled else { return }
@@ -198,16 +201,21 @@ struct DirectoryBrowserRow: View {
             host: host, entry: child, directories: directories, projects: childProjects,
             load: load, registerDirectory: registerDirectory, registerProject: registerProject,
             directoryContent: directoryContent, directoryActions: directoryActions,
-            projectContent: projectContent
+            projectContent: projectContent,
+            routeIdentity: listing?.routeIdentity ?? routeIdentity
         ))
     }
 
     private func register(using action: @escaping DirectoryRegistration, path: String) {
         guard !registering else { return }
+        guard host.kind != .remote || routeIdentity != nil else {
+            error = "Refresh the parent folder before adding this folder."
+            return
+        }
         registering = true
         error = nil
         Task {
-            let result = await action(host, path)
+            let result = await action(host, path, routeIdentity)
             registering = false
             switch result {
             case .success: registered = true
@@ -244,46 +252,58 @@ enum DirectoryBrowserModel {
     ) -> [DirectoryEntry] {
         var children = entries
         let parent = DirectoryPaths.normalized(parent)
-        var childPaths = Set(entries.map { DirectoryPaths.normalized($0.path) })
-        var registeredChildPaths = Set<String>()
-        var projectIDs: [String: UUID] = [:]
+        var childPaths = Set(entries.map { DirectoryPaths.key($0.path) })
+        var registeredChildPaths = Set<Data>()
+        var projectIDs: [Data: UUID] = [:]
         for project in projects {
-            let path = DirectoryPaths.normalized(project.project.rootPath)
+            let path = DirectoryPaths.key(project.project.rootPath)
             if projectIDs[path] == nil {
                 projectIDs[path] = project.id
             }
         }
         for path in directories.map(\.path) + projects.map(\.project.rootPath) {
             guard DirectoryPaths.contains(parent, path) else { continue }
-            let relative = DirectoryPaths.normalized(path)
-                .dropFirst(parent == "/" ? 1 : parent.count + 1)
-            guard let name = relative.split(separator: "/").first else { continue }
+            let relative = DirectoryPaths.normalized(path).utf8
+                .dropFirst(parent == "/" ? 1 : parent.utf8.count + 1)
+            guard let bytes = relative.split(separator: 0x2F).first else { continue }
+            let name = String(decoding: bytes, as: UTF8.self)
             let childPath = (parent == "/" ? "" : parent) + "/" + name
-            registeredChildPaths.insert(childPath)
-            guard childPaths.insert(childPath).inserted else { continue }
+            registeredChildPaths.insert(DirectoryPaths.key(childPath))
+            guard childPaths.insert(DirectoryPaths.key(childPath)).inserted else { continue }
             children.append(DirectoryEntry(name: String(name), path: childPath))
         }
-        var seenProjects = Set<UUID>()
-        return children
-            .filter { child in
-                showUnregisteredFolders
-                    || projectIDs[DirectoryPaths.normalized(child.projectPath ?? child.path)] != nil
-                    || registeredChildPaths.contains(DirectoryPaths.normalized(child.path))
+        children.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        // Deduplicate project presentation, never a folder with its own
+        // registrations. Prefer the primary checkout or its container.
+        var representatives: [UUID: Data] = [:]
+        for child in children {
+            guard let id = projectIDs[DirectoryPaths.key(child.projectPath ?? child.path)]
+            else { continue }
+            let projectPath = child.projectPath ?? child.path
+            let isPrimary = DirectoryPaths.key(child.path) == DirectoryPaths.key(projectPath)
+                || DirectoryPaths.contains(child.path, projectPath)
+            if representatives[id] == nil || isPrimary {
+                representatives[id] = child.id
             }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            .filter {
-                guard let id = projectIDs[DirectoryPaths.normalized($0.projectPath ?? $0.path)]
-                else { return true }
-                return seenProjects.insert(id).inserted
+        }
+        return children.compactMap { child in
+            var child = child
+            if let id = projectIDs[DirectoryPaths.key(child.projectPath ?? child.path)] {
+                child.presentsProject = representatives[id] == child.id
+            } else {
+                child.presentsProject = false
             }
+            return showUnregisteredFolders || child.presentsProject
+                || registeredChildPaths.contains(DirectoryPaths.key(child.path)) ? child : nil
+        }
     }
 
     static func project(
         for entry: DirectoryEntry, in projects: [WorkspaceSidebarProject]
     ) -> WorkspaceSidebarProject? {
         projects.first {
-            DirectoryPaths.normalized($0.project.rootPath)
-                == DirectoryPaths.normalized(entry.projectPath ?? entry.path)
+            DirectoryPaths.key($0.project.rootPath)
+                == DirectoryPaths.key(entry.projectPath ?? entry.path)
         }
     }
 

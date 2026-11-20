@@ -298,10 +298,10 @@ public struct RootView: View {
                                 "Project registration is unavailable."
                             ))
                         }
-                        return await registerProject(host, path)
+                        return await registerProject(host, path, nil)
                     },
                     onAddDirectory: { path in
-                        await handlers.registerDirectory?(host, path)
+                        await handlers.registerDirectory?(host, path, nil)
                             ?? .failure(.message("Directory registration is unavailable."))
                     },
                     onCancel: { addProjectHost = nil },

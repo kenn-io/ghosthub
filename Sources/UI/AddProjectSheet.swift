@@ -11,16 +11,14 @@ struct AddProjectSheet: View {
     let onCancel: () -> Void
     let onAdded: () -> Void
 
-    @State private var projectPath = ""
+    @State private var pathInput = ProjectPathInput()
     @State private var isDirectory = false
     @State private var isAdding = false
     @State private var errorMessage: String?
     @FocusState private var isPathFieldFocused: Bool
 
     private var normalizedPath: String {
-        recoveringProject == nil
-            ? projectPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            : projectPath
+        pathInput.submissionPath(recovering: recoveringProject != nil)
     }
 
     private var isAbsolutePath: Bool {
@@ -59,7 +57,7 @@ struct AddProjectSheet: View {
                     "The folder for \($0.name) is unavailable at \($0.rootPath). Enter the new location of its main checkout."
                 } ?? (
                     isDirectory
-                        ? "Add a folder to open its root terminal and browse child folders. Register children explicitly from their … menus."
+                        ? "Open a terminal in the folder and browse its subfolders. To register a subfolder, use its … menu."
                         : "Enter the absolute path of an existing Git checkout."
                         + " Ghosthub delegates registration to kwt and does"
                         + " not scan the host."
@@ -70,7 +68,7 @@ struct AddProjectSheet: View {
 
                 TextField(
                     "/absolute/path/to/repository",
-                    text: $projectPath
+                    text: $pathInput.text
                 )
                 .textFieldStyle(.roundedBorder)
                 .focused($isPathFieldFocused)
@@ -85,7 +83,7 @@ struct AddProjectSheet: View {
                         panel.canCreateDirectories = false
                         panel.begin { response in
                             if response == .OK, let url = panel.url {
-                                projectPath = url.path
+                                pathInput.selectFolder(url)
                             }
                         }
                     }
@@ -144,5 +142,23 @@ struct AddProjectSheet: View {
                 errorMessage = error.displayMessage
             }
         }
+    }
+}
+
+/// A picker selection is a filesystem identity, not whitespace-padded input.
+struct ProjectPathInput {
+    var text = ""
+    private var pickedPath: String?
+
+    mutating func selectFolder(_ url: URL) {
+        text = url.path
+        pickedPath = text
+    }
+
+    func submissionPath(recovering: Bool) -> String {
+        if recovering || pickedPath.map({ Array($0.utf8) == Array(text.utf8) }) == true {
+            return text
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

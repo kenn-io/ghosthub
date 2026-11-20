@@ -511,9 +511,9 @@ public struct InteractionHandlers {
     public let completeSSHAuthentication:
         ((UUID, SSHAuthenticationHandoff) async -> Void)?
     public let registerProject:
-        ((HostSummary, String) async -> Result<String, HostProbeError>)?
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)?
     public let registerDirectory:
-        ((HostSummary, String) async -> Result<String, HostProbeError>)?
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)?
     public let browseDirectory:
         ((HostSummary, String) async -> Result<DirectoryListing, HostProbeError>)?
     public let recoverProject:
@@ -616,9 +616,9 @@ public struct InteractionHandlers {
         completeSSHAuthentication:
         ((UUID, SSHAuthenticationHandoff) async -> Void)? = nil,
         registerProject:
-        ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)? = nil,
         registerDirectory:
-        ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)? = nil,
         browseDirectory:
         ((HostSummary, String) async -> Result<DirectoryListing, HostProbeError>)? = nil,
         recoverProject:

@@ -68,7 +68,7 @@ struct DirectoryBrowserViewTests {
             )
             .background(Color(nsColor: .windowBackgroundColor))
             .preferredColorScheme(dark ? .dark : .light),
-            size: CGSize(width: 380, height: 480)
+            size: CGSize(width: 400, height: 560)
         )
         let window = NSWindow(
             contentRect: view.frame,
@@ -99,8 +99,8 @@ struct DirectoryBrowserViewTests {
         )
         try press("Expand Studio")
         try press("Expand Atlas")
-        // The parent project keeps its worktrees and the nested registrations.
-        try press("Expand Atlas")
+        #expect(reads == ["/code/Studio"], "worktree expansion must not scan folders")
+        try press("Expand folders in Atlas")
         try press("Expand Docs")
         #expect(find("Expand Notes", in: view) != nil)
         #expect(reads == ["/code/Studio", "/code/Studio/Atlas"])
@@ -118,6 +118,9 @@ struct DirectoryBrowserViewTests {
             )
             try png.write(to: url, options: .atomic)
         }
+        // Recognizing a project must not remove discovery of new descendants.
+        try press("Expand folders in Docs")
+        #expect(reads == ["/code/Studio", "/code/Studio/Atlas", "/code/Studio/Atlas/Docs"])
         try press("Collapse Studio")
         try press("Expand Studio")
         #expect(reads.filter { $0 == "/code/Studio" }.count == 1)

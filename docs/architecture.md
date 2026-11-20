@@ -811,15 +811,31 @@ Browsing never registers children or creates sessions.
 
 The registered-only folder view immediately projects existing host inventory.
 First expansion also loads one listing to resolve project containers such as
-`ReportingHub/main` through kwt's authoritative checkout mapping, even while
+`Atlas/main` through kwt's authoritative checkout mapping, even while
 unregistered folders are hidden. Each row retains that listing across collapse/reopen until Refresh
 Folders clears it or the row leaves the view hierarchy. There is no background
 folder polling. Child projection indexes registered paths before filtering.
+Recognized projects retain a separate **Folders in …** disclosure and folder
+menu. Expanding the project's worktree group does not scan the filesystem.
+Sibling checkouts share one project presentation, preferring the primary
+checkout or its container, but folders with independent registrations remain
+reachable. POSIX folder keys compare normalized UTF-8 bytes without collapsing
+Unicode-normalization variants.
+
+Remote listings carry the route identity of the SSH lease that read them.
+Child registration compares that identity against its mutation lease before
+running either registration command. A changed route requires a parent-folder
+refresh. Paths typed directly into the Add Project sheet select the current
+host without a previous browse lease. Picker-selected paths retain their exact
+spelling, including trailing whitespace.
 
 Kwt owns filesystem enumeration and Git recognition on both local and remote
 POSIX hosts. Each expansion inspects at most 1,000 filesystem entries, omits
 hidden and symlink entries, and reports truncation. The UI also retains known
 registrations when an entry is missing, hidden, or omitted by that limit.
+Local and SSH browsing share a 64 MiB output cap, sized for 1,000 entries with
+two maximum-length POSIX paths and worst-case JSON escaping. The command runner
+allocates only the output it reads.
 Projects match the primary checkout path supplied by kwt, including `.bare`
 containers with a sibling `main` checkout; linked worktrees still belong to the registered project. Folder
 grouping is host-scoped presentation only. The command palette and terminal

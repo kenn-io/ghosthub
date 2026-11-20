@@ -91,10 +91,13 @@ folders. Unregistered folders appear gray with a “Not registered” tooltip.
 Browsing never registers anything. Use a child row's **…** menu to **Add
 Project** when kwt recognizes a checkout, or **Add Directory** to give the folder
 its own root terminal. Registered projects show their normal worktree rows.
-If a project also contains registered projects or directories, its folder
-expands to show both its project row and those nested registrations.
+Recognized projects keep a separate **Folders in …** row with a chevron and
+**…** menu. Expand that row to browse or register subfolders. The project's
+own chevron opens its worktrees without scanning folders. Sibling checkouts
+share one project group, while folders leading to other registrations stay
+reachable.
 
-![Directory browsing with nested projects and a registered Notes folder](https://raw.githubusercontent.com/sarcasticbird/ghosthub/e738f1e18034180ee0c0973586669a913c767362/guide-directory-browser.png)
+![Directory browsing with nested projects and a registered Notes folder](https://raw.githubusercontent.com/sarcasticbird/ghosthub/5df9e9a64e6b3de17fe5c1653c68294f30ba709f/guide-directory-browser.png)
 
 Use **… → Refresh Folders** to reload a folder after filesystem changes.
 Unregistered folders are hidden by default. Use **… → Show Unregistered
@@ -118,6 +121,9 @@ per expansion. Known registrations remain reachable even when their folders
 are missing or outside that listing limit.
 Directory names containing a dollar sign can be browsed but cannot currently
 be registered because kwt expands environment variables in stored paths.
+If an SSH alias points to a different server after browsing, registration stops
+and asks you to refresh the parent folder. A folder selected with **Choose
+Folder…** keeps its exact path, including trailing spaces.
 
 ### Register from a shell
 

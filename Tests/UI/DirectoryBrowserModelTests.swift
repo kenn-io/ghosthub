@@ -44,7 +44,55 @@ struct DirectoryBrowserModelTests {
         let children = DirectoryBrowserModel.children(
             of: "/hub/widget", entries: entries, directories: [], projects: [project]
         )
-        #expect(children.count == 1)
+        #expect(children.count == 2)
+        #expect(children.filter(\.presentsProject).map(\.name) == ["main"])
+    }
+
+    @Test(
+        "project deduplication retains registrations beneath primary and linked checkouts",
+        arguments: ["/hub/widget", "/hub/a-primary"]
+    )
+    func nestedCheckoutRegistrations(primaryPath: String) {
+        let registered = project(path: primaryPath)
+        let paths = ["/hub/a-primary", "/hub/widget"]
+        let entries = paths.map {
+            DirectoryEntry(
+                name: String($0.split(separator: "/").last!),
+                path: $0,
+                projectPath: primaryPath
+            )
+        }
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(), hostID: registered.project.hostID, name: "Notes",
+            path: "/hub/widget/Notes", tmuxSessionName: "notes", sessionLive: false
+        )
+        for shown in [false, true] {
+            let children = DirectoryBrowserModel.children(
+                of: "/hub", entries: entries, directories: [directory], projects: [registered],
+                showUnregisteredFolders: shown
+            )
+            #expect(children.contains { $0.path == "/hub/widget" })
+            #expect(children.filter(\.presentsProject).map(\.path) == [primaryPath])
+        }
+    }
+
+    @Test("POSIX folder identities preserve normalization and leading combining marks")
+    func byteExactPaths() {
+        let paths = ["/hub/caf\u{e9}", "/hub/cafe\u{301}", "/hub/\u{301}notes"]
+        let projects = paths.map { project(path: $0) }
+        let entries = paths.map {
+            DirectoryEntry(name: String(decoding: $0.utf8.dropFirst(5), as: UTF8.self), path: $0)
+        }
+        let children = DirectoryBrowserModel.children(
+            of: "/hub", entries: entries, directories: [], projects: projects,
+            showUnregisteredFolders: false
+        )
+        #expect(Set(children.map(\.id)).count == 3)
+        for (entry, project) in zip(entries, projects) {
+            #expect(DirectoryBrowserModel.project(for: entry, in: projects)?.id == project.id)
+            #expect(DirectoryPaths.contains("/hub", entry.path))
+        }
+        #expect(!DirectoryPaths.contains(paths[0], paths[1] + "/nested"))
     }
 
     @Test("unregistered folders remain visible and known missing projects remain reachable")
