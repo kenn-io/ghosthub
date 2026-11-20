@@ -426,7 +426,8 @@ becomes key.
 
 Run `make test-rex REX_BINARY=/absolute/path/to/rex` to verify listing, the
 control channel, pane attachment and keyboard input, and splitting, resizing,
-focus, zoom, floating windows, and closing through libghostty. The test starts a
+moving and swapping panes, focus, zoom, floating windows, and closing through
+libghostty. The test starts a
 private Rex server with its own socket and state directory, and stops it during
 teardown. `REX_BINARY` is the `rex` command inside Rex Server (on macOS,
 `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).

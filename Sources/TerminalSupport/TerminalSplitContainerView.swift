@@ -46,6 +46,9 @@ public final class TerminalSplitContainerView: NSView {
         /// `start` is the window's frame and `origin` the pointer when the
         /// drag began; `frame` is where the window is now.
         case layer(id: String, edges: Edges, start: CGRect, origin: CGPoint, frame: CGRect)
+        /// A tiled pane dragged by its header. `point` is the pointer, nil
+        /// until it leaves the starting spot.
+        case pane(id: String, origin: CGPoint, point: CGPoint?)
     }
 
     /// How far outside a floating window its edges can be grabbed.
@@ -59,7 +62,7 @@ public final class TerminalSplitContainerView: NSView {
     /// animates its size, such as the sidebar.
     public var defersContentResize = false {
         didSet {
-            if defersContentResize != oldValue, drag == nil {
+            if defersContentResize != oldValue, !holdsContentResize {
                 setContentResizeDeferred(defersContentResize)
             }
         }
@@ -79,6 +82,9 @@ public final class TerminalSplitContainerView: NSView {
     public var onResizeCommitted: ((TerminalSplitDivider, Double) -> Void)?
     /// A floating window was moved or resized to these fractional bounds.
     public var onLayerBoundsCommitted: ((String, CGRect) -> Void)?
+    /// A tiled pane was dragged by its header and dropped beside or on
+    /// another pane.
+    public var onPaneDropped: ((String, TerminalSplitPaneDrop) -> Void)?
     /// A minimized floating window's capsule was clicked.
     public var onLayerRestored: ((String) -> Void)?
     /// A pane's header was clicked.
@@ -104,6 +110,10 @@ public final class TerminalSplitContainerView: NSView {
     private var committedBounds: [String: (start: CGRect, bounds: CGRect)] = [:]
     private var drag: Drag?
     private var backdrops: [String: FloatingLayerBackdrop] = [:]
+    private var dropHighlight: PaneDropHighlight?
+    private var escapeMonitor: Any?
+    /// Escape cancelled a header drag; the rest of it does nothing.
+    private var headerDragCancelled = false
     private var dividerElements: [NSAccessibilityElement] = []
 
     override public var isFlipped: Bool { true }
@@ -137,7 +147,7 @@ public final class TerminalSplitContainerView: NSView {
             view.actions = !isLayoutEditable ? [.zoom]
                 : tree.map { Self.actions(for: pane.id, in: $0) }
                 ?? TerminalSplitHeaderAction.tiledActions
-            if view.content !== pane.content, defersContentResize || drag != nil {
+            if view.content !== pane.content, defersContentResize || holdsContentResize {
                 pane.content?.setResizeDeferred(true)
             }
             view.setContent(pane.content)
@@ -198,7 +208,7 @@ public final class TerminalSplitContainerView: NSView {
             ratios[divider.splitID] = ratio
         case let .layer(id, _, _, _, frame):
             layerBounds[id] = TerminalSplitLayout.fraction(of: frame, in: bounds)
-        case nil:
+        case .pane, nil:
             break
         }
         let result = TerminalSplitLayout.layout(
@@ -229,6 +239,9 @@ public final class TerminalSplitContainerView: NSView {
         layoutCapsules()
         CATransaction.commit()
         floatingLayerFrames = result.floatingLayers
+        if case .pane = drag {
+            showDrop(currentDrop)
+        }
         orderSubviews(tree)
         if result.dividers != dividers {
             dividers = result.dividers
@@ -275,8 +288,8 @@ public final class TerminalSplitContainerView: NSView {
         moveDrag(to: convert(event.locationInWindow, from: nil))
     }
 
-    override public func mouseUp(with _: NSEvent) {
-        endDrag()
+    override public func mouseUp(with event: NSEvent) {
+        endDrag(at: convert(event.locationInWindow, from: nil))
     }
 
     /// Starts a drag at a point in this view: a floating window's edge or a
@@ -319,8 +332,38 @@ public final class TerminalSplitContainerView: NSView {
         return true
     }
 
+    /// Starts dragging a tiled pane by its header, toward a place beside or
+    /// on another tiled pane. A zoomed pane, a floating one, and the only
+    /// tiled pane have nowhere to go, and nothing moves in a layout that
+    /// cannot change here.
+    func beginPaneDrag(paneID: String, at point: CGPoint) -> Bool {
+        guard drag == nil, isLayoutEditable, let tree, tree.zoomedPaneID == nil,
+              let tiled = tree.root?.paneIDs, tiled.count > 1, tiled.contains(paneID)
+        else { return false }
+        drag = .pane(id: paneID, origin: point, point: nil)
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53, let self else { return event }
+            cancelDrag()
+            return nil
+        }
+        return true
+    }
+
+    /// Ends a pane drag without dropping the pane.
+    func cancelDrag() {
+        guard case .pane = drag else { return }
+        drag = nil
+        headerDragCancelled = true
+        finishPaneDrag()
+    }
+
     func moveDrag(to point: CGPoint) {
         switch drag {
+        case let .pane(id, origin, last):
+            let moved = last != nil || hypot(point.x - origin.x, point.y - origin.y) >= 4
+            drag = .pane(id: id, origin: origin, point: moved ? point : nil)
+            showDrop(currentDrop)
+            return
         case let .divider(divider, _):
             drag = .divider(
                 divider, ratio: TerminalSplitLayout.ratio(
@@ -343,11 +386,26 @@ public final class TerminalSplitContainerView: NSView {
         layoutSubtreeIfNeeded()
     }
 
-    func endDrag() {
+    /// Ends a drag; a pane drag drops where `point` is in the layout now.
+    func endDrag(at point: CGPoint? = nil) {
+        headerDragCancelled = false
+        if case .pane = drag {
+            if let point {
+                moveDrag(to: point)
+            }
+            layoutSubtreeIfNeeded()
+        }
+        let drop = currentDrop
         guard let ended = drag else { return }
         drag = nil
         var commit: (() -> Void)?
         switch ended {
+        case let .pane(id, _, _):
+            finishPaneDrag()
+            if let drop {
+                onPaneDropped?(id, drop)
+            }
+            return
         case let .divider(divider, ratio):
             if ratio != divider.ratio {
                 let start = tree.flatMap { ratios(in: $0)[divider.splitID] } ?? divider.ratio
@@ -367,6 +425,84 @@ public final class TerminalSplitContainerView: NSView {
             setContentResizeDeferred(false)
         }
         commit?()
+    }
+
+    /// Where the dragged pane would land now. Nothing moves in a layout that
+    /// has stopped being editable, became zoomed, or no longer tiles it.
+    private var currentDrop: TerminalSplitPaneDrop? {
+        guard case let .pane(id, _, point?) = drag, isLayoutEditable, let tree,
+              tree.zoomedPaneID == nil, tree.root?.paneIDs.contains(id) == true
+        else { return nil }
+        return paneDrop(at: point, from: id)
+    }
+
+    /// Divider and floating window drags hold terminal resizing until they
+    /// end; a pane drag changes no size until the backend moves the pane.
+    private var holdsContentResize: Bool {
+        switch drag {
+        case .divider, .layer: true
+        case .pane, nil: false
+        }
+    }
+
+    /// The tiled pane under `point`, other than the dragged one, and the
+    /// part of it there: its middle, or the half by its nearest edge. A
+    /// floating window over the pane hides it.
+    private func paneDrop(at point: CGPoint, from source: String) -> TerminalSplitPaneDrop? {
+        guard !floatingLayerFrames.contains(where: { $0.frame.contains(point) }),
+              let target = tree?.root?.paneIDs.first(where: {
+                  $0 != source && paneViews[$0]?.frame.contains(point) == true
+              }),
+              let frame = paneViews[target]?.frame, frame.width > 0, frame.height > 0
+        else { return nil }
+        let x = (point.x - frame.minX) / frame.width
+        let y = (point.y - frame.minY) / frame.height
+        let zone: TerminalSplitPaneDrop.Zone
+        if (0.25 ... 0.75).contains(x), (0.25 ... 0.75).contains(y) {
+            zone = .center
+        } else {
+            let distances: [(CGFloat, TerminalSplitPaneDrop.Zone)] = [
+                (x, .left), (1 - x, .right), (y, .top), (1 - y, .bottom),
+            ]
+            zone = distances.min { $0.0 < $1.0 }?.1 ?? .center
+        }
+        return TerminalSplitPaneDrop(paneID: target, zone: zone)
+    }
+
+    /// Where the highlight for `drop` goes, in this view.
+    var paneDropFrame: CGRect? {
+        dropHighlight?.frame
+    }
+
+    private func showDrop(_ drop: TerminalSplitPaneDrop?) {
+        guard let drop, let frame = paneViews[drop.paneID]?.frame else {
+            dropHighlight?.removeFromSuperview()
+            dropHighlight = nil
+            return
+        }
+        let (left, right) = frame.divided(atDistance: frame.width / 2, from: .minXEdge)
+        let (top, bottom) = frame.divided(atDistance: frame.height / 2, from: .minYEdge)
+        let highlight = dropHighlight ?? {
+            let view = PaneDropHighlight()
+            dropHighlight = view
+            addSubview(view)
+            return view
+        }()
+        highlight.frame = switch drop.zone {
+        case .left: left
+        case .right: right
+        case .top: top
+        case .bottom: bottom
+        case .center: frame
+        }
+    }
+
+    private func finishPaneDrag() {
+        showDrop(nil)
+        if let escapeMonitor {
+            NSEvent.removeMonitor(escapeMonitor)
+        }
+        escapeMonitor = nil
     }
 
     private func begin(_ newDrag: Drag) {
@@ -471,8 +607,11 @@ public final class TerminalSplitContainerView: NSView {
             guard let self else { return }
             let point = convert(location, from: nil)
             if ended {
-                endDrag()
-            } else if drag != nil || beginMove(paneID: id, at: point) {
+                endDrag(at: point)
+            } else if headerDragCancelled {
+                return
+            } else if drag != nil || beginMove(paneID: id, at: point)
+                || beginPaneDrag(paneID: id, at: point) {
                 moveDrag(to: point)
             }
         }
@@ -512,6 +651,7 @@ public final class TerminalSplitContainerView: NSView {
         }
         capsules.values.sorted { $0.tag < $1.tag }.forEach(place)
         place(capsuleOverflow)
+        place(dropHighlight)
         let current = subviews.map { rank[ObjectIdentifier($0)] ?? 0 }
         guard current != current.sorted() else { return }
         let order = SubviewOrder(rank)
@@ -743,5 +883,47 @@ private final class FloatingLayerBackdrop: NSView {
 
     override func mouseUp(with _: NSEvent) {
         owner?.endDrag()
+    }
+}
+
+/// Where a dragged pane was dropped: in a half of another pane, to sit
+/// beside it there, or in its middle, to trade places with it.
+public struct TerminalSplitPaneDrop: Equatable, Sendable {
+    public enum Zone: Equatable, Sendable {
+        case left, right, top, bottom, center
+    }
+
+    public var paneID: String
+    public var zone: Zone
+
+    public init(paneID: String, zone: Zone) {
+        self.paneID = paneID
+        self.zone = zone
+    }
+}
+
+/// Shows where a dragged pane would land. It takes no clicks.
+private final class PaneDropHighlight: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.borderWidth = 2
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.2).cgColor
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+    }
+
+    override func hitTest(_: NSPoint) -> NSView? {
+        nil
     }
 }

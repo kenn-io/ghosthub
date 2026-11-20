@@ -95,6 +95,9 @@ final class RexWindowPresentation {
         container.onLayerBoundsCommitted = { [weak self] layerID, bounds in
             self?.moveLayer(layerID, to: bounds)
         }
+        container.onPaneDropped = { [weak self] blockID, drop in
+            self?.dropPane(blockID, on: drop)
+        }
         container.onLayerRestored = { [weak self] layerID in
             self?.showLayer(layerID)
         }
@@ -217,6 +220,22 @@ final class RexWindowPresentation {
                 "side": "after",
             ])
         }
+    }
+
+    /// Moves a pane dragged by its header beside the pane it was dropped
+    /// on, or trades their places when dropped in that pane's middle.
+    func dropPane(_ blockID: String, on drop: TerminalSplitPaneDrop) {
+        let zone = drop.zone
+        guard zone != .center else {
+            request("session.swap_blocks", ["block_id": blockID, "other_block_id": drop.paneID])
+            return
+        }
+        request("session.move_block", [
+            "block_id": blockID,
+            "anchor_block_id": drop.paneID,
+            "direction": zone == .left || zone == .right ? "horizontal" : "vertical",
+            "side": zone == .left || zone == .top ? "before" : "after",
+        ])
     }
 
     /// True when the focused pane floats and Rex would let its window be
