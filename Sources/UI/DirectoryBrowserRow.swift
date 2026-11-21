@@ -89,6 +89,7 @@ struct DirectoryBrowserRow: View {
                             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                                 .font(.caption2)
                                 .frame(width: 18, height: 28)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(

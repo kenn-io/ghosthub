@@ -97,6 +97,18 @@ struct DirectoryBrowserViewTests {
             _ = element.perform(NSSelectorFromString("accessibilityPerformPress"))
             try await settle()
         }
+        func clickDisclosurePadding(_ label: String) async throws {
+            let element = try #require(find(label, in: view))
+            let frame = try #require(element.value(forKey: "accessibilityFrame") as? NSValue)
+                .rectValue
+            // Use the intended 18×28 button area, not the glyph's accessible bounds.
+            let point = window.convertPoint(fromScreen: NSPoint(
+                x: frame.midX - 8,
+                y: frame.midY - 13
+            ))
+            syntheticClick(at: view.convert(point, from: nil), in: view, window: window)
+            try await settle()
+        }
         func folderAction(_ name: String, project: String) async throws {
             let row = try #require(find("Folder actions for \(project)", in: view))
             let actions = try #require(
@@ -119,7 +131,8 @@ struct DirectoryBrowserViewTests {
             "sidebar-section-disclosure-projects:\(host.id.uuidString)",
             attribute: "accessibilityIdentifier"
         )
-        try await press("Expand Studio")
+        try await clickDisclosurePadding("Expand Studio")
+        #expect(find("Collapse Studio", in: view) != nil)
         if delayedListing {
             #expect(find("Loading projects…", in: view) != nil)
             #expect(
