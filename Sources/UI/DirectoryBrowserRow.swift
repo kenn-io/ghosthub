@@ -30,6 +30,11 @@ struct DirectoryBrowserRow: View {
     @State private var registered = false
     @State private var showUnregisteredFolders = false
 
+    private var loading: Bool {
+        expanded && listing == nil && error == nil
+            && (project == nil || showUnregisteredFolders || reload > 0)
+    }
+
     private var directory: DirectoryWorkspaceSummary? {
         directories.first {
             DirectoryPaths.key($0.path) == DirectoryPaths.key(entry.path)
@@ -173,7 +178,15 @@ struct DirectoryBrowserRow: View {
                         ForEach(children) { child in
                             childRow(child)
                         }
-                        if !showUnregisteredFolders {
+                        if loading {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Loading projects…").font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Loading projects…")
+                        } else if !showUnregisteredFolders {
                             if children.isEmpty, project == nil {
                                 Text("No registered child folders").font(.caption)
                                     .foregroundStyle(.secondary)

@@ -10,9 +10,9 @@ import Testing
 struct DirectoryBrowserViewTests {
     @Test(
         "nested registrations stay reachable beneath a registered project",
-        arguments: [false, true]
+        arguments: [false, true], [false, true]
     )
-    func nestedRegistrations(dark: Bool) throws {
+    func nestedRegistrations(dark: Bool, delayedListing: Bool) async throws {
         let app = NSApplication.shared
         let enhanced = app.value(forKey: "accessibilityEnhancedUserInterface")
         app.setValue(true, forKey: "accessibilityEnhancedUserInterface")
@@ -20,7 +20,8 @@ struct DirectoryBrowserViewTests {
         var host = HostSummary.fixture()
         host.name = "This Mac"
         let parent = ProjectSummary(
-            id: UUID(), hostID: host.id, name: "Atlas", rootPath: "/code/Studio/Atlas"
+            id: UUID(), hostID: host.id, name: "Atlas",
+            rootPath: "/code/Studio/Atlas"
         )
         let child = ProjectSummary(
             id: UUID(), hostID: host.id, name: "Docs", rootPath: "/code/Studio/Atlas/Docs"
@@ -43,6 +44,7 @@ struct DirectoryBrowserViewTests {
         )
         snapshot.directoryWorkspaces = directories
         var reads: [String] = []
+        var finishListing: CheckedContinuation<Void, Never>?
         var opens = 0
         let view = hostView(
             WorkspaceSidebarView(
@@ -51,10 +53,13 @@ struct DirectoryBrowserViewTests {
                 visibility: WorktreeVisibility(),
                 browseDirectory: { _, path in
                     reads.append(path)
+                    if delayedListing && path == "/code/Studio" {
+                        await withCheckedContinuation { finishListing = $0 }
+                    }
                     let entries = path == "/code/Studio"
                         ? [DirectoryEntry(
                             name: "Atlas",
-                            path: parent.rootPath,
+                            path: "/code/Studio/Atlas",
                             projectPath: parent.rootPath
                         )]
                         : [DirectoryEntry(name: "Unregistered", path: path + "/Unregistered")]
@@ -82,17 +87,17 @@ struct DirectoryBrowserViewTests {
         window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
         window.orderFrontRegardless()
         defer { window.close() }
-        func settle() {
+        func settle() async throws {
             view.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            try await Task.sleep(for: .milliseconds(100))
             view.layoutSubtreeIfNeeded()
         }
-        func press(_ value: String, attribute: String = "accessibilityLabel") throws {
+        func press(_ value: String, attribute: String = "accessibilityLabel") async throws {
             let element = try #require(find(value, attribute: attribute, in: view))
             _ = element.perform(NSSelectorFromString("accessibilityPerformPress"))
-            settle()
+            try await settle()
         }
-        func folderAction(_ name: String, project: String) throws {
+        func folderAction(_ name: String, project: String) async throws {
             let row = try #require(find("Folder actions for \(project)", in: view))
             let actions = try #require(
                 row.value(forKey: "accessibilityCustomActions") as? [NSAccessibilityCustomAction]
@@ -107,26 +112,40 @@ struct DirectoryBrowserViewTests {
                 let invoke = unsafeBitCast(target.method(for: selector), to: Action.self)
                 #expect(invoke(target, selector, action))
             }
-            settle()
+            try await settle()
         }
-        settle()
-        try press(
+        try await settle()
+        try await press(
             "sidebar-section-disclosure-projects:\(host.id.uuidString)",
             attribute: "accessibilityIdentifier"
         )
-        try press("Expand Studio")
-        try press("Expand Atlas")
+        try await press("Expand Studio")
+        if delayedListing {
+            #expect(find("Loading projects…", in: view) != nil)
+            #expect(
+                find("Expand Atlas", in: view) != nil,
+                "known projects must appear before the folder lookup completes"
+            )
+            finishListing?.resume()
+            try await settle()
+            let stillLoading = find("Loading projects…", in: view) != nil
+            #expect(
+                !stillLoading,
+                "the first lookup must publish its result"
+            )
+        }
+        try await press("Expand Atlas")
         #expect(reads == ["/code/Studio"], "worktree expansion must not scan folders")
         #expect(find("Expand folders in Atlas", in: view) == nil)
         #expect(find("Expand Notes", in: view) != nil)
-        try press("Expand Docs")
+        try await press("Expand Docs")
         #expect(find("Expand Notes", in: view) != nil)
         #expect(reads == ["/code/Studio"])
         #expect(find("Expand Unregistered", in: view) == nil)
-        try folderAction("Show Unregistered Folders", project: "Atlas")
+        try await folderAction("Show Unregistered Folders", project: "Atlas")
         #expect(reads == ["/code/Studio", "/code/Studio/Atlas"])
         #expect(find("Expand Unregistered", in: view) != nil)
-        try folderAction("Hide Unregistered Folders", project: "Atlas")
+        try await folderAction("Hide Unregistered Folders", project: "Atlas")
         #expect(find("Expand Unregistered", in: view) == nil)
         #expect(find("Expand Notes", in: view) != nil)
         #expect(opens == 0)
@@ -144,15 +163,15 @@ struct DirectoryBrowserViewTests {
             try png.write(to: url, options: .atomic)
         }
         // Recognizing a project must not remove discovery of new descendants.
-        try folderAction("Show Unregistered Folders", project: "Docs")
+        try await folderAction("Show Unregistered Folders", project: "Docs")
         #expect(reads == ["/code/Studio", "/code/Studio/Atlas", "/code/Studio/Atlas/Docs"])
-        try press("Collapse Atlas")
+        try await press("Collapse Atlas")
         #expect(find("Expand Notes", in: view) == nil)
-        try press("Expand Atlas")
+        try await press("Expand Atlas")
         #expect(find("Expand Notes", in: view) != nil)
         #expect(reads.filter { $0 == "/code/Studio/Atlas" }.count == 1)
-        try press("Collapse Studio")
-        try press("Expand Studio")
+        try await press("Collapse Studio")
+        try await press("Expand Studio")
         #expect(reads.filter { $0 == "/code/Studio" }.count == 1)
         #expect(find("Collapse Atlas", in: view) != nil)
         #expect(find("Collapse Docs", in: view) != nil)
