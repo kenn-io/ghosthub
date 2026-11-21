@@ -7627,7 +7627,8 @@ final class WorkspaceSceneModel: ObservableObject {
 
     func registerProject(
         _ projectPath: String,
-        on host: HostSummary
+        on host: HostSummary,
+        expectedRouteIdentity: String? = nil
     ) async -> Result<String, HostProbeError> {
         guard let capturedTarget = CommandHostResolver.resolve(host) else {
             return .failure(.message("Enter a valid SSH destination."))
@@ -7645,8 +7646,70 @@ final class WorkspaceSceneModel: ObservableObject {
             on: currentTarget,
             provisioningHost: configuredSSHHost(for: host.id),
             hostID: host.kind == .remote ? host.id : nil,
-            revalidatingHostID: host.id
+            revalidatingHostID: host.id,
+            expectedRouteIdentity: expectedRouteIdentity
         )
+    }
+
+    func browseDirectory(
+        _ path: String, on host: HostSummary
+    ) async -> Result<DirectoryListing, HostProbeError> {
+        do {
+            let target = try await directoryCommandTarget(host)
+            let listing = try await KwtDirectoryClient().browse(path, on: target)
+            guard let current = snapshot.host(id: host.id),
+                  CommandHostResolver.resolve(current) == target else {
+                return .failure(.message("The host connection changed. Reopen the folder."))
+            }
+            return .success(listing)
+        } catch let error as HostProbeError {
+            return .failure(error)
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
+    func registerDirectory(
+        _ path: String, on host: HostSummary,
+        expectedRouteIdentity: String? = nil
+    ) async -> Result<String, HostProbeError> {
+        do {
+            let target = try await directoryCommandTarget(host)
+            let registryHost = projectRegistryHost(for: target)
+            guard worktreeMutationCoordinator.acquireProjectRegistry(host: registryHost) else {
+                return .failure(
+                    .message("Another project or worktree change is already in progress.")
+                )
+            }
+            defer { worktreeMutationCoordinator.releaseProjectRegistry(host: registryHost) }
+            try await KwtDirectoryClient().register(
+                path, on: target, expectedRouteIdentity: expectedRouteIdentity
+            )
+            refreshKwtInventory()
+            return .success(path)
+        } catch let error as HostProbeError {
+            return .failure(error)
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
+    }
+
+    private func directoryCommandTarget(_ host: HostSummary) async throws -> CommandHost {
+        guard let target = CommandHostResolver.resolve(host),
+              let current = snapshot.host(id: host.id),
+              current.canRegisterProjects,
+              CommandHostResolver.resolve(current) == target else {
+            throw HostProbeError.message("The host connection changed. Reopen the folder.")
+        }
+        if let configured = configuredSSHHost(for: host.id) {
+            try await ensureRemoteKwtForOperation(on: configured, hostID: host.id)
+        }
+        try Task.checkCancellation()
+        guard let current = snapshot.host(id: host.id),
+              CommandHostResolver.resolve(current) == target else {
+            throw HostProbeError.message("The host connection changed. Reopen the folder.")
+        }
+        return target
     }
 
     func recoverProject(
@@ -7722,7 +7785,8 @@ final class WorkspaceSceneModel: ObservableObject {
         on target: CommandHost,
         provisioningHost: SSHHost?,
         hostID: UUID?,
-        revalidatingHostID: UUID?
+        revalidatingHostID: UUID?,
+        expectedRouteIdentity: String? = nil
     ) async -> Result<String, HostProbeError> {
         let registryHost = projectRegistryHost(for: target)
         guard worktreeMutationCoordinator.acquireProjectRegistry(
@@ -7756,13 +7820,25 @@ final class WorkspaceSceneModel: ObservableObject {
                     ))
                 }
             }
-            let project = try await kwtProjectRegistration(
-                projectPath,
-                target
-            )
+            let project: KwtProjectRecord
+            if let expectedRouteIdentity {
+                project = try await KwtProjectRegistryClient().register(
+                    projectPath: projectPath, on: target,
+                    expectedRouteIdentity: expectedRouteIdentity
+                )
+            } else {
+                project = try await kwtProjectRegistration(projectPath, target)
+            }
             noteProjectRegistration(project, on: target)
             return .success(project.name)
         } catch {
+            if expectedRouteIdentity != nil,
+               let commandError = error as? KwtProjectCommandError,
+               case .routeChanged = commandError {
+                return .failure(.message(
+                    "The host connection changed. Refresh the parent folder."
+                ))
+            }
             if let hostID {
                 recordKwtUnavailability(error, hostID: hostID)
             }

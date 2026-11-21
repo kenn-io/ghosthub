@@ -77,8 +77,11 @@ struct KwtProjectRegistryClientTests {
         #expect(project.name == "widget")
     }
 
-    @Test("remote registration uses the managed helper and canonical response")
-    func registersRemoteProject() async throws {
+    @Test(
+        "remote registration uses the managed helper and canonical response",
+        arguments: [false, true]
+    )
+    func registersRemoteProject(browsed: Bool) async throws {
         let revision = String(repeating: "a", count: 40)
         let ssh = SSHHostInfo(
             user: "wesm",
@@ -104,7 +107,8 @@ struct KwtProjectRegistryClientTests {
 
         let project = try await client.register(
             projectPath: "/srv/wesm's widget",
-            on: ssh
+            on: .ssh(ssh),
+            expectedRouteIdentity: browsed ? "injected-command-transport" : nil
         )
 
         #expect(invocation.load()?.0 == ssh)
@@ -236,6 +240,29 @@ struct KwtProjectRegistryClientTests {
             error as? KwtProjectCommandError == .routeChanged(
                 host: ssh.displayName
             )
+        }
+        #expect(invocations.load() == 0)
+    }
+
+    @Test("browsed project registration rejects route drift before mutation")
+    func browsedRegistrationRoute() async {
+        let invocations = LockedValue(0)
+        let ssh = SSHHostInfo(user: "builder", hostname: "alias", port: nil)
+        let client = KwtProjectRegistryClient(
+            remoteRunner: { _, _, _ in
+                invocations.withLock { $0 += 1 }
+                return AccountCommandOutput(status: 1, stdout: "", stderr: "")
+            },
+            commandLease: KwtSSHCommandLease { _ in
+                KwtSSHConnection(arguments: [], routeIdentity: "new-route", generation: 2)
+            }
+        )
+        await #expect {
+            try await client.register(
+                projectPath: "/srv/widget", on: .ssh(ssh), expectedRouteIdentity: "observed-route"
+            )
+        } throws: { error in
+            error as? KwtProjectCommandError == .routeChanged(host: ssh.displayName)
         }
         #expect(invocations.load() == 0)
     }

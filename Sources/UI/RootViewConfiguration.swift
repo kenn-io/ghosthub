@@ -511,7 +511,11 @@ public struct InteractionHandlers {
     public let completeSSHAuthentication:
         ((UUID, SSHAuthenticationHandoff) async -> Void)?
     public let registerProject:
-        ((HostSummary, String) async -> Result<String, HostProbeError>)?
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)?
+    public let registerDirectory:
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)?
+    public let browseDirectory:
+        ((HostSummary, String) async -> Result<DirectoryListing, HostProbeError>)?
     public let recoverProject:
         ((HostSummary, ProjectSummary, String) async -> Result<String, HostProbeError>)?
     public let prepareProjectRemoval:
@@ -612,7 +616,11 @@ public struct InteractionHandlers {
         completeSSHAuthentication:
         ((UUID, SSHAuthenticationHandoff) async -> Void)? = nil,
         registerProject:
-        ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)? = nil,
+        registerDirectory:
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)? = nil,
+        browseDirectory:
+        ((HostSummary, String) async -> Result<DirectoryListing, HostProbeError>)? = nil,
         recoverProject:
         ((HostSummary, ProjectSummary, String) async -> Result<String, HostProbeError>)? = nil,
         prepareProjectRemoval:
@@ -685,6 +693,8 @@ public struct InteractionHandlers {
         self.cancelSSHAuthentication = cancelSSHAuthentication
         self.completeSSHAuthentication = completeSSHAuthentication
         self.registerProject = registerProject
+        self.registerDirectory = registerDirectory
+        self.browseDirectory = browseDirectory
         self.recoverProject = recoverProject
         self.prepareProjectRemoval = prepareProjectRemoval
         self.unregisterProject = unregisterProject

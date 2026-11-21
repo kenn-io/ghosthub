@@ -156,9 +156,13 @@ struct KwtProjectRegistryClient: Sendable {
 
     func register(
         projectPath: String,
-        on host: CommandHost
+        on host: CommandHost,
+        expectedRouteIdentity: String? = nil
     ) async throws -> KwtProjectRecord {
-        try await mutate(.register, projectPath: projectPath, on: host)
+        try await mutate(
+            .register, projectPath: projectPath,
+            expectedRouteIdentity: expectedRouteIdentity, on: host
+        )
     }
 
     func register(
@@ -272,7 +276,7 @@ struct KwtProjectRegistryClient: Sendable {
         let result = try await commandLease.withConnection(
             on: .ssh(host)
         ) { connection in
-            guard operation == .register
+            guard (operation == .register && expectedRouteIdentity == nil)
                 || connection?.routeIdentity == expectedRouteIdentity
             else {
                 throw KwtProjectCommandError.routeChanged(

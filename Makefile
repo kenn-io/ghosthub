@@ -356,6 +356,12 @@ screenshot-settings:
 	@GHOSTHUB_SETTINGS_SCREENSHOT_DIR="$(SCREENSHOT_DIR)" \
 		sh tools/run_swift_tests.sh $(SWIFT) test --filter SettingsScreenshotTests
 
+.PHONY: screenshot-directory-browser
+screenshot-directory-browser:
+	@test -n "$(SCREENSHOT_DIR)" || { printf 'Set SCREENSHOT_DIR to an output directory.\n' >&2; exit 2; }
+	@GHOSTHUB_DIRECTORY_SCREENSHOT_DIR="$(SCREENSHOT_DIR)" \
+		sh tools/run_swift_tests.sh $(SWIFT) test --filter DirectoryBrowserViewTests
+
 .PHONY: screenshot-worktree-flags
 screenshot-worktree-flags:
 	@test -n "$(SCREENSHOT_DIR)" || { printf 'Set SCREENSHOT_DIR to an output directory.\n' >&2; exit 2; }

@@ -247,6 +247,9 @@ struct WorkspaceSidebarView: View {
     let onNewHerdrSession: (HostSummary) -> Void
     let onNewZellijSession: (HostSummary) -> Void
     let onAddProject: (HostSummary) -> Void
+    let browseDirectory: DirectoryBrowserLoader?
+    let registerDirectory: DirectoryRegistration?
+    let registerProject: DirectoryRegistration?
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
     let onReviewSSHHostKey: (UUID, String) -> Void
@@ -362,6 +365,9 @@ struct WorkspaceSidebarView: View {
         onNewHerdrSession: @escaping (HostSummary) -> Void = { _ in },
         onNewZellijSession: @escaping (HostSummary) -> Void = { _ in },
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
+        browseDirectory: DirectoryBrowserLoader? = nil,
+        registerDirectory: DirectoryRegistration? = nil,
+        registerProject: DirectoryRegistration? = nil,
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
         onReviewSSHHostKey: @escaping (UUID, String) -> Void = { _, _ in },
@@ -426,6 +432,9 @@ struct WorkspaceSidebarView: View {
         self.onNewHerdrSession = onNewHerdrSession
         self.onNewZellijSession = onNewZellijSession
         self.onAddProject = onAddProject
+        self.browseDirectory = browseDirectory
+        self.registerDirectory = registerDirectory
+        self.registerProject = registerProject
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
         self.onReviewSSHHostKey = onReviewSSHHostKey
@@ -763,59 +772,119 @@ struct WorkspaceSidebarView: View {
         )
         .accessibilityIdentifier("sidebar-section-disclosure-\(projectsKey)")
         if expanded {
-            ForEach(section.projects) { project in
-                projectGroup(project)
-            }
-            ForEach(section.directoryWorkspaceRows) { row in
-                tmuxPreviewRow(
-                    row,
-                    content: AnyView(sidebarButton(row))
-                )
+            if let browseDirectory, section.host.canRegisterProjects {
+                let directories = snapshot.directoryWorkspaces
+                    .filter { $0.hostID == section.host.id }
+                ForEach(section.projects.filter { project in
+                    !directories.contains { DirectoryPaths.contains(
+                        $0.path,
+                        project.project.rootPath
+                    ) }
+                }) { project in
+                    projectGroup(project)
+                }
+                ForEach(DirectoryBrowserModel.roots(directories)) { directory in
+                    DirectoryBrowserRow(
+                        host: section.host,
+                        entry: DirectoryEntry(name: directory.name, path: directory.path),
+                        directories: directories,
+                        projects: section.projects,
+                        load: browseDirectory,
+                        registerDirectory: registerDirectory,
+                        registerProject: registerProject,
+                        directoryContent: { directory in
+                            let row = WorkspaceSidebarRow(
+                                target: .directoryWorkspace(directory.id),
+                                icon: .directoryWorkspace,
+                                title: directory.name,
+                                subtitle: directory.path,
+                                sessionIsRunning: directory.sessionLive
+                            )
+                            return tmuxPreviewRow(
+                                row,
+                                content: AnyView(sidebarButton(row, showsSessionMenu: false))
+                            )
+                        },
+                        directoryActions: { AnyView(directorySessionActions($0)) },
+                        projectContent: {
+                            AnyView(projectGroup($0, folderActions: $1, folderExpansion: $2))
+                        },
+                        projectExpansion: { id in
+                            let key = WorkspaceSidebarDisclosureState.project(id)
+                            return Binding(
+                                get: { isExpanded(key) },
+                                set: { value in
+                                    if value != isExpanded(key) {
+                                        toggle(key)
+                                    }
+                                }
+                            )
+                        }
+                    )
+                    .id("\(directory.id)-\(section.host.sshDestination ?? "")")
+                }
+            } else {
+                ForEach(section.projects) { project in
+                    projectGroup(project)
+                }
+                ForEach(section.directoryWorkspaceRows) { row in
+                    tmuxPreviewRow(
+                        row,
+                        content: AnyView(sidebarButton(row))
+                    )
+                }
             }
         }
     }
 
     @ViewBuilder
-    private func projectGroup(_ project: WorkspaceSidebarProject) -> some View {
+    private func projectGroup(
+        _ project: WorkspaceSidebarProject,
+        folderActions: [NativePopupMenuAction] = [],
+        folderExpansion: Binding<Bool>? = nil
+    ) -> some View {
         let projectKey = WorkspaceSidebarDisclosureState
             .project(project.project.id)
-        projectHierarchyRow(project, disclosureKey: projectKey)
-            .contextMenu {
-                Button("New Worktree…") {
-                    onNewWorktree(project.project)
-                }
-                .disabled(!snapshot.canCreateWorktree(in: project.project))
-                Button("Import Pull Request…") {
-                    onImportPullRequest(project.project)
-                }
-                .disabled(!snapshot.canImportPullRequest(in: project.project))
-                Divider()
-                Button("Open All Worktrees as Tabs") {
-                    onOpenProjectWorktreesAsTabs(
-                        project.project,
-                        project.worktrees
-                    )
-                }
-                .disabled(
-                    !canOpenProjectWorktreesAsTabs(
-                        project.project,
-                        project.worktrees
-                    )
+        projectHierarchyRow(
+            project, disclosureKey: projectKey, folderActions: folderActions,
+            folderExpansion: folderExpansion
+        )
+        .contextMenu {
+            Button("New Worktree…") {
+                onNewWorktree(project.project)
+            }
+            .disabled(!snapshot.canCreateWorktree(in: project.project))
+            Button("Import Pull Request…") {
+                onImportPullRequest(project.project)
+            }
+            .disabled(!snapshot.canImportPullRequest(in: project.project))
+            Divider()
+            Button("Open All Worktrees as Tabs") {
+                onOpenProjectWorktreesAsTabs(
+                    project.project,
+                    project.worktrees
                 )
-                if snapshot.host(id: project.project.hostID)?
-                    .canRegisterProjects == true {
-                    Divider()
-                    if project.project.pathIssue != nil {
-                        Button("Locate Folder…") {
-                            onLocateProject(project.project)
-                        }
+            }
+            .disabled(
+                !canOpenProjectWorktreesAsTabs(
+                    project.project,
+                    project.worktrees
+                )
+            )
+            if snapshot.host(id: project.project.hostID)?
+                .canRegisterProjects == true {
+                Divider()
+                if project.project.pathIssue != nil {
+                    Button("Locate Folder…") {
+                        onLocateProject(project.project)
                     }
-                    Button("Remove Project…", role: .destructive) {
-                        onRequestRemoveProject(project.project)
-                    }
+                }
+                Button("Remove Project…", role: .destructive) {
+                    onRequestRemoveProject(project.project)
                 }
             }
-        if isExpanded(projectKey) {
+        }
+        if folderExpansion?.wrappedValue ?? isExpanded(projectKey) {
             let groupItems = sidebarDragItems(project.worktreeRows)
             let rows = ForEach(project.worktreeRows) { row in
                 worktreeButton(row, groupItems: groupItems)
@@ -960,8 +1029,24 @@ struct WorkspaceSidebarView: View {
         })
     }
 
+    @ViewBuilder
+    private func directorySessionActions(_ directory: DirectoryWorkspaceSummary) -> some View {
+        let session = WorkspaceSidebarModel.tmuxSessionSelection(for: directory)
+        if WorkspaceSidebarModel.canRequestKill(
+            session, in: snapshot,
+            activeSelection: activeTmuxSession,
+            activeSelectionIsConnected: activeTmuxSessionIsConnected
+        ) {
+            Divider()
+            Button("Kill Session…", role: .destructive) {
+                onRequestKillTmuxSession(session)
+            }
+        }
+    }
+
     private func sidebarButton(
         _ row: WorkspaceSidebarRow,
+        showsSessionMenu: Bool = true,
         reservedTrailingActionWidth: CGFloat = 0,
         isWorktreeFlagged: Bool = false
     ) -> some View {
@@ -1040,7 +1125,7 @@ struct WorkspaceSidebarView: View {
             zellijSelection: zellijSelection,
             herdrActions: herdrActions
         )
-        let hasSessionActions = !sessionActionGroups.isEmpty
+        let hasSessionActions = showsSessionMenu && !sessionActionGroups.isEmpty
         let isActionHovered = hasSessionActions
             && hoveredSessionActionControlRowID == row.id
         let actionPresentation = WorkspaceSessionActionPresentation(
@@ -2089,7 +2174,9 @@ struct WorkspaceSidebarView: View {
 
     private func projectHierarchyRow(
         _ project: WorkspaceSidebarProject,
-        disclosureKey: String
+        disclosureKey: String,
+        folderActions: [NativePopupMenuAction] = [],
+        folderExpansion: Binding<Bool>? = nil
     ) -> some View {
         let canCreate = snapshot.canCreateWorktree(in: project.project)
         let canImport = snapshot.canImportPullRequest(in: project.project)
@@ -2099,10 +2186,27 @@ struct WorkspaceSidebarView: View {
         return HStack(spacing: 0) {
             hierarchyDisclosureButton(
                 project.row,
-                disclosureKey: disclosureKey
+                disclosureKey: disclosureKey,
+                expansion: folderExpansion
             )
 
             sidebarButton(project.row)
+
+            if !folderActions.isEmpty {
+                NativePopupMenuButton(groups: [folderActions]) {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 24, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Folder actions")
+                .accessibilityLabel("Folder actions for \(project.project.sidebarTitle)")
+                .accessibilityActions {
+                    ForEach(Array(folderActions.enumerated()), id: \.offset) { _, action in
+                        Button(action.title) { action.action() }
+                    }
+                }
+            }
 
             if project.project.pathIssue != nil {
                 Button {
@@ -2176,11 +2280,16 @@ struct WorkspaceSidebarView: View {
 
     private func hierarchyDisclosureButton(
         _ row: WorkspaceSidebarRow,
-        disclosureKey: String
+        disclosureKey: String,
+        expansion: Binding<Bool>? = nil
     ) -> some View {
-        let expanded = isExpanded(disclosureKey)
+        let expanded = expansion?.wrappedValue ?? isExpanded(disclosureKey)
         return Button {
-            toggle(disclosureKey)
+            if let expansion {
+                expansion.wrappedValue.toggle()
+            } else {
+                toggle(disclosureKey)
+            }
         } label: {
             hierarchyDisclosureIcon(isExpanded: expanded)
         }
