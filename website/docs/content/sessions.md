@@ -422,6 +422,9 @@ a session name already in use or a conversation kwt could not find.
 
 - Conversations resume only in panes where kwt's agent hooks recorded them.
   To install the hooks, see [Agents waiting for you](#agents-waiting-for-you).
+- A Codex session on Codex's shared background server comes back as a shell,
+  because its hooks cannot tell kwt which pane it ran in. Start Codex with
+  `codex --no-daemon` to keep its conversation restorable.
 - A session you end with **Kill Session…** is not offered again.
 - Ghosthub offers sessions from the default tmux server and kwt's server, on
   this Mac and on macOS and Linux hosts. Native Windows hosts do not save
