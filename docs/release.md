@@ -200,6 +200,9 @@ the matching helper revision for local and remote POSIX hosts together.
 Bare-container recognition verifies the live checkout and recorded inventory;
 kwt's regression coverage bounds it to three Git processes per recognized
 container.
+Linked-checkout recognition must verify that the live primary checkout shares
+its Git common directory before returning that primary path. An empty container
+identity must never compare equal to the process's current directory.
 The matching
 `projects remove <exact-path> --expected-repository <identity>
 --expected-registration <fingerprint> --json` boundary unregisters metadata

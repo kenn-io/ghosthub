@@ -99,7 +99,7 @@ those candidates while keeping registered descendants visible. Sibling checkouts
 share one project group, while folders leading to other registrations stay
 reachable.
 
-![Directory browsing with nested projects and a registered Notes folder](https://raw.githubusercontent.com/sarcasticbird/ghosthub/5df9e9a64e6b3de17fe5c1653c68294f30ba709f/guide-directory-browser.png)
+![Nested projects and worktrees with a registered Notes folder](https://raw.githubusercontent.com/sarcasticbird/ghosthub/3e8410b742be705933f348c9594cb0b827b9de17/guide-directory-browser.png)
 
 Use **… → Refresh Folders** to reload a folder after filesystem changes.
 Unregistered folders are hidden by default. Use **… → Show Unregistered
