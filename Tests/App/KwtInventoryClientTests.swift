@@ -4,6 +4,7 @@ import Testing
 @testable import GhosthubApp
 import GhosthubTmux
 import GhosthubWorkspace
+import GhosthubUI
 
 @Suite("kwt inventory")
 struct KwtInventoryClientTests {
@@ -1700,6 +1701,51 @@ struct KwtInventoryClientTests {
                 == "kwt-workspace-dir-old-name-abc"
         )
         #expect(merged.directoryWorkspaces[0].sessionLive)
+    }
+
+    @Test(
+        "Unicode-distinct directory registrations keep their own terminal targets",
+        arguments: [false, true]
+    )
+    func unicodeDirectoryIdentity(reverse: Bool) throws {
+        let hostID = UUID()
+        let paths = ["/hub/caf\u{e9}", "/hub/cafe\u{301}"]
+        let records = paths.enumerated().map { index, path in
+            KwtDirectoryWorkspaceRecord(
+                name: "directory-\(index)", path: path,
+                sessionName: "session-\(index)", sessionLive: true
+            )
+        }
+        var snapshot = WorkspaceSnapshot(
+            hosts: [.init(id: hostID, name: "Linux", kind: .remote, platform: .linux)],
+            projects: [], worktrees: []
+        )
+        let first = reverse ? records[1] : records[0]
+        snapshot = KwtSnapshotMerger.merge(
+            KwtHostInventory(projects: [], directoryWorkspaces: [first]),
+            hostID: hostID, into: snapshot
+        )
+        let firstID = try #require(snapshot.directoryWorkspaces.first?.id)
+        var identities: [Data: UUID] = [Data(first.path.utf8): firstID]
+        for iteration in 0 ..< 4 {
+            let ordered = iteration.isMultiple(of: 2) ? records : Array(records.reversed())
+            snapshot = KwtSnapshotMerger.merge(
+                KwtHostInventory(projects: [], directoryWorkspaces: ordered),
+                hostID: hostID, into: snapshot
+            )
+            #expect(Set(snapshot.directoryWorkspaces.map(\.id)).count == 2)
+            for row in snapshot.directoryWorkspaces {
+                let key = Data(row.path.utf8)
+                if let previous = identities[key] {
+                    #expect(row.id == previous)
+                }
+                identities[key] = row.id
+                let selected = try #require(snapshot.directoryWorkspace(id: row.id))
+                let terminal = WorkspaceSidebarModel.tmuxSessionSelection(for: selected)
+                #expect(terminal.workspacePath.map { Data($0.utf8) } == key)
+                #expect(terminal.name == row.tmuxSessionName)
+            }
+        }
     }
 
     @Test("failed project retention excludes a worktree already removed")
