@@ -258,6 +258,7 @@ enum WorkspaceSidebarHostMenuItem: Equatable {
     case newTmuxSession
     case newZellijSession
     case newHerdrSession
+    case restoreSavedTmuxSessions
     case addProject
 }
 
@@ -297,6 +298,17 @@ enum WorkspaceSidebarHostMenuModel {
                     : "Herdr isn't available on \(host.sidebarTitle)."
             ),
         ]]
+        if !host.savedTmuxSessions.isEmpty {
+            groups.append([
+                WorkspaceSidebarHostMenuEntry(
+                    item: .restoreSavedTmuxSessions,
+                    title: host.restoreSavedTmuxSessionsTitle,
+                    isEnabled: true,
+                    help: host.savedTmuxSessions.map(\.session)
+                        .joined(separator: ", ")
+                ),
+            ])
+        }
         if host.canRegisterProjects {
             groups.append([
                 WorkspaceSidebarHostMenuEntry(
@@ -308,5 +320,14 @@ enum WorkspaceSidebarHostMenuModel {
             ])
         }
         return groups
+    }
+}
+
+extension HostSummary {
+    var restoreSavedTmuxSessionsTitle: String {
+        let count = savedTmuxSessions.count
+        return count == 1
+            ? "Restore 1 Saved tmux Session"
+            : "Restore \(count) Saved tmux Sessions"
     }
 }

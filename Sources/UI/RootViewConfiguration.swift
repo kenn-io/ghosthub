@@ -493,6 +493,8 @@ public struct InteractionHandlers {
     public let currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)?
     public let loadWorktreeChanges: WorktreeChangesLoader?
     public let refreshWorkspaceInventory: (() -> Void)?
+    public let restoreSavedTmuxSessions:
+        ((UUID) async throws -> TmuxRestoreReport)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
     public let reconnectActiveHerdrSessionNow: (() -> Void)?
     public let reconnectActiveZellijSessionNow: (() -> Void)?
@@ -594,6 +596,8 @@ public struct InteractionHandlers {
         currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)? = nil,
         loadWorktreeChanges: WorktreeChangesLoader? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
+        restoreSavedTmuxSessions:
+        ((UUID) async throws -> TmuxRestoreReport)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
         reconnectActiveHerdrSessionNow: (() -> Void)? = nil,
         reconnectActiveZellijSessionNow: (() -> Void)? = nil,
@@ -673,6 +677,7 @@ public struct InteractionHandlers {
         self.currentWorkspaceSnapshot = currentWorkspaceSnapshot
         self.loadWorktreeChanges = loadWorktreeChanges
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
+        self.restoreSavedTmuxSessions = restoreSavedTmuxSessions
         self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
         self.reconnectActiveHerdrSessionNow = reconnectActiveHerdrSessionNow
         self.reconnectActiveZellijSessionNow = reconnectActiveZellijSessionNow

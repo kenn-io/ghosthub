@@ -437,6 +437,7 @@ enum WorkspaceAlert: Identifiable {
     case worktreeFlagFailure(worktree: String, message: String)
     case projectRemovalConfirmation(ProjectRemovalRequest)
     case projectRemovalFailure(project: String, message: String)
+    case savedTmuxSessionRestore(host: String, message: String)
 
     var id: String {
         switch self {
@@ -467,6 +468,8 @@ enum WorkspaceAlert: Identifiable {
                 + request.project.id.uuidString
         case let .projectRemovalFailure(project, message):
             return "project:failure:\(project):\(message)"
+        case let .savedTmuxSessionRestore(host, message):
+            return "saved-tmux-restore:\(host):\(message)"
         }
     }
 }

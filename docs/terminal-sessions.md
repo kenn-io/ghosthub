@@ -1186,6 +1186,42 @@ the client shows. The acknowledgement records the newest `done` stamp under
 that identity. Acknowledgements persist in
 UserDefaults and keep the 512 most recent sessions.
 
+### Saved session restore
+
+The managed kwt saves tmux sessions so they can come back after a reboot; see
+kwt's `session` commands. Its tmux hooks save each socket's layout as it
+changes, and agent hooks record each pane's Claude Code or Codex conversation.
+Once a server is gone, its saved sessions become restorable.
+
+| Ghosthub action | kwt command |
+| --- | --- |
+| List restorable sessions | `kwt session snapshot --json` |
+| Restore Saved tmux Sessions | `kwt session restore --json <id>...` |
+| After a confirmed Kill Session | `kwt session forget --socket-name <name> --session-id <id> --server-pid <pid> --created <time>` |
+
+Ghosthub runs `snapshot` in the background for the local Mac and each POSIX
+SSH host when kwt inventory starts, when hosts change, on every manual and
+scheduled inventory refresh, and when a host's kwt inventory first loads. A
+scheduled refresh lets a listing already running finish. A failure,
+including a host whose managed kwt is not installed yet, shows no saved
+sessions until the next listing. Ghosthub keeps only entries on the default and `kwt`
+sockets, the servers it discovers and attaches, and stores them on
+`HostSummary.savedTmuxSessions`. The host **+** menu and Command Palette offer
+**Restore Saved tmux Sessions** while that list is not empty.
+
+Restore first provisions the remote managed kwt, then restores every listed
+entry and refreshes inventory. Kwt exits nonzero when an entry fails but still
+prints a report for each entry. Ghosthub decodes that report and shows an
+alert only for entries that were not restored and for pane notes; restored
+sessions appear through ordinary tmux discovery.
+
+Forget runs after tmux confirms a kill, keyed by the reviewed server PID,
+session ID, and creation time. It uses the socket name because killing a
+server's last session also stops the server, after which tmux cannot report
+the socket path. Without forget, kwt's next save would find the server gone
+and offer the killed session for restore. Forget runs in the background; a
+failure leaves the killed session restorable.
+
 Pull-request imports are the one alternate-socket case. Kwt returns the named
 socket reserved for the workspace-specific server, and Ghosthub carries that
 identity with the worktree selection. Import does not start tmux or execute a

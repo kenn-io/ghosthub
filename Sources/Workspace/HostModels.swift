@@ -419,6 +419,9 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     public var backendTerminals: [BackendTerminalSummary]
     public var zellijSessions: [ZellijSessionSummary]
     public var zellijAvailable: Bool
+    /// Sessions kwt saved from a stopped tmux server that Ghosthub can
+    /// restore; see `SavedTmuxSession`.
+    public var savedTmuxSessions: [SavedTmuxSession]
     public var decodedConnectionState: HostConnectionState?
     public var transientOverride: HostConnectionState?
     public var operationAvailability:
@@ -449,6 +452,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         backendTerminals: [BackendTerminalSummary] = [],
         zellijSessions: [ZellijSessionSummary] = [],
         zellijAvailable: Bool = false,
+        savedTmuxSessions: [SavedTmuxSession] = [],
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
@@ -478,6 +482,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.backendTerminals = backendTerminals
         self.zellijSessions = zellijSessions
         self.zellijAvailable = zellijAvailable
+        self.savedTmuxSessions = savedTmuxSessions
         self.decodedConnectionState = decodedConnectionState
         self.transientOverride = transientOverride
         self.operationAvailability = operationAvailability

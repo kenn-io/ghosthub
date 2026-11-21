@@ -1216,6 +1216,34 @@ struct CommandPaletteModelTests {
             title: "Import Pull Request in ghosthub"
         )
     }
+
+    @Test("saved tmux sessions add a restore action to the host menu and palette")
+    func savedTmuxSessionRestoreActions() throws {
+        var host = HostSummary.fixture(platform: .macOS)
+        func restoreEntry() -> WorkspaceSidebarHostMenuEntry? {
+            WorkspaceSidebarHostMenuModel.entries(for: host).flatMap { $0 }
+                .first { $0.item == .restoreSavedTmuxSessions }
+        }
+        func paletteCommand() -> WorkspaceCommandItem? {
+            makeCommandPaletteCommands(
+                snapshot: .fixture(hosts: [host]),
+                selection: .init(selectedHostID: host.id)
+            ).first { $0.action == .restoreSavedTmuxSessions(host.id) }
+        }
+        #expect(restoreEntry() == nil)
+        #expect(paletteCommand() == nil)
+
+        let socket = SavedTmuxSession.Socket(path: "/tmp/tmux-501/default", name: "default")
+        host.savedTmuxSessions = [
+            .init(id: "a1", socket: socket, session: "api"),
+            .init(id: "b2", socket: socket, session: "web"),
+        ]
+        let entry = try #require(restoreEntry())
+        #expect(entry.title == "Restore 2 Saved tmux Sessions")
+        #expect(entry.help == "api, web")
+        #expect(entry.isEnabled)
+        #expect(try #require(paletteCommand()).subtitle == "api, web")
+    }
 }
 
 private func makeCommandPaletteCommands(

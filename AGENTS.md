@@ -7,7 +7,8 @@ This document is the foundational mandate for AI agents (Gemini, Codex, etc.) wo
 Ghosthub is a **native terminal for local and remote tmux, Herdr, and Zellij
 fleets** on macOS. It gives equal status to four ways of working:
 
-- Create or attach to any tmux session on a configured host.
+- Create or attach to any tmux session on a configured host, and restore
+  tmux sessions kwt saved before a reboot.
 - Create, attach to, stop, restart, or delete Herdr TUI sessions on a supported
   host. On macOS, also discover and attach to backend terminals on local and
   remote POSIX hosts: live Herdr desktop/core terminals and Rex windows. The

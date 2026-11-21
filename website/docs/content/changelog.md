@@ -21,6 +21,10 @@ test, and documentation-only changes are omitted.
 - Herdr desktop tabs open with their split panes side by side, as one
   **herdr** row per tab, and follow changes Herdr desktop makes to the
   layout. Focus and zoom panes in Ghosthub; Herdr desktop keeps the layout.
+- Bring tmux sessions back after a reboot. Choose **Restore Saved tmux
+  Sessions** from a host's **+** menu or the Command Palette to rebuild their
+  windows and panes and resume the Claude Code and Codex conversations in
+  them. See [Restore sessions after a reboot](sessions.md#restore-sessions-after-a-reboot).
 
 ### Changed
 
