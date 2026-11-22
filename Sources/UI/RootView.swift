@@ -33,6 +33,11 @@ public struct RootView: View {
     @State private var sidePanelUserOverride = false
     @State private var tmuxSelectionBaseline: WorkspaceSelection?
     @State private var peerTakeoverNavigationSelection: WorkspaceSelection?
+    /// Changes whenever the person opens or leaves a session here, so a slow
+    /// operation can tell whether it may still take over the terminal.
+    @State private var sessionNavigationRevision: UInt64 = 0
+    /// Saved-session entries this window asked kwt to restore.
+    @State private var pendingSavedTmuxRestores: Set<String> = []
     @StateObject private var herdrPresentationIntent =
         HerdrPresentationIntentController()
     @StateObject private var herdrLifecyclePreparation =
@@ -763,6 +768,7 @@ public struct RootView: View {
             onRestartHerdrSession: restartHerdrSession,
             onRequestHerdrSessionLifecycle: requestHerdrSessionLifecycle,
             onNavigateAwayFromSession: {
+                sessionNavigationRevision &+= 1
                 hideTmuxSession()
                 deactivateHerdrSession()
                 handlers.cancelPendingZellijPresentation?()
@@ -809,6 +815,9 @@ public struct RootView: View {
             onAddProject: { host in
                 addProjectHost = host
             },
+            onRestoreSavedTmuxSessions: restoreSavedTmuxSessions,
+            onRestoreSavedTmuxSession: restoreSavedTmuxSession,
+            onRequestDismissSavedTmuxSession: requestSavedTmuxSessionDismissal,
             onRefreshInventory: {
                 handlers.refreshWorkspaceInventory?()
             },
@@ -1028,6 +1037,7 @@ public struct RootView: View {
         _ session: WorkspaceTmuxSessionSelection,
         selectionBaseline: WorkspaceSelection? = nil
     ) {
+        sessionNavigationRevision &+= 1
         deactivateHerdrSession()
         deactivateZellijSession()
         deactivateBackendTerminal()
@@ -1043,6 +1053,7 @@ public struct RootView: View {
     private func activateHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        sessionNavigationRevision &+= 1
         peerTakeoverNavigationSelection = WorkspaceSelection(
             selectedHostID: session.hostID
         )
@@ -1059,6 +1070,7 @@ public struct RootView: View {
     private func activateZellijSession(
         _ session: WorkspaceZellijSessionSelection
     ) {
+        sessionNavigationRevision &+= 1
         peerTakeoverNavigationSelection = WorkspaceSelection(
             selectedHostID: session.hostID
         )
@@ -1072,6 +1084,7 @@ public struct RootView: View {
     private func activateBackendTerminal(
         _ terminal: WorkspaceBackendTerminalSelection
     ) {
+        sessionNavigationRevision &+= 1
         peerTakeoverNavigationSelection = WorkspaceSelection(
             selectedHostID: terminal.hostID
         )
@@ -1250,6 +1263,7 @@ public struct RootView: View {
     private func restartHerdrSession(
         _ session: WorkspaceHerdrSessionSelection
     ) {
+        sessionNavigationRevision &+= 1
         WorkspacePresentationLifecycle.transitionHerdrSession(
             to: session,
             from: activeHerdrSession,
@@ -1676,6 +1690,128 @@ public struct RootView: View {
                 message: Text(message),
                 dismissButton: .default(Text("OK"))
             )
+        case let .savedTmuxSessionRestore(host, message):
+            return Alert(
+                title: Text("Some Sessions on \(host) Were Not Restored"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        case let .savedTmuxSessionDismissConfirmation(saved, host):
+            return Alert(
+                title: Text("Dismiss “\(saved.session.name)”?"),
+                message: Text(
+                    "kwt forgets this saved session on \(host), so it can no longer"
+                        + " be restored with its layout and agent conversations."
+                ),
+                primaryButton: .destructive(Text("Dismiss Session")) {
+                    Task {
+                        do {
+                            guard let dismiss = handlers.dismissSavedTmuxSession else {
+                                throw KwtSavedSessionUnavailableError()
+                            }
+                            try await dismiss(saved.hostID, saved.entryID)
+                        } catch {
+                            presentNonWorktreeWorkspaceAlert(.savedTmuxSessionDismissFailure(
+                                session: saved.session.name,
+                                message: error.localizedDescription
+                            ))
+                        }
+                    }
+                },
+                secondaryButton: .cancel()
+            )
+        case let .savedTmuxSessionDismissFailure(session, message):
+            return Alert(
+                title: Text("Could Not Dismiss “\(session)”"),
+                message: Text(message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+
+    /// Restores one saved session and attaches to it, unless the person
+    /// moved elsewhere while kwt rebuilt it. Reports only what did not come
+    /// back cleanly.
+    private func restoreSavedTmuxSession(_ saved: WorkspaceSavedTmuxSessionSelection) {
+        guard let restore = handlers.restoreSavedTmuxSessions,
+              pendingSavedTmuxRestores.insert(saved.entryID).inserted
+        else { return }
+        let host = snapshot.host(id: saved.hostID)?.sidebarTitle ?? "this host"
+        // Asking for this session supersedes any restore still running, so
+        // only the latest request attaches.
+        sessionNavigationRevision &+= 1
+        let startingNavigation = navigationRevisions
+        Task {
+            defer { pendingSavedTmuxRestores.remove(saved.entryID) }
+            let report: TmuxRestoreReport
+            do {
+                report = try await restore(saved.hostID, [saved.entryID])
+            } catch {
+                presentNonWorktreeWorkspaceAlert(.savedTmuxSessionRestore(
+                    host: host,
+                    message: error.localizedDescription
+                ))
+                return
+            }
+            let cameBack = report.entries.contains {
+                $0.id == saved.entryID
+                    && ($0.outcome == "restored" || $0.outcome == "partially restored")
+            }
+            if cameBack, navigationRevisions == startingNavigation {
+                // Open it as the palette's Open command would, so the
+                // selection follows the terminal.
+                let routeSelection = WorkspacePresentationLifecycle
+                    .selectionForTmuxCommand(
+                        saved.session,
+                        from: selection,
+                        in: snapshot,
+                        visibility: worktreeVisibility
+                    )
+                selectWorkspace(routeSelection)
+                activateTmuxSession(saved.session, selectionBaseline: routeSelection)
+            }
+            let problems = report.problems
+            guard !problems.isEmpty else { return }
+            presentNonWorktreeWorkspaceAlert(.savedTmuxSessionRestore(
+                host: host,
+                message: problems.joined(separator: "\n")
+            ))
+        }
+    }
+
+    private func requestSavedTmuxSessionDismissal(
+        _ saved: WorkspaceSavedTmuxSessionSelection
+    ) {
+        presentNonWorktreeWorkspaceAlert(.savedTmuxSessionDismissConfirmation(
+            saved,
+            host: snapshot.host(id: saved.hostID)?.sidebarTitle ?? "this host"
+        ))
+    }
+
+    /// Navigation here and in the scene, such as keyboard session stepping,
+    /// to notice whether the person moved on during a slow operation.
+    private var navigationRevisions: [UInt64?] {
+        [sessionNavigationRevision, handlers.userNavigationRevision?()]
+    }
+
+    /// Reports only what did not come back; restored sessions appear in
+    /// the sidebar on the next refresh.
+    private func restoreSavedTmuxSessions(_ host: HostSummary) {
+        guard let restore = handlers.restoreSavedTmuxSessions else { return }
+        let ids = host.savedTmuxSessions.map(\.id)
+        Task {
+            let message: String
+            do {
+                let problems = try await restore(host.id, ids).problems
+                guard !problems.isEmpty else { return }
+                message = problems.joined(separator: "\n")
+            } catch {
+                message = error.localizedDescription
+            }
+            presentNonWorktreeWorkspaceAlert(.savedTmuxSessionRestore(
+                host: host.sidebarTitle,
+                message: message
+            ))
         }
     }
 
@@ -2171,6 +2307,13 @@ public struct RootView: View {
         case let .addProject(hostID):
             guard let host = snapshot.host(id: hostID) else { return }
             addProjectHost = host
+        case let .restoreSavedTmuxSessions(hostID):
+            guard let host = snapshot.host(id: hostID) else { return }
+            restoreSavedTmuxSessions(host)
+        case let .restoreSavedTmuxSession(saved):
+            restoreSavedTmuxSession(saved)
+        case let .dismissSavedTmuxSession(saved):
+            requestSavedTmuxSessionDismissal(saved)
         case let .openTmuxSession(tmuxSession):
             let routeSelection = WorkspacePresentationLifecycle
                 .selectionForTmuxCommand(
@@ -2328,6 +2471,7 @@ public struct RootView: View {
     }
 
     private func selectWorkspace(_ updatedSelection: WorkspaceSelection) {
+        sessionNavigationRevision &+= 1
         if herdrCreationTask != nil {
             cancelHerdrCreation()
         }
@@ -2464,6 +2608,12 @@ private struct SessionThemeUnavailableError: LocalizedError {
 private struct HerdrLifecycleUnavailableError: LocalizedError {
     var errorDescription: String? {
         "Herdr session lifecycle actions are unavailable."
+    }
+}
+
+private struct KwtSavedSessionUnavailableError: LocalizedError {
+    var errorDescription: String? {
+        "Saved tmux sessions are unavailable."
     }
 }
 

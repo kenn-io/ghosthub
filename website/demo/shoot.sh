@@ -216,6 +216,27 @@ capture_agent_attention() {
   done
 }
 
+capture_saved_sessions() {
+  # The faux kwt lists these saved sessions only while this file exists.
+  # Inventory refreshes saved sessions with the rest of the host, so write
+  # the file before the palette activates the demo.
+  local saved="$scratch/kwt-saved-sessions.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    demo-saved-api-migration api-migration 2 3 '["claude", "agy"]' \
+    demo-saved-nightly-evals nightly-evals 1 2 '["codex"]' >"$saved"
+  palette "add-session-filters"
+  sleep 35
+  capture_state guide-session-restore.png
+  rm -f "$saved"
+}
+
+if [[ "${GHOSTHUB_DEMO_SAVED_SESSIONS_ONLY:-}" == "1" ]]; then
+  echo "==> guide: restore saved tmux sessions"
+  capture_saved_sessions
+  echo "captured saved session website asset -> $out_dir"
+  exit 0
+fi
+
 if [[ "${GHOSTHUB_DEMO_AGENT_ATTENTION_ONLY:-}" == "1" ]]; then
   echo "==> guide: agent state badges"
   capture_agent_attention
@@ -656,5 +677,8 @@ capture_state guide-session-activity.png
 
 echo "==> guide: agent state badges"
 capture_agent_attention
+
+echo "==> guide: restore saved tmux sessions"
+capture_saved_sessions
 
 echo "captured website asset set -> $out_dir"

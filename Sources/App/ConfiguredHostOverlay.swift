@@ -95,6 +95,7 @@ enum ConfiguredHostOverlay {
                 host.herdrSessions = []
                 host.backendTerminals = []
                 host.zellijSessions = []
+                host.savedTmuxSessions = []
                 host.herdrAvailable = false
                 host.zellijAvailable = false
             }
@@ -102,6 +103,7 @@ enum ConfiguredHostOverlay {
                 host.herdrSessions = []
                 host.backendTerminals = []
                 host.zellijSessions = []
+                host.savedTmuxSessions = []
                 host.herdrAvailable = false
                 host.zellijAvailable = false
             }

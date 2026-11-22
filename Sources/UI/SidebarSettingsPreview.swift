@@ -103,7 +103,7 @@ struct SidebarSettingsPreview: View {
             backend: session.row.sessionBackend ?? .tmux,
             labelStyle: preferences.backendLabelStyle,
             agentAttention: session.attention,
-            isStopped: session.row.herdrSessionState == .stopped,
+            inactiveLabel: session.row.inactiveLabel,
             isSelected: session.isSelected
         )
         .padding(.trailing, WorkspaceSessionActionPresentation.columnWidth)

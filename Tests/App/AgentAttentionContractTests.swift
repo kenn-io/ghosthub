@@ -29,23 +29,51 @@ extension PinnedKwtContractTests {
         let fields = pane.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "\t").map(String.init)
         try #require(fields.count == 2)
+        let fixture = try TempDirectoryFixture(shortPath: true)
+        let kwtHome = try fixture.createSubdirectory("kwt-home")
+        var hookRuns = 0
 
+        // kwt records only a hook that runs inside the pane its tmux
+        // environment names, as an agent's hook does, so the hook runs below
+        // the pane's own process. The pane then sleeps again.
         func runHook(_ event: String, _ extra: String = "") throws {
+            hookRuns += 1
+            let dir = try fixture.createSubdirectory("hook-\(hookRuns)")
             let payload = #"{"session_id":"s-1","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","#
                 + #""permission_mode":"default","hook_event_name":""# + event + #"""#
                 + extra + "}"
-            let hook = AccountCommandRunner.runProcess(
-                executable: "/bin/sh",
-                arguments: [
-                    "-c",
-                    "printf '%s' \"$1\" | \"$0\" agent-hook run --agent claude"
-                        + " --source kwt-tmux-agent-state",
-                    binary, payload,
+            let input = dir.appendingPathComponent("input")
+            let output = dir.appendingPathComponent("output")
+            let status = dir.appendingPathComponent("status")
+            let script = dir.appendingPathComponent("run.sh")
+            try payload.write(to: input, atomically: true, encoding: .utf8)
+            try """
+            export KWT_HOME=\(shellQuotedCommandArgument(kwtHome.path))
+            \(shellQuotedCommandArgument(binary)) agent-hook run --agent claude \
+            --source kwt-tmux-agent-state <\(shellQuotedCommandArgument(input.path)) \
+            >\(shellQuotedCommandArgument(output.path)) 2>&1
+            echo $? >\(shellQuotedCommandArgument(status.path))
+            exec /bin/sleep 60
+
+            """.write(to: script, atomically: true, encoding: .utf8)
+            let respawn = AccountCommandRunner.runProcess(
+                executable: tmuxPath,
+                arguments: server.connectionArguments + [
+                    "respawn-pane", "-k", "-t", fields[0],
+                    "/bin/sh " + shellQuotedCommandArgument(script.path),
                 ],
-                timeout: 10,
-                environmentOverrides: ["TMUX": fields[1], "TMUX_PANE": fields[0]]
+                timeout: 5
             )
-            try #require(hook.status == 0, Comment(rawValue: hook.stderr))
+            try #require(respawn.status == 0, Comment(rawValue: respawn.stderr))
+            let deadline = Date().addingTimeInterval(10)
+            var code = ""
+            while code.isEmpty, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.02)
+                code = (try? String(contentsOf: status, encoding: .utf8))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            }
+            let logged = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
+            try #require(code == "0", Comment(rawValue: "hook status \(code): \(logged)"))
         }
         let bin = URL(fileURLWithPath: tmuxPath).deletingLastPathComponent().path
         let resolver = TmuxBinaryResolver(processRunner: { shell, command in

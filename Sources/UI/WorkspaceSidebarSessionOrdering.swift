@@ -38,8 +38,7 @@ enum WorkspaceSidebarSessionOrdering {
                     < attentionRank($1, agentAttentionByEndpoint)
             }
         }
-        return sorted.filter { $0.herdrSessionState != .stopped }
-            + sorted.filter { $0.herdrSessionState == .stopped }
+        return sorted.filter { !$0.isInactive } + sorted.filter(\.isInactive)
     }
 
     private static func manual(

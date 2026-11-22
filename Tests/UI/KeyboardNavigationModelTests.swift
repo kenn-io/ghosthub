@@ -108,6 +108,21 @@ struct KeyboardNavigationModelTests {
         #expect(KeyboardNavigationModel.siblingTargets(
             for: .herdrSession(hostID: hostID, name: "stopped"), in: context
         ).isEmpty)
+
+        // A saved tmux session restores when opened, so stepping skips it too.
+        var savedSnapshot = snapshot
+        savedSnapshot.hosts[0].savedTmuxSessions = [SavedTmuxSession(
+            id: "s1",
+            socket: .init(path: "/tmp/tmux-501/default", name: "default"),
+            session: "saved"
+        )]
+        #expect(KeyboardNavigationModel.siblingTargets(
+            for: .tmuxSession(hostID: hostID, name: "alpha"),
+            in: KeyboardNavigationContext(
+                snapshot: savedSnapshot,
+                tmuxSessionVisibility: .init(hiddenPatterns: ["hidden"])
+            )
+        ) == sessions)
         #expect(KeyboardNavigationModel.steppedTarget(
             from: .tmuxSession(hostID: hostID, name: "omega"),
             step: 1,

@@ -447,10 +447,48 @@ To turn this on for a host:
 3. In Codex, open `/hooks` once to trust the new hooks.
 
 Ghosthub installs hooks for each supported agent already set up on that host,
-including Claude Code, Codex, Gemini CLI, and Cursor. Badges refresh when you
+including Claude Code, Codex, Antigravity CLI (`agy`), Gemini CLI, and
+Cursor. `agy` reports only **Working** and **Done**. Badges refresh when you
 switch to Ghosthub and about every thirty seconds while it stays in front.
 Native Windows hosts and Herdr and Zellij sessions do not show agent
 badges yet.
+
+## Restore sessions after a reboot
+
+kwt saves your tmux sessions as they change: each session's windows, panes,
+and working directories, plus the Claude Code, Codex, or Antigravity CLI
+((`agy`) conversation running in each pane. After a host restarts, or its tmux
+server stops, each saved session appears in the host's session list as a
+dimmed **saved** row, below the running sessions.
+
+![Sidebar listing two saved tmux sessions as dimmed rows below the running sessions](/docs/assets/guide-session-restore.png)
+
+- To bring back one session, click its row. Ghosthub restores it and attaches.
+  The row shows **restoring…** while agents start, which can take a few
+  seconds.
+- To bring back every saved session on a host, open the host row's **+** menu,
+  or the Command Palette, and choose **Restore Saved tmux Sessions**.
+- To discard a saved session, open its row's **⋯** menu, choose
+  **Dismiss Saved Session…**, and confirm. kwt deletes the saved layout and
+  conversation references; nothing is restored.
+
+Ghosthub rebuilds each session's windows and panes in their saved directories
+and resumes each saved conversation in its pane. Other panes come back as
+shells. If a session or pane does not come back, Ghosthub lists why, such as
+a session name already in use or a conversation kwt could not find.
+
+A saved worktree or directory workspace session has no row of its own. Open
+its workspace row as usual; kwt restores the saved session when it opens it.
+
+- Conversations resume only in panes where kwt's agent hooks recorded them.
+  To install the hooks, see [Agents waiting for you](#agents-waiting-for-you).
+- A Codex session on Codex's shared background server comes back as a shell,
+  because its hooks cannot tell kwt which pane it ran in. Start Codex with
+  `codex --no-daemon` to keep its conversation restorable.
+- A session you end with **Kill Session…** is not offered again.
+- Ghosthub offers sessions from the default tmux server and kwt's server, on
+  this Mac and on macOS and Linux hosts. Native Windows hosts do not save
+  sessions.
 
 ## Reopen an exited standalone session
 

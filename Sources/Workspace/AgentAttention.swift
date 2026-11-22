@@ -84,6 +84,7 @@ public enum AgentAttention: Equatable, Sendable {
 
     static func displayName(_ agent: String) -> String {
         switch agent {
+        case "agy": "Antigravity"
         case "claude": "Claude"
         case "codex": "Codex"
         case "copilot": "Copilot"

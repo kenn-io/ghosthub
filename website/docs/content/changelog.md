@@ -24,6 +24,11 @@ test, and documentation-only changes are omitted.
 - Rust port: open remote Rex windows over SSH, including SSH over Tailscale.
   Split, focus, zoom, resize, and close panes. Detaching keeps the programs
   running.
+- Bring tmux sessions back after a reboot. Sessions saved before a host
+  restarted appear as dimmed **saved** rows; click one to rebuild its windows
+  and panes and resume the Claude Code, Codex, and Antigravity CLI (`agy`)
+  conversations in it, or restore them all from the host's **+** menu. See
+  [Restore sessions after a reboot](sessions.md#restore-sessions-after-a-reboot).
 
 ### Changed
 

@@ -247,6 +247,9 @@ struct WorkspaceSidebarView: View {
     let onNewHerdrSession: (HostSummary) -> Void
     let onNewZellijSession: (HostSummary) -> Void
     let onAddProject: (HostSummary) -> Void
+    let onRestoreSavedTmuxSessions: (HostSummary) -> Void
+    let onRestoreSavedTmuxSession: (WorkspaceSavedTmuxSessionSelection) -> Void
+    let onRequestDismissSavedTmuxSession: (WorkspaceSavedTmuxSessionSelection) -> Void
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
     let onReviewSSHHostKey: (UUID, String) -> Void
@@ -362,6 +365,11 @@ struct WorkspaceSidebarView: View {
         onNewHerdrSession: @escaping (HostSummary) -> Void = { _ in },
         onNewZellijSession: @escaping (HostSummary) -> Void = { _ in },
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
+        onRestoreSavedTmuxSessions: @escaping (HostSummary) -> Void = { _ in },
+        onRestoreSavedTmuxSession: @escaping (WorkspaceSavedTmuxSessionSelection) -> Void = { _ in
+        },
+        onRequestDismissSavedTmuxSession:
+        @escaping (WorkspaceSavedTmuxSessionSelection) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
         onOpenHostSettings: @escaping () -> Void = {},
         onReviewSSHHostKey: @escaping (UUID, String) -> Void = { _, _ in },
@@ -426,6 +434,9 @@ struct WorkspaceSidebarView: View {
         self.onNewHerdrSession = onNewHerdrSession
         self.onNewZellijSession = onNewZellijSession
         self.onAddProject = onAddProject
+        self.onRestoreSavedTmuxSessions = onRestoreSavedTmuxSessions
+        self.onRestoreSavedTmuxSession = onRestoreSavedTmuxSession
+        self.onRequestDismissSavedTmuxSession = onRequestDismissSavedTmuxSession
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
         self.onReviewSSHHostKey = onReviewSSHHostKey
@@ -699,6 +710,7 @@ struct WorkspaceSidebarView: View {
         case .newTmuxSession: onNewTmuxSession(host)
         case .newZellijSession: onNewZellijSession(host)
         case .newHerdrSession: onNewHerdrSession(host)
+        case .restoreSavedTmuxSessions: onRestoreSavedTmuxSessions(host)
         case .addProject: onAddProject(host)
         }
     }
@@ -1037,6 +1049,8 @@ struct WorkspaceSidebarView: View {
             renamableTmuxSession: row.sessionBackend == nil
                 ? nil : renamableTmuxSession,
             runningTmuxSession: runningTmuxSession,
+            savedTmuxSession: row.savedTmuxSessionIsRestoring
+                ? nil : row.savedTmuxSession,
             zellijSelection: zellijSelection,
             herdrActions: herdrActions
         )
@@ -1086,6 +1100,11 @@ struct WorkspaceSidebarView: View {
                         visibility: visibility
                     )
                     onOpenZellijSession(zellijSelection)
+                    return
+                }
+                if let saved = row.savedTmuxSession {
+                    selection.select(row.target, in: snapshot, visibility: visibility)
+                    onRestoreSavedTmuxSession(saved)
                     return
                 }
                 if case let .tmuxSession(hostID, name, socketName) = row.target {
@@ -1151,7 +1170,7 @@ struct WorkspaceSidebarView: View {
                             labelStyle: sidebarPreferences.backendLabelStyle,
                             agentAttention: agentAttention,
                             showsRecentOutput: isTmuxSessionWorking,
-                            isStopped: row.herdrSessionState == .stopped,
+                            inactiveLabel: row.inactiveLabel,
                             isSelected: isSelected
                         )
                         .padding(.trailing, actionPresentation.reservedWidth)
@@ -1198,10 +1217,8 @@ struct WorkspaceSidebarView: View {
             }
             .help(Self.rowHelp(row))
             .buttonStyle(.plain)
-            .disabled(herdrOperationIsPending)
-            .opacity(
-                row.herdrSessionState == .stopped && !isSelected ? 0.68 : 1
-            )
+            .disabled(herdrOperationIsPending || row.savedTmuxSessionIsRestoring)
+            .opacity(row.isInactive && !isSelected ? 0.68 : 1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .workspaceAccessibility(
                 WorkspaceAccessibilityModel.descriptor(
@@ -1472,10 +1489,24 @@ struct WorkspaceSidebarView: View {
     private func sessionActionGroups(
         renamableTmuxSession: WorkspaceTmuxSessionSelection?,
         runningTmuxSession: WorkspaceTmuxSessionSelection?,
+        savedTmuxSession: WorkspaceSavedTmuxSessionSelection?,
         zellijSelection: WorkspaceZellijSessionSelection?,
         herdrActions: [WorkspaceSidebarRowAction]
     ) -> [[NativePopupMenuAction]] {
         var groups: [[NativePopupMenuAction]] = []
+        if let savedTmuxSession {
+            groups.append([
+                NativePopupMenuAction("Restore Session") {
+                    onRestoreSavedTmuxSession(savedTmuxSession)
+                },
+                NativePopupMenuAction(
+                    "Dismiss Saved Session…",
+                    role: .destructive
+                ) {
+                    onRequestDismissSavedTmuxSession(savedTmuxSession)
+                },
+            ])
+        }
         if let renamableTmuxSession {
             groups.append([NativePopupMenuAction("Rename Session…") {
                 onRequestRenameTmuxSession(renamableTmuxSession)

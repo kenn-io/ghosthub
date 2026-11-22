@@ -57,7 +57,11 @@ current discovery. Other live presentations retain their running or agent
 glyph when no trustworthy count exists. Tmux sessions running a coding agent
 show a badge for approval, input, an unviewed finished turn, or work in
 progress from kwt agent-hook state on the pane; see
-[Agent attention](terminal-sessions.md#agent-attention). Cached sessions do not
+[Agent attention](terminal-sessions.md#agent-attention). Each host also
+lists tmux sessions kwt saved before their server stopped, such as after a
+reboot, as dimmed rows that restore them with their Claude Code, Codex, and
+`agy` conversations; see
+[Saved session restore](terminal-sessions.md#saved-session-restore). Cached sessions do not
 remain live while a host is unreachable. Kwt-owned sessions are hidden from the host session list by
 default, with a Sidebar setting that exposes those duplicate entries.
 

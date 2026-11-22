@@ -222,6 +222,13 @@ final class WorkspaceSceneModel: ObservableObject {
     private var zellijCreationDiscoveryRetryID: UUID?
     private var zellijCreationDiscoveryRetryAttempt = 0
     private var zellijFreshHostIDs: Set<UUID> = []
+    /// Sessions kwt saved from stopped tmux servers; see the saved tmux
+    /// session extension at the end of this file.
+    private var savedTmuxSessionsByHost: [UUID: [SavedTmuxSession]] = [:]
+    /// Saved-session entries any window is restoring now.
+    private let savedTmuxSessionRestores: SavedTmuxSessionRestores
+    private var savedTmuxSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
+    private let kwtSessionClient: KwtSessionClient
     // Backend terminals (Herdr Core and Rex); see the extension at the end
     // of this file.
     private var backendTerminalsByHost: [UUID: [BackendTerminalSummary]] = [:]
@@ -741,7 +748,7 @@ final class WorkspaceSceneModel: ObservableObject {
             [TmuxPresentationKey: PendingRemovalPresentation]] = [:]
     /// Every session check gives up once this changes, so their holds on
     /// the views behind them end with the navigation, not with the check.
-    private var userNavigationRevision: UInt64 = 0 {
+    private(set) var userNavigationRevision: UInt64 = 0 {
         didSet { endSessionChecksSupersededByNavigation() }
     }
     private var isShutDown = false
@@ -1477,6 +1484,8 @@ final class WorkspaceSceneModel: ObservableObject {
         zellijSessionDiscovery: @escaping ZellijSessionDiscovery = { host in
             await ZellijInventoryClient().discover(on: host)
         },
+        kwtSessionClient: KwtSessionClient = KwtSessionClient(),
+        savedTmuxSessionRestores: SavedTmuxSessionRestores = .shared,
         zellijSessionValidationDiscovery:
         @escaping ZellijSessionValidationDiscovery = { host, arguments in
             await BlockingTask.run(priority: .utility) {
@@ -1697,6 +1706,8 @@ final class WorkspaceSceneModel: ObservableObject {
         self.tmuxSessionValidationExactProbe =
             tmuxSessionValidationExactProbe
         self.zellijSessionDiscovery = zellijSessionDiscovery
+        self.kwtSessionClient = kwtSessionClient
+        self.savedTmuxSessionRestores = savedTmuxSessionRestores
         self.backendTerminalDiscovery = backendTerminalDiscovery
         self.backendTerminalValidationDiscovery = backendTerminalValidationDiscovery
         self.zellijSessionValidationDiscovery =
@@ -2909,6 +2920,7 @@ final class WorkspaceSceneModel: ObservableObject {
         )
         refreshHerdrSessionDiscovery()
         refreshZellijSessionDiscovery()
+        refreshSavedTmuxSessions()
     }
 
     func startKwtInventory() {
@@ -2916,6 +2928,7 @@ final class WorkspaceSceneModel: ObservableObject {
         kwtInventoryEnabled = true
         reconcileInventoryHosts()
         updateSharedInventorySubscription()
+        refreshSavedTmuxSessions()
     }
 
     func createWorktree(_ request: WorktreeCreateRequest) async throws {
@@ -4372,6 +4385,9 @@ final class WorkspaceSceneModel: ObservableObject {
         for (hostID, target) in resolved where !Self.supportsZellij(target) {
             zellijSessionsByHost[hostID] = []
         }
+        savedTmuxSessionsByHost = savedTmuxSessionsByHost.filter {
+            retainedHostIDs.contains($0.key)
+        }
         inventoryHosts = resolved
         appliedKwtInventoryRevisions = appliedKwtInventoryRevisions.filter {
             resolved[$0.key.hostID] == $0.key.commandHost
@@ -4400,6 +4416,7 @@ final class WorkspaceSceneModel: ObservableObject {
         applyInventoryOverlayIfNeeded()
         scheduleHerdrSessionDiscovery()
         scheduleZellijSessionDiscovery()
+        refreshSavedTmuxSessions()
     }
 
     private func applyInventoryOverlayIfNeeded() {
@@ -4427,6 +4444,7 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijSessionsByHost: zellijSessionsByHost,
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
+            savedTmuxSessionsByHost: savedTmuxSessionsByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
             tmuxAuthoritativeHostIDs: tmuxFreshHostIDs,
@@ -4474,6 +4492,10 @@ final class WorkspaceSceneModel: ObservableObject {
             ),
             zellijAvailabilityByHost: hostScopedValue(
                 zellijAvailabilityByHost,
+                hostID: hostID
+            ),
+            savedTmuxSessionsByHost: hostScopedValue(
+                savedTmuxSessionsByHost,
                 hostID: hostID
             ),
             tmuxReachabilityByHost: hostScopedValue(
@@ -5658,6 +5680,11 @@ final class WorkspaceSceneModel: ObservableObject {
         }
         kwtInventoriesByHost[hostID] = reconciled
         if recordsSuccessfulLoad {
+            // A remote host's first saved-session listing can run before
+            // its managed kwt is installed; list again once kwt answers.
+            if kwtAvailabilityByHost[hostID] != true {
+                refreshSavedTmuxSessions(hostID: hostID)
+            }
             kwtAvailabilityByHost[hostID] = true
             kwtInventoryFailuresByHost.removeValue(forKey: hostID)
         }
@@ -5865,6 +5892,7 @@ final class WorkspaceSceneModel: ObservableObject {
             zellijSessionsByHost: zellijSessionsByHost,
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
+            savedTmuxSessionsByHost: savedTmuxSessionsByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
             tmuxAuthoritativeHostIDs: tmuxFreshHostIDs,
@@ -5921,6 +5949,9 @@ final class WorkspaceSceneModel: ObservableObject {
         if !isZellijDiscoveryLoading {
             scheduleZellijSessionDiscovery()
         }
+        // A host that reboots while Ghosthub stays open has sessions to
+        // restore once it is back.
+        refreshSavedTmuxSessions(restarting: false)
     }
 
     func startHerdrSessionDiscovery() {
@@ -12144,6 +12175,7 @@ final class WorkspaceSceneModel: ObservableObject {
             request.routeIdentity,
             confirmedHost
         )
+        forgetSavedTmuxSession(request, on: confirmedHost)
 
         let activeTargetAfterKill = activeBorrowedTmuxSelection.flatMap {
             Self.sameTmuxEndpoint($0, tmuxSelection) ? $0 : nil
@@ -16449,4 +16481,112 @@ struct RexPaneCloseRequest: Identifiable, Equatable {
     let windowHandleID: UUID
     let blockID: String
     let title: String
+}
+
+// MARK: - Saved tmux sessions
+
+extension WorkspaceSceneModel {
+    /// kwt saves tmux sessions on the local Mac and on POSIX SSH hosts.
+    private static func keepsSavedTmuxSessions(_ host: CommandHost) -> Bool {
+        if case let .ssh(info) = host {
+            return info.platform == .posix
+        }
+        return true
+    }
+
+    /// Lists the sessions kwt can restore on each POSIX host, in the
+    /// background. A host where kwt cannot list them shows none.
+    /// A scheduled refresh passes `restarting: false` so a listing already
+    /// running finishes; other refreshes replace it with a fresh one.
+    private func refreshSavedTmuxSessions(
+        hostID: UUID? = nil,
+        restarting: Bool = true
+    ) {
+        guard !isShutDown, kwtInventoryEnabled else { return }
+        for (id, host) in inventoryHosts
+            where (hostID == nil || hostID == id) && Self.keepsSavedTmuxSessions(host) {
+            if !restarting, savedTmuxSessionDiscoveryTasks[id] != nil {
+                continue
+            }
+            savedTmuxSessionDiscoveryTasks[id]?.cancel()
+            savedTmuxSessionDiscoveryTasks[id] = Task { [weak self, kwtSessionClient] in
+                let sessions = await (try? kwtSessionClient.savedSessions(on: host)) ?? []
+                guard let self, !Task.isCancelled, !isShutDown else { return }
+                savedTmuxSessionDiscoveryTasks[id] = nil
+                guard inventoryHosts[id] == host else { return }
+                setSavedTmuxSessions(sessions.filter(\.isOnGhosthubServer), hostID: id)
+            }
+        }
+    }
+
+    private func setSavedTmuxSessions(_ sessions: [SavedTmuxSession], hostID: UUID) {
+        savedTmuxSessionsByHost[hostID] = sessions.map {
+            var session = $0
+            session.isRestoring = savedTmuxSessionRestores.contains(session.id, hostID: hostID)
+            return session
+        }
+        applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
+    }
+
+    /// Restores the requested saved sessions that Ghosthub lists on the host
+    /// and that no window is restoring already.
+    func restoreSavedTmuxSessions(
+        _ requested: [String],
+        hostID: UUID
+    ) async throws -> TmuxRestoreReport {
+        guard let host = inventoryHosts[hostID] else {
+            throw KwtSessionError(host: snapshot.host(id: hostID)?.name ?? "this host")
+        }
+        let listed = savedTmuxSessionsByHost[hostID] ?? []
+        let ids = savedTmuxSessionRestores.begin(
+            requested.filter { id in listed.contains { $0.id == id } },
+            hostID: hostID
+        )
+        guard !ids.isEmpty else { return TmuxRestoreReport(entries: []) }
+        setSavedTmuxSessions(listed, hostID: hostID)
+        defer {
+            savedTmuxSessionRestores.end(ids, hostID: hostID)
+            if let current = savedTmuxSessionsByHost[hostID] {
+                setSavedTmuxSessions(current, hostID: hostID)
+            }
+            refreshKwtInventory()
+        }
+        try await ensureRemoteKwtForOperation(hostID: hostID)
+        return try await kwtSessionClient.restore(ids, on: host)
+    }
+
+    /// Deletes a saved session the person chose not to restore.
+    func dismissSavedTmuxSession(_ id: String, hostID: UUID) async throws {
+        guard let host = inventoryHosts[hostID] else {
+            throw KwtSessionError(host: snapshot.host(id: hostID)?.name ?? "this host")
+        }
+        guard !savedTmuxSessionRestores.contains(id, hostID: hostID) else { return }
+        try await ensureRemoteKwtForOperation(hostID: hostID)
+        defer { refreshSavedTmuxSessions(hostID: hostID) }
+        try await kwtSessionClient.dismiss([id], on: host)
+    }
+
+    /// A session killed on purpose must not come back as restorable when
+    /// kwt next saves and finds its server gone.
+    private func forgetSavedTmuxSession(
+        _ request: TmuxSessionKillRequest,
+        on host: CommandHost
+    ) {
+        guard Self.keepsSavedTmuxSessions(host) else { return }
+        let hostID = request.session.hostID
+        let socketName = request.session.socketName ?? "default"
+        let identity = TmuxSessionIdentity(
+            serverPID: request.serverPID,
+            sessionID: request.sessionID,
+            createdAt: request.sessionCreatedAt
+        )
+        Task { [weak self, kwtSessionClient] in
+            try? await kwtSessionClient.forget(
+                socketName: socketName,
+                identity: identity,
+                on: host
+            )
+            self?.refreshSavedTmuxSessions(hostID: hostID)
+        }
+    }
 }

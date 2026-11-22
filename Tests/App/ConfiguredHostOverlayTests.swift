@@ -216,7 +216,7 @@ struct ConfiguredHostOverlayTests {
         from: HostPlatform,
         to: HostPlatform
     ) {
-        let host = HostSummary.fixture(
+        var host = HostSummary.fixture(
             configKey: "builder",
             name: "Builder",
             kind: .remote,
@@ -236,6 +236,13 @@ struct ConfiguredHostOverlayTests {
             zellijSessions: [.init(name: "old-zellij")],
             zellijAvailable: true
         )
+        host.savedTmuxSessions = [
+            SavedTmuxSession(
+                id: "a1",
+                socket: .init(path: "/tmp/tmux-1000/default", name: "default"),
+                session: "api"
+            ),
+        ]
         let project = ProjectSummary.fixture(hostID: host.id)
         let worktree = WorktreeSummary.fixture(
             hostID: host.id,
@@ -268,6 +275,7 @@ struct ConfiguredHostOverlayTests {
         #expect(result.hosts[0].tmuxSessions.isEmpty)
         #expect(result.hosts[0].herdrSessions.isEmpty)
         #expect(result.hosts[0].zellijSessions.isEmpty)
+        #expect(result.hosts[0].savedTmuxSessions.isEmpty)
         #expect(!result.hosts[0].herdrAvailable)
         #expect(!result.hosts[0].zellijAvailable)
         #expect(result.projects.isEmpty)
@@ -277,7 +285,7 @@ struct ConfiguredHostOverlayTests {
 
     @Test("Windows hosts discard stale Herdr capability")
     func windowsHostsDiscardStaleHerdrCapability() {
-        let host = HostSummary.fixture(
+        var host = HostSummary.fixture(
             configKey: "windows-builder",
             name: "Windows Builder",
             kind: .remote,
@@ -297,6 +305,13 @@ struct ConfiguredHostOverlayTests {
             zellijSessions: [.init(name: "stale-zellij")],
             zellijAvailable: true
         )
+        host.savedTmuxSessions = [
+            SavedTmuxSession(
+                id: "a1",
+                socket: .init(path: "/tmp/tmux-1000/default", name: "default"),
+                session: "api"
+            ),
+        ]
 
         let result = ConfiguredHostOverlay.apply([
             SSHHost(
@@ -310,6 +325,7 @@ struct ConfiguredHostOverlayTests {
         #expect(result.hosts[0].tmuxSessions == host.tmuxSessions)
         #expect(result.hosts[0].herdrSessions.isEmpty)
         #expect(result.hosts[0].zellijSessions.isEmpty)
+        #expect(result.hosts[0].savedTmuxSessions.isEmpty)
         #expect(!result.hosts[0].herdrAvailable)
         #expect(!result.hosts[0].zellijAvailable)
     }
