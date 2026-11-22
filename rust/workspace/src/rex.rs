@@ -383,21 +383,42 @@ pub(crate) fn open(
     let selection = selection.clone();
     let task = move || {
         let result: Result<bool, WorkspaceError> = (|| {
-            let connection = ssh::Connection::acquire(
-                &task_scene,
-                &host,
-                &snapshot,
-                selection.host_id(),
-                navigation,
-                &cancellation,
-            )?;
-            let term = host
-                .probe_term_on_lease(&connection.lease, &cancellation)
-                .map_err(|e| error(e.to_string()))?;
-            let plan = host
-                .rex_plan(&connection.lease, &helper, &window.id, None)
-                .map_err(|e| error(e.to_string()))?;
-            let channel = Channel::start(&plan).map_err(error)?;
+            // Keep the learned limits alive across releases of refused slots.
+            let pool = task_scene
+                .runtime
+                .rex_connections
+                .pool(snapshot.route_identity());
+            let (term, control) = loop {
+                let connection = pool.acquire(
+                    &task_scene,
+                    &host,
+                    &snapshot,
+                    selection.host_id(),
+                    navigation,
+                    &cancellation,
+                )?;
+                let started = (|| {
+                    let term = host.probe_term_on_lease(&connection.lease, &cancellation)?;
+                    let plan = host.rex_plan(&connection.lease, &helper, &window.id, None)?;
+                    let channel = Channel::start(&plan, &cancellation)?;
+                    Ok::<_, host::RemoteTmuxError>((term, channel))
+                })();
+                match started {
+                    Ok((term, channel)) => {
+                        break (
+                            term,
+                            Control {
+                                channel,
+                                connection,
+                            },
+                        );
+                    }
+                    Err(e) if e.session_refused() && !cancellation.is_cancelled() => {
+                        connection.slot.refused();
+                    }
+                    Err(e) => return Err(error(e.to_string())),
+                }
+            };
             let _publication = task_scene
                 .runtime
                 .remote_publication
@@ -429,10 +450,7 @@ pub(crate) fn open(
                 detail: window.detail,
                 navigation,
                 cancellation: cancellation.clone(),
-                control: Some(Control {
-                    channel,
-                    connection,
-                }),
+                control: Some(control),
                 started: Instant::now(),
                 view: None,
                 revision: None,

@@ -1015,6 +1015,141 @@ fn resize_with_full_input_queue(fixture: &Fixture) {
 }
 
 #[test]
+#[ignore = "requires a Rex server executable; run make rust-test-rex-live"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The same fixture must keep both windows and the retained tmux client alive."
+)]
+fn another_rex_window_opens_when_the_first_fills_its_ssh_connection() {
+    let Some(fixture) = Fixture::isolated(
+        "native_ssh::rex::another_rex_window_opens_when_the_first_fills_its_ssh_connection",
+    ) else {
+        return;
+    };
+    limit_ssh_sessions(&fixture);
+    let _server = server(&fixture);
+    let new_window = |name, title| {
+        rex(
+            &fixture,
+            &[
+                "new",
+                name,
+                "--window",
+                title,
+                "--json",
+                "--shell=none",
+                "--",
+                "/bin/sh",
+            ],
+        )
+    };
+    let first = new_window("Studio", "Work");
+    let window = first["initial_windows"][0]["window_id"].as_str().unwrap();
+    let anchor = first["initial_windows"][0]["block_ids"][0]
+        .as_str()
+        .unwrap();
+    for side in ["right", "below"] {
+        rex(
+            &fixture,
+            &[
+                "run",
+                "--block",
+                anchor,
+                "--split",
+                side,
+                "--json",
+                "--shell=none",
+                "--",
+                "/bin/sh",
+            ],
+        );
+    }
+    let second = new_window("Notes", "Review");
+    let second_window = second["initial_windows"][0]["window_id"].as_str().unwrap();
+    let second_block = second["initial_windows"][0]["block_ids"][0]
+        .as_str()
+        .unwrap();
+    let selection = |id| SessionSelection::rex(&fixture.host_id, &fixture.endpoint, id);
+    fixture.connect();
+    fixture.wait(|s| {
+        s.hosts()
+            .iter()
+            .any(|h| h.rex_windows().iter().any(|w| w.id == second_window))
+    });
+    fixture.workspace.select_host(&fixture.host_id).unwrap();
+    fixture.attach("review", "retained-before-rex");
+    fixture
+        .workspace
+        .switch_session(&selection(window))
+        .unwrap();
+    fixture.wait(|s| {
+        s.rex_window().is_some_and(|w| {
+            assert!(w.error.is_none(), "{:?}", w.error);
+            w.panes.len() == 3
+                && w.panes.iter().all(|p| {
+                    assert!(p.error.is_none(), "{:?}", p.error);
+                    !p.connecting && rex_attach_pid(&p.id).is_some()
+                })
+        })
+    });
+    let before = fixture.workspace.snapshot();
+    let first_panes = &before.rex_window().unwrap().panes;
+    let pids: Vec<_> = first_panes
+        .iter()
+        .map(|p| rex_attach_pid(&p.id).unwrap())
+        .collect();
+    let refusals = || {
+        std::fs::read_to_string(fixture.root.join("sshd.log"))
+            .unwrap()
+            .matches("no more sessions")
+            .count()
+    };
+    let before_refusal = refusals();
+
+    let other = fixture.open_scene();
+    other.workspace.select_host(&fixture.host_id).unwrap();
+    other
+        .workspace
+        .switch_session(&selection(second_window))
+        .unwrap();
+    other.wait(|s| {
+        s.rex_window().is_some_and(|w| {
+            assert!(w.error.is_none(), "{:?}", w.error);
+            w.panes
+                .iter()
+                .any(|p| p.id == second_block && p.error.is_none() && !p.connecting)
+        }) && other.terminal_text().contains("$ ")
+    });
+    rex_probe(&other, "printf '%s' opened > /tmp/rex-second-window");
+    other.wait(|_| std::fs::read_to_string("/tmp/rex-second-window").is_ok_and(|s| s == "opened"));
+    assert!(
+        refusals() > before_refusal,
+        "the original connection must refuse the second window"
+    );
+    assert!(
+        first_panes
+            .iter()
+            .zip(pids)
+            .all(|(p, pid)| rex_attach_pid(&p.id).as_deref() == Some(&pid))
+    );
+    assert!(
+        fixture
+            .tmux(&["list-clients", "-F", "#{client_session}"])
+            .lines()
+            .any(|s| s == "review")
+    );
+    rex_probe(
+        &fixture,
+        "printf '%s' still-running > /tmp/rex-first-window",
+    );
+    fixture.wait(|_| {
+        std::fs::read_to_string("/tmp/rex-first-window").is_ok_and(|s| s == "still-running")
+    });
+    other.workspace.close();
+    fixture.workspace.close();
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "Keep the same SSH connections through saturation and reconnect."

@@ -1,11 +1,17 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use super::Message;
 use crate::command_process::{self, CommandContainment};
+use crate::{CancellationToken, RemoteTmuxError};
 
 const MAX_LINE: u64 = 1024 * 1024;
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub struct Channel {
     containment: CommandContainment,
@@ -16,12 +22,16 @@ pub struct Channel {
 
 impl Channel {
     /// # Errors
-    /// Returns a process or pipe-worker startup failure.
+    /// Returns a process, transport, or control startup failure.
     #[allow(
         clippy::too_many_lines,
         reason = "The three pipe workers share process startup and teardown."
     )]
-    pub fn start(plan: &session::RexPlan) -> Result<Self, String> {
+    pub fn start(
+        plan: &session::RexPlan,
+        cancellation: &CancellationToken,
+    ) -> Result<Self, RemoteTmuxError> {
+        let io_error = |error: std::io::Error| RemoteTmuxError::transport(error.to_string());
         let mut command = Command::new(plan.program());
         command
             .args(plan.args())
@@ -29,13 +39,13 @@ impl Channel {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         command_process::prepare(&mut command);
-        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        let mut child = command.spawn().map_err(io_error)?;
         let containment = match CommandContainment::attach(&mut child) {
             Ok(containment) => containment,
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(e.to_string());
+                return Err(io_error(e));
             }
         };
         let (requests, request_reader) = sync_channel::<Vec<u8>>(32);
@@ -46,21 +56,25 @@ impl Channel {
             requests: Some(requests),
             events,
         };
-        let mut input = channel.child.stdin.take().ok_or("Rex input unavailable")?;
+        let mut input = channel
+            .child
+            .stdin
+            .take()
+            .ok_or_else(|| RemoteTmuxError::transport("Rex input unavailable"))?;
         let output = channel
             .child
             .stdout
             .take()
-            .ok_or("Rex output unavailable")?;
+            .ok_or_else(|| RemoteTmuxError::transport("Rex output unavailable"))?;
         let errors = channel
             .child
             .stderr
             .take()
-            .ok_or("Rex errors unavailable")?;
+            .ok_or_else(|| RemoteTmuxError::transport("Rex errors unavailable"))?;
         // Drain stderr independently so a login script cannot block the control stream.
-        let error_text = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let capture = error_text.clone();
-        std::thread::Builder::new()
+        let error_text = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&error_text);
+        let stderr = thread::Builder::new()
             .name("rex-errors".into())
             .spawn(move || {
                 let mut reader = BufReader::new(errors);
@@ -73,9 +87,9 @@ impl Channel {
                     text.extend_from_slice(&bytes[..count.min(remaining)]);
                 }
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(io_error)?;
         let failures = writer.clone();
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name("rex-input".into())
             .spawn(move || {
                 while let Ok(bytes) = request_reader.recv() {
@@ -85,12 +99,14 @@ impl Channel {
                     }
                 }
             })
-            .map_err(|e| e.to_string())?;
-        std::thread::Builder::new()
+            .map_err(io_error)?;
+        let (ready, startup) = sync_channel(1);
+        let output_errors = Arc::clone(&error_text);
+        thread::Builder::new()
             .name("rex-output".into())
             .spawn(move || {
                 let mut output = BufReader::new(output);
-                let mut framed = false;
+                let mut ready = Some(ready);
                 loop {
                     let mut line = Vec::new();
                     match output
@@ -104,13 +120,16 @@ impl Channel {
                             return;
                         }
                         Ok(_) => {
-                            if !framed {
-                                framed = line
-                                    .strip_suffix(b"\n")
-                                    .unwrap_or(&line)
-                                    .strip_suffix(b"\r")
-                                    .unwrap_or(line.strip_suffix(b"\n").unwrap_or(&line))
-                                    == b"GHOSTHUB_REX_CONTROL";
+                            if let Some(signal) = &ready {
+                                let line = line.strip_suffix(b"\n").unwrap_or(&line);
+                                if line.strip_suffix(b"\r").unwrap_or(line)
+                                    == b"GHOSTHUB_REX_CONTROL"
+                                {
+                                    if signal.send(()).is_err() {
+                                        return;
+                                    }
+                                    ready = None;
+                                }
                                 continue;
                             }
                             if line.iter().all(u8::is_ascii_whitespace) {
@@ -128,18 +147,57 @@ impl Channel {
                         }
                     }
                 }
-                let text = error_text
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let text = String::from_utf8_lossy(&text).trim().to_owned();
-                let _ = writer.send(Err(if text.is_empty() {
-                    "The Rex connection closed.".into()
-                } else {
-                    text
-                }));
+                // Before the marker, the caller needs the SSH exit status and
+                // complete stderr to distinguish a refusal from a broken channel.
+                if ready.is_none() {
+                    let _ = writer.send(Err(connection_error(&output_errors)));
+                }
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(io_error)?;
+        channel.wait_for_start(&startup, &stderr, &error_text, cancellation)?;
         Ok(channel)
+    }
+
+    fn wait_for_start(
+        &mut self,
+        startup: &Receiver<()>,
+        stderr: &JoinHandle<()>,
+        errors: &Mutex<Vec<u8>>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), RemoteTmuxError> {
+        let started = Instant::now();
+        while !cancellation.is_cancelled() && started.elapsed() < STARTUP_TIMEOUT {
+            match startup.recv_timeout(POLL_INTERVAL) {
+                Ok(()) => return Ok(()),
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {}
+            }
+            if let Some(Err(error)) = self.next() {
+                return Err(RemoteTmuxError::transport(error));
+            }
+            // stdout can reach EOF before the stderr reader sees the refusal.
+            if let Some(status) = self
+                .child
+                .try_wait()
+                .map_err(|error| RemoteTmuxError::transport(error.to_string()))?
+                && stderr.is_finished()
+            {
+                return Err(RemoteTmuxError::ssh_exit(
+                    status.code(),
+                    connection_error(errors),
+                ));
+            }
+            if cancellation.wait_cancelled(POLL_INTERVAL) {
+                break;
+            }
+        }
+        if cancellation.is_cancelled() {
+            Err(RemoteTmuxError::transport("Rex connection cancelled."))
+        } else {
+            Err(RemoteTmuxError::timeout(
+                "Rex did not start. Try reconnecting.",
+            ))
+        }
     }
 
     /// # Errors
@@ -164,6 +222,18 @@ impl Channel {
     #[must_use]
     pub fn next(&self) -> Option<Result<Message, String>> {
         self.events.try_recv().ok()
+    }
+}
+
+fn connection_error(errors: &Mutex<Vec<u8>>) -> String {
+    let errors = errors
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let text = String::from_utf8_lossy(&errors);
+    if text.trim().is_empty() {
+        "The Rex connection closed.".to_owned()
+    } else {
+        text.trim().to_owned()
     }
 }
 
@@ -193,7 +263,7 @@ mod tests {
             read -r request
         "#;
         let plan = session::RexPlan::attach_only("/bin/sh", vec!["-c".into(), script.into()]);
-        let channel = Channel::start(&plan).unwrap();
+        let channel = Channel::start(&plan, &CancellationToken::new()).unwrap();
         channel
             .send(
                 7,
@@ -223,5 +293,38 @@ mod tests {
             .status()
             .unwrap();
         assert!(!status.success(), "control process survived detach");
+    }
+
+    #[test]
+    fn control_startup_classifies_the_actual_mux_refusal() {
+        for (message, code, refused) in [
+            (
+                "mux_client_request_session: session request failed: Session open refused by peer",
+                "255",
+                true,
+            ),
+            (
+                "mux_client_request_session: session request failed: Session open refused by peer",
+                "1",
+                false,
+            ),
+            ("Permission denied (publickey).", "255", false),
+        ] {
+            let plan = session::RexPlan::attach_only(
+                "/bin/sh",
+                vec![
+                    "-c".into(),
+                    "printf '%s\\n' \"$1\" >&2; exit \"$2\"".into(),
+                    "ssh".into(),
+                    message.into(),
+                    code.into(),
+                ],
+            );
+            let Err(error) = Channel::start(&plan, &CancellationToken::new()) else {
+                panic!("control startup accepted a failed process");
+            };
+            assert_eq!(error.session_refused(), refused);
+            assert_eq!(error.to_string(), message);
+        }
     }
 }

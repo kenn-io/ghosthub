@@ -23,7 +23,7 @@ pub(super) struct Slot {
 }
 
 impl Connections {
-    fn reserve(&self, route: &str) -> Result<Slot, WorkspaceError> {
+    pub(super) fn pool(&self, route: &str) -> Pool {
         let mut routes = self
             .0
             .lock()
@@ -42,9 +42,17 @@ impl Connections {
                 routes.insert(route.to_owned(), Arc::downgrade(&usage));
                 usage
             });
-        drop(routes);
+        Pool(usage)
+    }
+}
+
+pub(super) struct Pool(Arc<Usage>);
+
+impl Pool {
+    fn reserve(&self) -> Result<Slot, WorkspaceError> {
         let index = {
-            let mut counts = usage
+            let mut counts = self
+                .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let index = counts
@@ -58,7 +66,10 @@ impl Connections {
             counts[index].reserved += 1;
             index
         };
-        Ok(Slot { usage, index })
+        Ok(Slot {
+            usage: Arc::clone(&self.0),
+            index,
+        })
     }
 }
 
@@ -90,26 +101,24 @@ pub(super) struct Connection {
     pub(super) slot: Arc<Slot>,
 }
 
-impl Connection {
+impl Pool {
     pub(super) fn acquire(
+        &self,
         scene: &Scene,
         host: &RuntimeRemoteHost,
         snapshot: &host::RemoteTmuxSnapshot,
         host_id: &str,
         prompt_id: u64,
         cancellation: &CancellationToken,
-    ) -> Result<Self, WorkspaceError> {
-        let slot = scene
-            .runtime
-            .rex_connections
-            .reserve(snapshot.route_identity())?;
+    ) -> Result<Connection, WorkspaceError> {
+        let slot = self.reserve()?;
         let index = u8::try_from(slot.index + 1).expect("KWT connection index fits in u8");
         let lease = host
             .acquire_rex_lease(snapshot, index, cancellation, |prompt| {
                 scene::request_ssh_prompt(scene, host_id, prompt_id, prompt, cancellation, false)
             })
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        Ok(Self {
+        Ok(Connection {
             lease,
             slot: Arc::new(slot),
         })
@@ -117,8 +126,5 @@ impl Connection {
 }
 
 pub(crate) fn session_refused(code: u32, output: &str) -> bool {
-    code == 255 && output.lines().any(|line| {
-        line.trim()
-            == "mux_client_request_session: session request failed: Session open refused by peer"
-    })
+    code == 255 && host::mux_session_refused(output)
 }

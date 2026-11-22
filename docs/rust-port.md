@@ -1660,9 +1660,9 @@ Only tiled terminal panes are drawn.
 Rex control and pane clients use separate KWT-managed SSH connections from
 tmux and inventory. Each extra connection carries up to eight Rex sessions,
 and Ghosthub opens another when those slots fill. If a server enforces a lower
-limit, Ghosthub uses another connection for the refused pane. A new connection
-may prompt for authentication. Failure to start one pane leaves its neighbors
-usable.
+limit, Ghosthub retries a refused pane or window on another connection. A new
+connection may prompt for authentication. Failure to start one pane leaves
+its neighbors usable.
 
 Rex confirms split, resize, focus, zoom, and close requests through its control
 channel. The UI chooses directional focus from the window it displays, rather

@@ -44,6 +44,7 @@ pub use ssh::{
     KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshError, SshExecutionProjection,
     SshHostKeyDetails, SshLease, SshLeaseEvent, SshLeaseMode, SshLeasePrompt, SshLeaseResult,
     SshPromptDetails, SshPromptKind, SshResolvedTarget, SshRouteSnapshot, SshTarget,
+    mux_session_refused,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

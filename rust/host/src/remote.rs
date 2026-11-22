@@ -1814,12 +1814,10 @@ fn extract_framed_command_output(
     end_marker: &str,
 ) -> Result<crate::CommandOutput, RemoteTmuxError> {
     if output.status != 0 {
-        let mut error = RemoteTmuxError::new(
-            DiagnosticKind::Transport,
+        return Err(RemoteTmuxError::ssh_exit(
+            Some(output.status),
             nonempty_diagnostic(&output.stderr, "SSH command transport failed"),
-        );
-        error.retryable_transport = output.status == 255 && !ssh_needs_review(&error.detail);
-        return Err(error);
+        ));
     }
     let stdout_framed = extract_framed_stdout(&output.stdout, begin_marker, end_marker);
     let stderr_framed = has_complete_frame(&output.stderr, begin_marker, end_marker);
@@ -2116,6 +2114,7 @@ pub struct RemoteTmuxError {
     kind: DiagnosticKind,
     detail: String,
     retryable_transport: bool,
+    session_refused: bool,
 }
 
 fn ssh_needs_review(message: &str) -> bool {
@@ -2138,7 +2137,23 @@ impl RemoteTmuxError {
             kind,
             detail: detail.into(),
             retryable_transport: false,
+            session_refused: false,
         }
+    }
+
+    pub(crate) fn ssh_exit(status: Option<i32>, detail: String) -> Self {
+        let mut error = Self::transport(detail);
+        if status == Some(255) {
+            error.retryable_transport = !ssh_needs_review(&error.detail);
+            error.session_refused = crate::mux_session_refused(&error.detail);
+        }
+        error
+    }
+
+    /// The SSH master refused to open another session channel.
+    #[must_use]
+    pub const fn session_refused(&self) -> bool {
+        self.session_refused
     }
 
     #[cfg(windows)]

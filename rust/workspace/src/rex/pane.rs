@@ -152,14 +152,12 @@ impl Window {
             "ghosthub-rex-pane",
             Box::new(move || {
                 let result = (|| {
-                    let connection = ssh::Connection::acquire(
-                        &owner,
-                        &host,
-                        &snapshot,
-                        &host_id,
-                        id,
-                        &cancellation,
-                    )?;
+                    let pool = owner
+                        .runtime
+                        .rex_connections
+                        .pool(snapshot.route_identity());
+                    let connection =
+                        pool.acquire(&owner, &host, &snapshot, &host_id, id, &cancellation)?;
                     let plan = host
                         .rex_plan(&connection.lease, &helper, &block, Some(term.as_str()))
                         .map_err(|e| error(e.to_string()))?;

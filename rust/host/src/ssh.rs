@@ -27,6 +27,15 @@ const MAX_EVENT_MESSAGE_BYTES: usize = 16 * 1024;
 const MAX_PROMPT_RESPONSE_BYTES: usize = 64 * 1024;
 const PROJECTION_POLICY_V2: &str = "kwt.openssh.projection.v2";
 
+/// Recognize the OpenSSH multiplexing client's session refusal diagnostic.
+#[must_use]
+pub fn mux_session_refused(output: &str) -> bool {
+    output.lines().any(|line| {
+        line.trim()
+            == "mux_client_request_session: session request failed: Session open refused by peer"
+    })
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct KwtSshExecutable(OsString);
 
