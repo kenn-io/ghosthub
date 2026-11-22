@@ -1,4 +1,6 @@
+import Combine
 import Foundation
+import GhosthubSettings
 import GhosthubTmux
 import GhosthubTransport
 import GhosthubUI
@@ -183,6 +185,62 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(commands.withLock { $0 }.contains { $0.hasSuffix("session 'dismiss' 'b2'") })
         await model.shutdown()
         await otherWindow.shutdown()
+    }
+
+    @MainActor
+    @Test("a host changed to Windows drops the saved sessions it listed before")
+    func savedSessionsClearWhenHostTurnsWindows() async throws {
+        let environment = try setupStandardEnvironment()
+        let builder = SSHHost(
+            configKey: "builder", name: "Builder", platform: .linux,
+            sshDestination: "builder"
+        )
+        let configuredHosts = CurrentValueSubject<[SSHHost], Never>([builder])
+        let marker = "GHOSTHUB_KWT_SESSION_JSON\n"
+        let client = KwtSessionClient(
+            localRunner: { _ in (0, marker + #"{"entries": []}"#) },
+            remoteRunner: { _, _, _ in
+                AccountCommandOutput(status: 0, stdout: marker + """
+                {"entries": [{"id": "a1", "session": "api",
+                  "socket": {"path": "/tmp/tmux-1000/default", "name": "default"}}]}
+                """, stderr: "")
+            },
+            localBinaryPath: "/opt/kwt",
+            remoteBinaryRevision: "test"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            // A tmux session on the Windows target shows that the runtime
+            // inventory was applied again after the change.
+            tmuxSessionDiscovery: { host in
+                guard case let .ssh(info) = host, info.platform == .windows else {
+                    return .success([])
+                }
+                return .success([DiscoveredTmuxSession(
+                    name: "pwsh", windowCount: 1, createdAt: nil, managed: false
+                )])
+            },
+            kwtSessionClient: client,
+            configuredSSHHostsProvider: { configuredHosts.value },
+            configuredSSHHostsPublisher: configuredHosts.eraseToAnyPublisher(),
+            startServices: true
+        )
+        func remote() -> HostSummary? {
+            model.snapshot.hosts.first { $0.configKey == "builder" }
+        }
+        await waitUntilMainActor { remote()?.savedTmuxSessions.isEmpty == false }
+
+        // kwt does not save sessions on Windows, so nothing would ever
+        // replace the Linux listing.
+        var windows = builder
+        windows.platform = .windows
+        configuredHosts.send([windows])
+        await waitUntilMainActor { remote()?.tmuxSessions.isEmpty == false }
+        #expect(remote()?.platform == .windows)
+        #expect(remote()?.savedTmuxSessions.isEmpty == true)
+        await model.shutdown()
     }
 
     /// kwt lists one saved session once `hasSaved` is true; until then it
