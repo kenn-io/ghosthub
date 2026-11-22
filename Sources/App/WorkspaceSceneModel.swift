@@ -7611,10 +7611,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 host.sshDestination = host.sshDestination.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 )
-                try await ensureRemoteKwtForOperation(
-                    on: host,
-                    hostID: snapshot.hosts.first { $0.configKey == host.configKey }?.id
-                )
+                // Settings may hold unsaved connection edits, so the result
+                // says nothing about the saved host's kwt; inventory tracks that.
+                try await ensureRemoteKwtForOperation(on: host)
             }
             return try await .success(KwtAgentHookClient().run(action, on: target))
         } catch {
