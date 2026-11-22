@@ -7,9 +7,9 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>Manage local and remote tmux, Herdr, and Zellij without touching a local shell.</strong>
+  <strong>A native hub for local and remote multiplexers</strong>
   <br>
-  Browse hosts, attach to sessions, reconnect over SSH, and spin up Git worktrees from one native Mac app.
+  Manage tmux, Herdr, and Zellij across your Mac and SSH hosts without touching a local shell.
 </p>
 
 <p align="center">
