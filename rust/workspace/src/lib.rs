@@ -2423,9 +2423,9 @@ impl RemoteRetainedPresentations {
                     processed += 1;
                     index += 1;
                 }
-                Ok(Some(TerminalEvent::ConfirmPaste(_))) => {
+                Ok(Some(TerminalEvent::ConfirmPaste(id))) => {
                     processed += 1;
-                    let _cancelled = self.entries[index].worker.cancel_paste();
+                    let _cancelled = self.entries[index].worker.resolve_paste(id, false);
                     index += 1;
                 }
                 Ok(Some(TerminalEvent::Error(error))) => {
@@ -2598,7 +2598,6 @@ impl<T> Published<T> {
 struct PendingPaste {
     id: u64,
     worker_generation: u64,
-    input: input::EncodedInput,
 }
 
 enum KillCaptureRequest {
@@ -3981,9 +3980,9 @@ impl RetainedPresentations<TerminalWorker> {
                     processed += 1;
                     index += 1;
                 }
-                Ok(Some(TerminalEvent::ConfirmPaste(_))) => {
+                Ok(Some(TerminalEvent::ConfirmPaste(id))) => {
                     processed += 1;
-                    let _cancelled = self.entries[index].worker.cancel_paste();
+                    let _cancelled = self.entries[index].worker.resolve_paste(id, false);
                     index += 1;
                 }
                 Ok(Some(TerminalEvent::Error(error))) => {
@@ -7956,7 +7955,10 @@ impl Workspace {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         pending
             .as_ref()
-            .filter(|paste| paste.worker_generation == worker.generation())
+            .filter(|paste| {
+                paste.worker_generation == worker.generation()
+                    && worker.active().and_then(TerminalWorker::pending_paste_id) == Some(paste.id)
+            })
             .map(|paste| paste.id)
     }
 
@@ -7998,9 +8000,8 @@ impl Workspace {
             ));
         }
         let paste = pending
-            .take()
+            .as_ref()
             .ok_or_else(|| WorkspaceError::new("no paste is awaiting confirmation"))?;
-        drop(pending);
         let worker = self
             .scene
             .worker
@@ -8014,12 +8015,17 @@ impl Workspace {
         let worker = worker
             .active()
             .ok_or_else(|| WorkspaceError::new("no active terminal"))?;
-        if approve {
-            worker.confirm_paste(paste.input)
+        let resolved = worker
+            .resolve_paste(paste.id, approve)
+            .map_err(|error| WorkspaceError::from_worker(&error))?;
+        pending.take();
+        if resolved {
+            Ok(())
         } else {
-            worker.cancel_paste()
+            Err(WorkspaceError::stale_input(
+                "The paste confirmation changed.",
+            ))
         }
-        .map_err(|error| WorkspaceError::new(error.to_string()))
     }
 
     pub fn cancel_paste(&self) {

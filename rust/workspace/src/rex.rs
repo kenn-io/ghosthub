@@ -635,8 +635,8 @@ pub(crate) fn tick(scene: &Arc<Scene>) {
             if let Some(worker) = &pane.worker {
                 for _ in 0..8 {
                     match worker.try_event() {
-                        Ok(Some(terminal::TerminalEvent::ConfirmPaste(_))) => {
-                            let _ = worker.cancel_paste();
+                        Ok(Some(terminal::TerminalEvent::ConfirmPaste(id))) => {
+                            let _ = worker.resolve_paste(id, false);
                         }
                         Ok(Some(
                             terminal::TerminalEvent::ClipboardRead(_)
@@ -822,7 +822,7 @@ impl Window {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let previous = workers.invalidate();
             if let Some(worker) = &previous {
-                // The pump may already have read the prompt without publishing it.
+                // Revoke pending confirmations and any unsafe paste still in the input queue.
                 let _ = worker.cancel_paste();
                 scene::retire_clipboard_writes(scene, worker);
             }

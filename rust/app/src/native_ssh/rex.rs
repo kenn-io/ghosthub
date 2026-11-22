@@ -794,6 +794,7 @@ fn reconnect_failed_pane(fixture: &Fixture, block: &str) {
         .unwrap()
         .presentation_id;
     paste_prompt_stays_with_its_worker(fixture, other, first);
+    cancelled_queued_paste_does_not_return(fixture, first, other);
     fixture.workspace.focus_rex_pane(first).unwrap();
     rex_probe(
         fixture,
@@ -867,6 +868,54 @@ fn paste_prompt_stays_with_its_worker(fixture: &Fixture, source: u64, destinatio
     rex_probe(fixture, "printf '%s' resumed > /tmp/rex-paste-resumed");
     fixture
         .wait(|_| std::fs::read_to_string("/tmp/rex-paste-resumed").is_ok_and(|s| s == "resumed"));
+}
+
+fn cancelled_queued_paste_does_not_return(fixture: &Fixture, source: u64, destination: u64) {
+    let workspace = &fixture.workspace;
+    let paste = || KeyInput::paste("printf '%s' pasted > /tmp/rex-paste-identity\n\n");
+    workspace.focus_rex_pane(source).unwrap();
+    let paused = workspace.pause_event_pump();
+    workspace.send_key_to(source, paste()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let cancelled = loop {
+        if let Some(id) = workspace.active_worker_paste_id() {
+            break id;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the worker did not request confirmation"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    workspace.focus_rex_pane(destination).unwrap();
+    workspace.focus_rex_pane(source).unwrap();
+    drop(paused);
+    workspace.pump_events_for_test();
+    assert!(
+        workspace.pending_paste_id(source).is_none(),
+        "the cancelled prompt returned"
+    );
+    rex_probe(fixture, "printf '%s' resumed > /tmp/rex-paste-return");
+    fixture
+        .wait(|_| std::fs::read_to_string("/tmp/rex-paste-return").is_ok_and(|s| s == "resumed"));
+    assert!(!Path::new("/tmp/rex-paste-identity").exists());
+
+    workspace.send_key_to(source, paste()).unwrap();
+    fixture.wait(|_| workspace.pending_paste_id(source).is_some());
+    let current = workspace.pending_paste_id(source).unwrap();
+    assert_ne!(cancelled, current);
+    assert!(
+        workspace
+            .resolve_terminal_paste(source, cancelled, true)
+            .unwrap_err()
+            .is_stale_input()
+    );
+    assert_eq!(workspace.pending_paste_id(source), Some(current));
+    workspace
+        .resolve_terminal_paste(source, current, true)
+        .unwrap();
+    fixture
+        .wait(|_| std::fs::read_to_string("/tmp/rex-paste-identity").is_ok_and(|s| s == "pasted"));
 }
 
 fn rex_probe(fixture: &Fixture, text: &str) {

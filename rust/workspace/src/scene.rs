@@ -8948,7 +8948,7 @@ pub(crate) fn cancel_pending_paste(scene: &Scene) {
     if paste.worker_generation == worker.generation()
         && let Some(worker) = worker.active()
     {
-        let _cancelled = worker.cancel_paste();
+        let _cancelled = worker.resolve_paste(paste.id, false);
     }
 }
 

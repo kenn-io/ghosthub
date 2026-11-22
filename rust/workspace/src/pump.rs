@@ -147,6 +147,23 @@ pub(crate) fn monitor_remote_lease_liveness(runtime: &Runtime) {
 }
 
 impl Workspace {
+    /// Observe a worker prompt without consuming the worker's event.
+    #[cfg(feature = "test-support")]
+    pub fn active_worker_paste_id(&self) -> Option<u64> {
+        self.scene
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()?
+            .pending_paste_id()
+    }
+
+    /// Run one synchronous event pass after releasing a paused pump.
+    #[cfg(feature = "test-support")]
+    pub fn pump_events_for_test(&self) {
+        let _ = pump_once(&self.scene.runtime);
+    }
+
     /// Hold terminal event consumption while an integration test completes a reconnect.
     #[cfg(feature = "test-support")]
     pub fn pause_event_pump(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -213,7 +230,7 @@ impl Workspace {
                         worker_generation: source_worker_generation,
                     }));
                 }
-                Ok(Some(TerminalEvent::ConfirmPaste(paste))) => {
+                Ok(Some(TerminalEvent::ConfirmPaste(id))) => {
                     processed += 1;
                     let Ok(_navigation) = crate::scene::lock_live_navigation(&self.scene) else {
                         break;
@@ -232,16 +249,17 @@ impl Workspace {
                     let Some((active, generation)) = worker.active_with_generation() else {
                         continue;
                     };
-                    if generation != source_worker_generation {
+                    if generation != source_worker_generation
+                        || active.pending_paste_id() != Some(id)
+                    {
                         continue;
                     }
                     if !accepts_paste {
-                        let _ = active.cancel_paste();
+                        let _ = active.resolve_paste(id, false);
                     } else if pending.is_none() {
                         *pending = Some(PendingPaste {
-                            id: crate::next_operation_id(&self.scene.runtime),
+                            id,
                             worker_generation: generation,
-                            input: paste,
                         });
                         emitted.push(WorkspaceEvent::ConfirmPaste);
                     }

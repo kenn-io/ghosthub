@@ -2266,7 +2266,6 @@ fn retained_stale_failure_preserves_the_visible_terminal_and_pending_input() {
     *workspace.scene.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
         id: 1,
         worker_generation: 7,
-        input: input::encode_paste("pending\ninput", false),
     });
     let replacement = HostSnapshot::test_fixture("Ubuntu", "boot-id", 42, Vec::new());
 
@@ -3040,7 +3039,6 @@ fn terminfo_retry_unpublishes_terminal_and_preserves_session_kind() {
     *workspace.scene.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
         id: 1,
         worker_generation: 1,
-        input: input::encode_paste("first\nsecond", false),
     });
 
     publish_terminfo_retry_boundary(
@@ -14202,7 +14200,6 @@ fn overflowing_inbox_denies_a_dropped_paste_confirmation() {
     *workspace.scene.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
         id: 1,
         worker_generation: 7,
-        input: input::encode_paste("withheld\ninput", false),
     });
     push_operation_event(&workspace.scene, WorkspaceEvent::ConfirmPaste);
     for index in 0..SCENE_INBOX_LIMIT {

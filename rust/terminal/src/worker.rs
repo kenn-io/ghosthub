@@ -27,6 +27,7 @@ const WRITE_BATCH_MAX: usize = COMMAND_BYTE_CAPACITY + READ_BUFFER_SIZE;
 const WRITE_UI_MAX_BYTES: usize = WRITE_HIGH_WATER + WRITE_BATCH_MAX;
 const WRITE_PARSER_RESERVE: usize = WRITE_BATCH_MAX;
 const WRITE_MAX_BYTES: usize = WRITE_UI_MAX_BYTES + WRITE_PARSER_RESERVE;
+static NEXT_PASTE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub enum TerminalEvent {
     ClipboardWrite {
@@ -34,7 +35,7 @@ pub enum TerminalEvent {
         visibility: u64,
     },
     ClipboardRead(ClipboardReadRequest),
-    ConfirmPaste(EncodedInput),
+    ConfirmPaste(u64),
     Exited {
         code: u32,
         output_tail: String,
@@ -52,7 +53,7 @@ pub enum TerminalStartup {
 
 enum Command {
     Input(Vec<u8>),
-    Key(KeyInput),
+    Key(KeyInput, Option<u64>),
     Mouse(MouseInput),
     CopySelection { visibility: u64 },
 }
@@ -63,16 +64,21 @@ struct QueuedCommand {
     preceding_resize: Option<ResizeCommand>,
 }
 
-enum PasteAction {
-    Confirm(EncodedInput),
-    Cancel,
+#[derive(Clone, Copy)]
+struct PasteAction {
+    id: u64,
+    approve: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PasteControl {
-    Resume,
-    Error(&'static str),
-    None,
+#[derive(Default)]
+struct PasteRequests {
+    epoch: u64,
+    pending: Option<u64>,
+}
+
+struct AwaitingPaste {
+    id: u64,
+    input: EncodedInput,
 }
 
 #[derive(Clone, Copy)]
@@ -182,6 +188,7 @@ enum WriteFlush {
 pub struct TerminalWorker {
     commands: Sender<QueuedCommand>,
     paste_actions: Sender<PasteAction>,
+    paste_requests: Arc<Mutex<PasteRequests>>,
     ingress: Arc<Mutex<IngressState>>,
     coalesced_wake: Sender<()>,
     shutdown: Sender<()>,
@@ -505,6 +512,8 @@ impl TerminalWorker {
         let surface = engine.surface_handle();
         let (commands, command_receiver) = bounded(COMMAND_CAPACITY);
         let (paste_actions, paste_action_receiver) = bounded(1);
+        let paste_requests = Arc::new(Mutex::new(PasteRequests::default()));
+        let worker_paste_requests = Arc::clone(&paste_requests);
         let ingress = Arc::new(Mutex::new(IngressState::default()));
         let worker_ingress = Arc::clone(&ingress);
         let (coalesced_wake, coalesced_wake_receiver) = bounded(1);
@@ -543,6 +552,7 @@ impl TerminalWorker {
                     process,
                     &command_receiver,
                     &paste_action_receiver,
+                    &worker_paste_requests,
                     &worker_ingress,
                     &worker_coalesced_wake,
                     &coalesced_wake_receiver,
@@ -572,6 +582,7 @@ impl TerminalWorker {
         Ok(Self {
             commands,
             paste_actions,
+            paste_requests,
             ingress,
             coalesced_wake,
             shutdown,
@@ -641,10 +652,16 @@ impl TerminalWorker {
     ///
     /// Returns an error after the terminal worker has stopped.
     pub fn send_key(&self, input: KeyInput) -> Result<(), WorkerError> {
+        let paste_epoch = matches!(input, KeyInput::Paste(_)).then(|| {
+            self.paste_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .epoch
+        });
         try_send_ordered(
             &self.commands,
             &self.ingress,
-            Command::Key(input),
+            Command::Key(input, paste_epoch),
             "send terminal key",
         )
     }
@@ -686,17 +703,21 @@ impl TerminalWorker {
         )
     }
 
-    /// Approve and queue a paste previously reported for confirmation.
+    /// Resolve this exact paste. Returns false if it has already been cancelled or resolved.
     ///
     /// # Errors
     ///
     /// Returns an error after the terminal worker has stopped.
-    pub fn confirm_paste(&self, input: EncodedInput) -> Result<(), WorkerError> {
-        try_send_paste_action(
-            &self.paste_actions,
-            PasteAction::Confirm(input),
-            "confirm terminal paste",
-        )
+    pub fn resolve_paste(&self, id: u64, approve: bool) -> Result<bool, WorkerError> {
+        let mut requests = self
+            .paste_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if requests.pending != Some(id) {
+            return Ok(false);
+        }
+        self.submit_paste_action(&mut requests, PasteAction { id, approve })?;
+        Ok(true)
     }
 
     /// Cancel a paste awaiting confirmation and resume queued input.
@@ -705,13 +726,33 @@ impl TerminalWorker {
     ///
     /// Returns an error after the terminal worker has stopped.
     pub fn cancel_paste(&self) -> Result<(), WorkerError> {
-        try_send_paste_action(
-            &self.paste_actions,
-            PasteAction::Cancel,
-            "cancel terminal paste",
-        )?;
+        let mut requests = self
+            .paste_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A queued key may not have reached the encoder when focus moves.
+        requests.epoch = requests.epoch.wrapping_add(1);
+        if let Some(id) = requests.pending {
+            self.submit_paste_action(&mut requests, PasteAction { id, approve: false })?;
+        }
+        Ok(())
+    }
+
+    fn submit_paste_action(
+        &self,
+        requests: &mut PasteRequests,
+        action: PasteAction,
+    ) -> Result<(), WorkerError> {
         #[cfg(feature = "test-support")]
-        self.delivered_paste_cancels.fetch_add(1, Ordering::AcqRel);
+        let cancelled = !action.approve;
+        self.paste_actions
+            .try_send(action)
+            .map_err(|error| bounded_send_error("resolve terminal paste", &error))?;
+        requests.pending = None;
+        #[cfg(feature = "test-support")]
+        if cancelled {
+            self.delivered_paste_cancels.fetch_add(1, Ordering::AcqRel);
+        }
         Ok(())
     }
 
@@ -835,6 +876,15 @@ impl TerminalWorker {
             }
         }
     }
+
+    /// The live request identity, independent of queued events.
+    #[must_use]
+    pub fn pending_paste_id(&self) -> Option<u64> {
+        self.paste_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending
+    }
 }
 
 fn observe_startup(
@@ -947,6 +997,7 @@ fn run_worker(
     mut pty: PtyProcess,
     commands: &Receiver<QueuedCommand>,
     paste_actions: &Receiver<PasteAction>,
+    paste_requests: &Mutex<PasteRequests>,
     ingress: &Mutex<IngressState>,
     coalesced_wake_sender: &Sender<()>,
     coalesced_wake: &Receiver<()>,
@@ -979,16 +1030,12 @@ fn run_worker(
         }
         match paste_actions.try_recv() {
             Ok(action) => {
-                if !service_paste_action(
+                service_paste_action(
                     action,
                     &mut pending_paste,
                     &mut approved_paste,
                     coalesced_wake_sender,
-                    shutdown,
-                    events,
-                ) {
-                    break;
-                }
+                );
                 continue;
             }
             Err(TryRecvError::Disconnected) => break,
@@ -1032,16 +1079,12 @@ fn run_worker(
         select! {
             recv(shutdown) -> _ => break,
             recv(paste_actions) -> message => match message {
-                Ok(action) => if !service_paste_action(
+                Ok(action) => service_paste_action(
                     action,
                     &mut pending_paste,
                     &mut approved_paste,
                     coalesced_wake_sender,
-                    shutdown,
-                    events,
-                ) {
-                    break 'worker;
-                },
+                ),
                 Err(_) => break,
             },
             recv(write_completions) -> message => match message {
@@ -1085,6 +1128,7 @@ fn run_worker(
                         shutdown,
                         events,
                         &mut pending_paste,
+                        paste_requests,
                     );
                     release_command_bytes(ingress, bytes);
                     if !keep_running {
@@ -1108,6 +1152,7 @@ fn run_worker(
                     shutdown,
                     events,
                     &mut pending_paste,
+                    paste_requests,
                 ) {
                     break 'worker;
                 }
@@ -1172,43 +1217,27 @@ fn run_worker(
 
 fn process_paste_action(
     action: PasteAction,
-    pending: &mut Option<EncodedInput>,
+    pending: &mut Option<AwaitingPaste>,
     approved: &mut Option<Vec<u8>>,
-) -> PasteControl {
-    match action {
-        PasteAction::Confirm(input) if pending.as_ref() == Some(&input) => {
-            *approved = pending.take().map(EncodedInput::approve);
-            PasteControl::Resume
-        }
-        PasteAction::Confirm(_) if pending.is_some() => {
-            PasteControl::Error("paste confirmation does not match the pending input")
-        }
-        PasteAction::Cancel if pending.is_some() => {
-            *pending = None;
-            PasteControl::Resume
-        }
-        PasteAction::Confirm(_) => PasteControl::Error("no paste is awaiting confirmation"),
-        PasteAction::Cancel => PasteControl::None,
+) -> bool {
+    if pending.as_ref().is_none_or(|paste| paste.id != action.id) {
+        return false;
     }
+    let paste = pending.take().expect("matching paste");
+    if action.approve {
+        *approved = Some(paste.input.approve());
+    }
+    true
 }
 
 fn service_paste_action(
     action: PasteAction,
-    pending: &mut Option<EncodedInput>,
+    pending: &mut Option<AwaitingPaste>,
     approved: &mut Option<Vec<u8>>,
     coalesced_wake: &Sender<()>,
-    shutdown: &Receiver<()>,
-    events: &Sender<TerminalEvent>,
-) -> bool {
-    match process_paste_action(action, pending, approved) {
-        PasteControl::Resume => {
-            let _ignored = wake_coalesced(coalesced_wake, "resume terminal input");
-            true
-        }
-        PasteControl::Error(error) => {
-            emit_event(events, shutdown, TerminalEvent::Error(error.to_owned()))
-        }
-        PasteControl::None => true,
+) {
+    if process_paste_action(action, pending, approved) {
+        let _ignored = wake_coalesced(coalesced_wake, "resume terminal input");
     }
 }
 
@@ -1219,17 +1248,27 @@ fn process_ready_command(
     pending_writes: &mut PendingWrites,
     shutdown: &Receiver<()>,
     events: &Sender<TerminalEvent>,
-    pending_paste: &mut Option<EncodedInput>,
+    pending_paste: &mut Option<AwaitingPaste>,
+    paste_requests: &Mutex<PasteRequests>,
 ) -> bool {
     match command {
         Command::Input(bytes) => {
             queue_write(pending_writes, WriteSource::Ui, shutdown, events, bytes)
         }
-        Command::Key(input) => {
+        Command::Key(input, paste_epoch) => {
             let encoded = engine.encode_input(&input);
             if encoded.requires_confirmation() {
-                *pending_paste = Some(encoded.clone());
-                emit_event(events, shutdown, TerminalEvent::ConfirmPaste(encoded))
+                let mut requests = paste_requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if paste_epoch != Some(requests.epoch) {
+                    return true;
+                }
+                let id = NEXT_PASTE_ID.fetch_add(1, Ordering::Relaxed);
+                *pending_paste = Some(AwaitingPaste { id, input: encoded });
+                requests.pending = Some(id);
+                drop(requests);
+                emit_event(events, shutdown, TerminalEvent::ConfirmPaste(id))
             } else {
                 queue_write(
                     pending_writes,
@@ -1269,7 +1308,8 @@ fn process_queued_command(
     pending_writes: &mut PendingWrites,
     shutdown: &Receiver<()>,
     events: &Sender<TerminalEvent>,
-    pending_paste: &mut Option<EncodedInput>,
+    pending_paste: &mut Option<AwaitingPaste>,
+    paste_requests: &Mutex<PasteRequests>,
 ) -> bool {
     if let Some(resize) = queued.preceding_resize
         && !process_resize(resize, engine, pty, shutdown, events)
@@ -1283,6 +1323,7 @@ fn process_queued_command(
         shutdown,
         events,
         pending_paste,
+        paste_requests,
     )
 }
 
@@ -1297,7 +1338,8 @@ fn process_coalesced(
     pending_writes: &mut PendingWrites,
     shutdown: &Receiver<()>,
     events: &Sender<TerminalEvent>,
-    pending_paste: &mut Option<EncodedInput>,
+    pending_paste: &mut Option<AwaitingPaste>,
+    paste_requests: &Mutex<PasteRequests>,
 ) -> bool {
     let CoalescedWork {
         resize,
@@ -1327,6 +1369,7 @@ fn process_coalesced(
             shutdown,
             events,
             pending_paste,
+            paste_requests,
         ),
         CoalescedInput::Command(queued) => {
             let bytes = queued.bytes;
@@ -1339,6 +1382,7 @@ fn process_coalesced(
                 shutdown,
                 events,
                 pending_paste,
+                paste_requests,
             );
             release_command_bytes(ingress, bytes);
             keep_running
@@ -1516,8 +1560,8 @@ fn enqueue_command(
 const fn command_bytes(command: &Command) -> usize {
     match command {
         Command::Input(bytes) => bytes.len(),
-        Command::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text)) => text.len(),
-        Command::Key(KeyInput::Named { .. })
+        Command::Key(KeyInput::Text { text, .. } | KeyInput::Paste(text), _) => text.len(),
+        Command::Key(KeyInput::Named { .. }, _)
         | Command::Mouse(_)
         | Command::CopySelection { .. } => 0,
     }
@@ -1528,16 +1572,6 @@ fn release_command_bytes(ingress: &Mutex<IngressState>, bytes: usize) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ingress.queued_bytes = ingress.queued_bytes.saturating_sub(bytes);
-}
-
-fn try_send_paste_action(
-    sender: &Sender<PasteAction>,
-    action: PasteAction,
-    subject: &str,
-) -> Result<(), WorkerError> {
-    sender
-        .try_send(action)
-        .map_err(|error| bounded_send_error(subject, &error))
 }
 
 fn bounded_send_error<T>(subject: &str, error: &TrySendError<T>) -> WorkerError {
@@ -1864,16 +1898,28 @@ mod tests {
         let encoded = input::encode_paste("echo approved\necho second", false);
         assert!(encoded.requires_confirmation());
 
-        let mut pending = Some(encoded.clone());
+        let mut pending = Some(AwaitingPaste {
+            id: 1,
+            input: encoded.clone(),
+        });
         let mut approved = None;
-        assert_eq!(
-            process_paste_action(
-                PasteAction::Confirm(encoded.clone()),
-                &mut pending,
-                &mut approved
-            ),
-            PasteControl::Resume
-        );
+        assert!(!process_paste_action(
+            PasteAction {
+                id: 0,
+                approve: true
+            },
+            &mut pending,
+            &mut approved
+        ));
+        assert!(approved.is_none());
+        assert!(process_paste_action(
+            PasteAction {
+                id: 1,
+                approve: true
+            },
+            &mut pending,
+            &mut approved
+        ));
         assert!(pending.is_none());
         assert_eq!(approved, Some(encoded.approve()));
         assert!(
@@ -1882,12 +1928,19 @@ mod tests {
         );
 
         let cancel_input = input::encode_paste("echo cancelled\necho second", false);
-        let mut pending = Some(cancel_input);
+        let mut pending = Some(AwaitingPaste {
+            id: 2,
+            input: cancel_input,
+        });
         let mut approved = None;
-        assert_eq!(
-            process_paste_action(PasteAction::Cancel, &mut pending, &mut approved),
-            PasteControl::Resume
-        );
+        assert!(process_paste_action(
+            PasteAction {
+                id: 2,
+                approve: false
+            },
+            &mut pending,
+            &mut approved
+        ));
         assert!(pending.is_none());
         assert!(approved.is_none());
     }
