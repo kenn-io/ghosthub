@@ -7,9 +7,19 @@ import Testing
 @testable import GhosthubApp
 
 extension WorkspaceTmuxDiscoveryTests {
+    enum EditedAddressAction: CaseIterable, Sendable {
+        case hookStatus
+        case addProject
+    }
+
     @MainActor
-    @Test("a hook check on an edited address leaves the saved host's kwt alone")
-    func agentHookCheckOnEditedAddressKeepsSavedHostKwt() async throws {
+    @Test(
+        "a Settings action on an edited address leaves the saved host's kwt alone",
+        arguments: EditedAddressAction.allCases
+    )
+    func settingsActionOnEditedAddressKeepsSavedHostKwt(
+        action: EditedAddressAction
+    ) async throws {
         let environment = try setupRemoteEnvironment()
         var snapshot = environment.snapshot
         snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
@@ -38,13 +48,29 @@ extension WorkspaceTmuxDiscoveryTests {
         )
 
         // Settings shows the saved host with an unreachable address typed
-        // but not saved, and checks its agent hooks.
+        // but not saved.
         let edited = SSHHost(
             configKey: environment.host.configKey, name: environment.host.name,
             platform: .linux, sshDestination: "typo.example.test"
         )
-        guard case .failure = await model.agentHooks(.status, on: edited) else {
-            Issue.record("The unreachable address should fail the hook check")
+        let failed = switch action {
+        case .hookStatus:
+            if case .failure = await model.agentHooks(.status, on: edited) {
+                true
+            } else {
+                false
+            }
+        case .addProject:
+            if case .failure = await model.registerRemoteProject(
+                "/srv/repo", on: edited
+            ) {
+                true
+            } else {
+                false
+            }
+        }
+        guard failed else {
+            Issue.record("The unreachable address should fail the action")
             await model.shutdown()
             return
         }

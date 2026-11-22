@@ -1169,7 +1169,9 @@ failed load shows its error with **Retry**. The check never changes the saved
 host's kwt availability, which inventory tracks. A load or install that
 finishes after the person switches hosts does not change the status shown.
 **Projects** follows the same rule: **Add Project** is available for a saved
-connection or one that **Test Connection** just checked.
+connection or one that **Test Connection** just checked. For a saved host
+whose connection has unsaved edits, it asks the person to save first and
+contacts nothing.
 
 Each hook event writes the tmux pane option `@kwt_agent` as
 `<state> <unix-seconds> <agent>`, where state is `working`, `approval`,
