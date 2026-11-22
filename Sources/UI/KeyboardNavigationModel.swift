@@ -71,12 +71,11 @@ public enum KeyboardNavigationModel {
                 }
             }
         case .tmuxSession, .herdrSession, .backendTerminal, .zellijSession:
-            // Sessions share one list per host; stopped Herdr sessions are
-            // skipped because opening one restarts it.
+            // Sessions share one list per host; stopped Herdr sessions and
+            // saved tmux sessions are skipped because opening one brings it
+            // back.
             for section in sections {
-                let openable = section.sessionRows.filter {
-                    $0.herdrSessionState != .stopped
-                }
+                let openable = section.sessionRows.filter { !$0.isInactive }
                 if let targets = matchingTargets(
                     in: openable,
                     currentTarget: currentTarget

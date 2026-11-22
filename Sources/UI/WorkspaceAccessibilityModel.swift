@@ -80,7 +80,9 @@ enum WorkspaceAccessibilityModel {
         case .directoryWorkspace:
             hint = "Open this directory workspace."
         case .tmuxSession:
-            hint = "Attach to this tmux session."
+            hint = row.savedTmuxSessionID == nil
+                ? "Attach to this tmux session."
+                : "Restore and attach to this saved tmux session."
         case let .backendTerminal(_, kind, address):
             hint = if kind == .rex {
                 "Open this Rex window."

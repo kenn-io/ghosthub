@@ -196,6 +196,72 @@ resolve_ssh() {
 EOF
 }
 
+# Saved sessions exist only while a capture stages them, one per line:
+# id, session, windows, panes, and agents as a JSON array, tab-separated.
+saved_sessions() {
+  local saved="$scratch/kwt-saved-sessions.tsv"
+  local socket id name windows panes agents separator="" requested window
+  socket="$scratch/tmux/tmux-$(id -u)/default"
+  touch "$saved"
+  case "${2:-}" in
+    snapshot)
+      [[ "${3:-}" == "--json" && "$#" -eq 3 ]] || {
+        echo "faux kwt: unsupported session command" >&2
+        exit 64
+      }
+      printf '{"entries": ['
+      while IFS=$'\t' read -r id name windows panes agents; do
+        # A restored session is live again, so kwt no longer offers it.
+        tmux -S "$socket" has-session -t "=$name" 2>/dev/null && continue
+        printf '%s{"id": "%s", "socket": {"path": "%s", "name": "default"},' \
+          "$separator" "$id" "$socket"
+        printf ' "session": "%s", "saved_at": 1784640000000, "windows": %s,' \
+          "$name" "$windows"
+        printf ' "panes": %s, "agents": %s, "name_taken": false,' "$panes" "$agents"
+        printf ' "worktree": false, "state": "pending"}'
+        separator=", "
+      done <"$saved"
+      printf ']}\n'
+      ;;
+    restore)
+      [[ "${3:-}" == "--json" && "$#" -ge 4 ]] || {
+        echo "faux kwt: unsupported session command" >&2
+        exit 64
+      }
+      # Real restores wait for agents to start; keep "restoring…" visible.
+      sleep 3
+      printf '{"entries": ['
+      for requested in "${@:4}"; do
+        while IFS=$'\t' read -r id name windows panes agents; do
+          [[ "$id" == "$requested" ]] || continue
+          tmux -S "$socket" new-session -d -s "$name" -c "$HOME"
+          for ((window = 1; window < windows; window++)); do
+            tmux -S "$socket" new-window -d -t "=$name:" -c "$HOME"
+          done
+          printf '%s{"id": "%s", "session": "%s", "outcome": "restored"}' \
+            "$separator" "$id" "$name"
+          separator=", "
+        done <"$saved"
+      done
+      printf ']}\n'
+      ;;
+    dismiss)
+      [[ "$#" -ge 3 ]] || {
+        echo "faux kwt: unsupported session command" >&2
+        exit 64
+      }
+      for requested in "${@:3}"; do
+        grep -v "^$requested"$'\t' "$saved" >"$saved.next" || true
+        mv -f "$saved.next" "$saved"
+      done
+      ;;
+    *)
+      echo "faux kwt: unsupported session command" >&2
+      exit 64
+      ;;
+  esac
+}
+
 case "${1:-}" in
   ssh) resolve_ssh "$@" ;;
   projects) projects_json ;;
@@ -211,6 +277,7 @@ case "${1:-}" in
   branches) branches_json ;;
   changes) changes_json "$@" ;;
   open) open_worktree "$@" ;;
+  session) saved_sessions "$@" ;;
   agent-hook)
     if [[ "${2:-}" =~ ^(status|install)$ && "${3:-}" == "--json" && "$#" -eq 3 ]]; then
       echo '{"agents":[{"agent":"claude","display_name":"Claude Code","available":true,"installed":true,"current":true},{"agent":"codex","display_name":"Codex","available":true,"installed":true,"current":true}]}'

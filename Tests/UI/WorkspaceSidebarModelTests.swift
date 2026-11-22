@@ -383,6 +383,65 @@ struct WorkspaceSidebarModelTests {
         #expect(herdr[1].indentLevel == 0)
     }
 
+    @Test("saved tmux sessions get dimmed rows that become the restored session")
+    func savedTmuxSessionRows() {
+        let hostID = UUID()
+        let defaultSocket = SavedTmuxSession.Socket(
+            path: "/tmp/tmux-501/default", name: "default"
+        )
+        let kwtSocket = SavedTmuxSession.Socket(path: "/tmp/tmux-501/kwt", name: "kwt")
+        var host = HostSummary.fixture(
+            id: hostID,
+            tmuxSessions: [
+                TmuxSessionSummary(name: "live", managed: false, windows: []),
+            ],
+            herdrSessions: [
+                HerdrSessionSummary(name: "parked", isDefault: false, state: .stopped),
+            ]
+        )
+        host.savedTmuxSessions = [
+            SavedTmuxSession(
+                id: "old-api", socket: defaultSocket, session: "api",
+                windows: 1, panes: 1, savedAt: 100
+            ),
+            SavedTmuxSession(
+                id: "new-api", socket: defaultSocket, session: "api",
+                windows: 2, panes: 3, savedAt: 200
+            ),
+            SavedTmuxSession(id: "evals", socket: kwtSocket, session: "evals"),
+            // Opening its worktree restores it, so it has no row of its own.
+            SavedTmuxSession(
+                id: "wt", socket: kwtSocket, session: "kwt-wt-x", worktree: true
+            ),
+            // Restore would skip it: a live session has the name again.
+            SavedTmuxSession(
+                id: "taken", socket: defaultSocket, session: "live", nameTaken: true
+            ),
+        ]
+        host.savedTmuxSessions[2].isRestoring = true
+
+        let rows = WorkspaceSidebarModel.sections(
+            in: WorkspaceSnapshot(hosts: [host], projects: [], worktrees: [])
+        )[0].sessionRows
+
+        // Saved sessions sink with stopped Herdr sessions, below running ones.
+        #expect(rows.map(\.title) == ["live", "api", "evals", "parked"])
+        #expect(rows.map(\.inactiveLabel) == [nil, "saved", "restoring…", "stopped"])
+        let api = rows[1]
+        #expect(api.isInactive)
+        #expect(api.sessionBackend == .tmux)
+        #expect(api.subtitle == "Saved before its tmux server stopped, 2 windows, 3 panes")
+        // The row is the session kwt restores, on the server it ran on.
+        #expect(api.savedTmuxSession == WorkspaceSavedTmuxSessionSelection(
+            entryID: "new-api",
+            session: WorkspaceTmuxSessionSelection(hostID: hostID, name: "api")
+        ))
+        #expect(rows[2].target == .tmuxSession(
+            hostID: hostID, name: "evals", socketName: "kwt"
+        ))
+        #expect(rows[0].savedTmuxSession == nil)
+    }
+
     @Test("section emptiness includes Herdr inventory")
     func herdrAffectsSectionEmptiness() {
         let empty = WorkspaceSidebarModel.sections(

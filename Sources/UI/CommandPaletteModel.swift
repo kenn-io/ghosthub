@@ -11,6 +11,9 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case newHerdrSession(UUID)
     case newZellijSession(UUID)
     case addProject(UUID)
+    case restoreSavedTmuxSessions(UUID)
+    case restoreSavedTmuxSession(WorkspaceSavedTmuxSessionSelection)
+    case dismissSavedTmuxSession(WorkspaceSavedTmuxSessionSelection)
     case openTmuxSession(WorkspaceTmuxSessionSelection)
     case openHerdrSession(WorkspaceHerdrSessionSelection)
     case openBackendTerminal(WorkspaceBackendTerminalSelection)
@@ -278,6 +281,13 @@ public enum CommandPaletteModel {
             worktreeOrderRawValue: worktreeOrderRawValue,
             sessionOrderRawValue: sessionOrderRawValue
         ))
+        commands.append(contentsOf: savedTmuxSessionCommands(
+            in: snapshot,
+            visibility: worktreeVisibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            sessionOrderRawValue: sessionOrderRawValue
+        ))
         commands.append(contentsOf: herdrSessionCommands(
             in: snapshot,
             visibility: worktreeVisibility,
@@ -507,6 +517,19 @@ public enum CommandPaletteModel {
                     action: .newZellijSession(host.id)
                 ))
             }
+            if !host.savedTmuxSessions.isEmpty {
+                commands.append(WorkspaceCommandItem(
+                    id: "restore-saved-tmux-sessions-\(host.id.uuidString)",
+                    title: "\(host.restoreSavedTmuxSessionsTitle) on \(host.name)",
+                    subtitle: host.savedTmuxSessions.map(\.session)
+                        .joined(separator: ", "),
+                    keywords: [
+                        "restore", "saved", "reboot", "tmux", "session",
+                        host.name, host.sshDestination ?? "",
+                    ],
+                    action: .restoreSavedTmuxSessions(host.id)
+                ))
+            }
             if host.canRegisterProjects {
                 commands.append(WorkspaceCommandItem(
                     id: "add-project-\(host.id.uuidString)",
@@ -551,7 +574,10 @@ public enum CommandPaletteModel {
                 canRequestKill: Bool,
                 keywords: [String]
             )] = section.sessionRows(for: .tmux).compactMap { row in
-                guard case let .tmuxSession(hostID, name, socketName) = row.target else {
+                // A saved session is not running; it has its own commands.
+                guard row.savedTmuxSessionID == nil,
+                      case let .tmuxSession(hostID, name, socketName) = row.target
+                else {
                     return nil
                 }
                 let session = WorkspaceTmuxSessionSelection(
@@ -699,6 +725,50 @@ public enum CommandPaletteModel {
                 )
             ),
         ]
+    }
+
+    /// Each saved session's row, as palette commands.
+    private static func savedTmuxSessionCommands(
+        in snapshot: WorkspaceSnapshot,
+        visibility: WorktreeVisibility,
+        tmuxSessionVisibility: TmuxSessionVisibility,
+        worktreeOrderRawValue: String,
+        sessionOrderRawValue: String
+    ) -> [WorkspaceCommandItem] {
+        WorkspaceSidebarModel.sections(
+            in: snapshot,
+            visibility: visibility,
+            tmuxSessionVisibility: tmuxSessionVisibility,
+            worktreeOrderRawValue: worktreeOrderRawValue,
+            sessionOrderRawValue: sessionOrderRawValue
+        ).flatMap { section in
+            section.sessionRows(for: .tmux).flatMap { row -> [WorkspaceCommandItem] in
+                guard let saved = row.savedTmuxSession,
+                      !row.savedTmuxSessionIsRestoring
+                else { return [] }
+                let name = saved.session.name
+                let keywords = [
+                    "tmux", "session", "saved", "reboot", name,
+                    section.host.name, section.row.title,
+                ]
+                return [
+                    WorkspaceCommandItem(
+                        id: "restore-saved-tmux-session-\(saved.entryID)",
+                        title: "Restore tmux session: \(name)",
+                        subtitle: "Rebuild it and resume its agents on \(section.host.name).",
+                        keywords: ["restore", "attach"] + keywords,
+                        action: .restoreSavedTmuxSession(saved)
+                    ),
+                    WorkspaceCommandItem(
+                        id: "dismiss-saved-tmux-session-\(saved.entryID)",
+                        title: "Dismiss saved tmux session: \(name)",
+                        subtitle: "Stop offering it for restore on \(section.host.name).",
+                        keywords: ["dismiss", "forget", "delete"] + keywords,
+                        action: .dismissSavedTmuxSession(saved)
+                    ),
+                ]
+            }
+        }
     }
 
     private static func herdrSessionCommands(

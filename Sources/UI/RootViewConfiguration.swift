@@ -493,6 +493,13 @@ public struct InteractionHandlers {
     public let currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)?
     public let loadWorktreeChanges: WorktreeChangesLoader?
     public let refreshWorkspaceInventory: (() -> Void)?
+    /// Restores the given kwt saved-session entries on a host.
+    public let restoreSavedTmuxSessions:
+        ((UUID, [String]) async throws -> TmuxRestoreReport)?
+    /// Deletes one kwt saved-session entry without restoring it.
+    public let dismissSavedTmuxSession: ((UUID, String) async throws -> Void)?
+    /// Changes with every navigation the scene handles itself.
+    public let userNavigationRevision: (() -> UInt64)?
     public let reconnectActiveTmuxSessionNow: (() -> Void)?
     public let reconnectActiveHerdrSessionNow: (() -> Void)?
     public let reconnectActiveZellijSessionNow: (() -> Void)?
@@ -594,6 +601,10 @@ public struct InteractionHandlers {
         currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)? = nil,
         loadWorktreeChanges: WorktreeChangesLoader? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
+        restoreSavedTmuxSessions:
+        ((UUID, [String]) async throws -> TmuxRestoreReport)? = nil,
+        dismissSavedTmuxSession: ((UUID, String) async throws -> Void)? = nil,
+        userNavigationRevision: (() -> UInt64)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,
         reconnectActiveHerdrSessionNow: (() -> Void)? = nil,
         reconnectActiveZellijSessionNow: (() -> Void)? = nil,
@@ -673,6 +684,9 @@ public struct InteractionHandlers {
         self.currentWorkspaceSnapshot = currentWorkspaceSnapshot
         self.loadWorktreeChanges = loadWorktreeChanges
         self.refreshWorkspaceInventory = refreshWorkspaceInventory
+        self.restoreSavedTmuxSessions = restoreSavedTmuxSessions
+        self.dismissSavedTmuxSession = dismissSavedTmuxSession
+        self.userNavigationRevision = userNavigationRevision
         self.reconnectActiveTmuxSessionNow = reconnectActiveTmuxSessionNow
         self.reconnectActiveHerdrSessionNow = reconnectActiveHerdrSessionNow
         self.reconnectActiveZellijSessionNow = reconnectActiveZellijSessionNow

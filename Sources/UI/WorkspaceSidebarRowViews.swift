@@ -96,8 +96,9 @@ struct SessionBackendLabel: View {
     }
 }
 
-/// One-line content of a session row: optional leading dot, name, stopped
-/// marker, agent badge or activity dot, and the trailing backend label.
+/// One-line content of a session row: optional leading dot, name, inactive
+/// marker ("stopped" or "saved"), agent badge or activity dot, and the
+/// trailing backend label.
 struct SidebarSessionRowContent: View {
     let title: String
     var detail: String?
@@ -105,7 +106,7 @@ struct SidebarSessionRowContent: View {
     let labelStyle: SidebarBackendLabelStyle
     var agentAttention: AgentAttention?
     var showsRecentOutput = false
-    var isStopped = false
+    var inactiveLabel: String?
     var isSelected = false
     @Environment(\.accessibilityDifferentiateWithoutColor)
     private var differentiateWithoutColor
@@ -127,8 +128,8 @@ struct SidebarSessionRowContent: View {
                     .fixedSize()
             }
             Spacer(minLength: 4)
-            if isStopped {
-                Text("stopped")
+            if let inactiveLabel {
+                Text(inactiveLabel)
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
@@ -162,7 +163,7 @@ struct SidebarSessionRowContent: View {
               let split = title.range(of: " / ", options: .backwards)
         else {
             return Text(title).font(font)
-                .foregroundStyle(isStopped ? .secondary : .primary)
+                .foregroundStyle(inactiveLabel == nil ? .primary : .secondary)
         }
         return Text(title[..<split.upperBound]).font(font)
             .foregroundStyle(.secondary)
@@ -258,6 +259,7 @@ enum WorkspaceSidebarHostMenuItem: Equatable {
     case newTmuxSession
     case newZellijSession
     case newHerdrSession
+    case restoreSavedTmuxSessions
     case addProject
 }
 
@@ -297,6 +299,17 @@ enum WorkspaceSidebarHostMenuModel {
                     : "Herdr isn't available on \(host.sidebarTitle)."
             ),
         ]]
+        if !host.savedTmuxSessions.isEmpty {
+            groups.append([
+                WorkspaceSidebarHostMenuEntry(
+                    item: .restoreSavedTmuxSessions,
+                    title: host.restoreSavedTmuxSessionsTitle,
+                    isEnabled: true,
+                    help: host.savedTmuxSessions.map(\.session)
+                        .joined(separator: ", ")
+                ),
+            ])
+        }
         if host.canRegisterProjects {
             groups.append([
                 WorkspaceSidebarHostMenuEntry(
@@ -308,5 +321,14 @@ enum WorkspaceSidebarHostMenuModel {
             ])
         }
         return groups
+    }
+}
+
+extension HostSummary {
+    var restoreSavedTmuxSessionsTitle: String {
+        let count = savedTmuxSessions.count
+        return count == 1
+            ? "Restore 1 Saved tmux Session"
+            : "Restore \(count) Saved tmux Sessions"
     }
 }

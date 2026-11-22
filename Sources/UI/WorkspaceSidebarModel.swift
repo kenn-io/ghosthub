@@ -208,6 +208,20 @@ enum WorkspaceSidebarDropPlacement: Equatable {
     }
 }
 
+/// A saved tmux session's sidebar row: the kwt entry to restore or dismiss,
+/// and the live session it becomes.
+public struct WorkspaceSavedTmuxSessionSelection: Equatable, Hashable, Sendable {
+    public var entryID: String
+    public var session: WorkspaceTmuxSessionSelection
+
+    public init(entryID: String, session: WorkspaceTmuxSessionSelection) {
+        self.entryID = entryID
+        self.session = session
+    }
+
+    public var hostID: UUID { session.hostID }
+}
+
 public struct WorkspaceTmuxSessionSelection:
     Equatable, Hashable, Identifiable, Sendable {
     public var hostID: UUID
@@ -387,8 +401,39 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
     public var herdrSessionState: HerdrSessionState?
     /// Populated only for Herdr session rows.
     public var herdrSessionIsDefault: Bool?
+    /// The kwt entry for a tmux session saved from a stopped server. The
+    /// row's target is the session the restore creates.
+    public var savedTmuxSessionID: String?
+    public var savedTmuxSessionIsRestoring: Bool
 
     public var id: WorkspaceNavigationTarget { target }
+
+    /// A stopped Herdr session or a saved tmux session: shown dimmed after
+    /// the running sessions, skipped by sibling navigation, and brought
+    /// back rather than attached when opened.
+    public var isInactive: Bool {
+        herdrSessionState == .stopped || savedTmuxSessionID != nil
+    }
+
+    /// The quiet word after an inactive session's name.
+    public var inactiveLabel: String? {
+        if savedTmuxSessionID != nil {
+            return savedTmuxSessionIsRestoring ? "restoring…" : "saved"
+        }
+        return herdrSessionState == .stopped ? "stopped" : nil
+    }
+
+    public var savedTmuxSession: WorkspaceSavedTmuxSessionSelection? {
+        guard let savedTmuxSessionID,
+              case let .tmuxSession(hostID, name, socketName) = target
+        else { return nil }
+        return WorkspaceSavedTmuxSessionSelection(
+            entryID: savedTmuxSessionID,
+            session: WorkspaceTmuxSessionSelection(
+                hostID: hostID, name: name, socketName: socketName
+            )
+        )
+    }
 
     /// Nil for host, project, worktree, and directory workspace rows.
     public var sessionBackend: WorkspaceSidebarSessionBackend? {
@@ -449,7 +494,9 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         worktreeFlagKey: WorktreeFlagKey? = nil,
         sessionIsRunning: Bool = false,
         herdrSessionState: HerdrSessionState? = nil,
-        herdrSessionIsDefault: Bool? = nil
+        herdrSessionIsDefault: Bool? = nil,
+        savedTmuxSessionID: String? = nil,
+        savedTmuxSessionIsRestoring: Bool = false
     ) {
         self.target = target
         self.icon = icon
@@ -461,6 +508,8 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         self.sessionIsRunning = sessionIsRunning
         self.herdrSessionState = herdrSessionState
         self.herdrSessionIsDefault = herdrSessionIsDefault
+        self.savedTmuxSessionID = savedTmuxSessionID
+        self.savedTmuxSessionIsRestoring = savedTmuxSessionIsRestoring
     }
 }
 
@@ -826,7 +875,11 @@ public enum WorkspaceSidebarModel {
                     .filter { $0.hostID == host.id }
                     .map { directoryWorkspaceRow($0, host: host) },
                 sessionRows: WorkspaceSidebarSessionOrdering.ordered(
-                    host.tmuxSessions
+                    savedTmuxSessionRows(host, liveSessions: sessionsByEndpoint)
+                        .filter {
+                            !tmuxSessionVisibility.isHidden($0.title)
+                        }
+                        + host.tmuxSessions
                         .filter {
                             (!tmuxSessionVisibility.hideKwtManagedSessions
                                 || !workspaceSessionIDs.contains(tmuxSessionOrderID(
@@ -859,6 +912,59 @@ public enum WorkspaceSidebarModel {
                 )
             )
         }
+    }
+
+    /// One row per saved session that a restore would bring back as its own
+    /// sidebar session. Workspace sessions return through their workspace
+    /// row, and a session whose name is live again would be skipped, so
+    /// neither gets a row. Of several saved under one name, kwt restores the
+    /// newest, so only that one is shown.
+    private static func savedTmuxSessionRows(
+        _ host: HostSummary,
+        liveSessions: [String: TmuxSessionSummary]
+    ) -> [WorkspaceSidebarRow] {
+        var newest: [String: SavedTmuxSession] = [:]
+        for saved in host.savedTmuxSessions where !saved.worktree && !saved.nameTaken {
+            let orderID = tmuxSessionOrderID(
+                hostID: host.id,
+                name: saved.session,
+                socketName: saved.tmuxSocketName
+            )
+            guard liveSessions[orderID] == nil else { continue }
+            if let current = newest[orderID], current.savedAt >= saved.savedAt {
+                continue
+            }
+            newest[orderID] = saved
+        }
+        return host.savedTmuxSessions.compactMap { saved in
+            let orderID = tmuxSessionOrderID(
+                hostID: host.id,
+                name: saved.session,
+                socketName: saved.tmuxSocketName
+            )
+            guard newest[orderID]?.id == saved.id else { return nil }
+            return savedTmuxSessionRow(saved, hostID: host.id)
+        }
+    }
+
+    private static func savedTmuxSessionRow(
+        _ saved: SavedTmuxSession,
+        hostID: UUID
+    ) -> WorkspaceSidebarRow {
+        let windows = saved.windows == 1 ? "1 window" : "\(saved.windows) windows"
+        let panes = saved.panes == 1 ? "1 pane" : "\(saved.panes) panes"
+        return WorkspaceSidebarRow(
+            target: .tmuxSession(
+                hostID: hostID,
+                name: saved.session,
+                socketName: saved.tmuxSocketName
+            ),
+            icon: .tmuxSession,
+            title: saved.session,
+            subtitle: "Saved before its tmux server stopped, \(windows), \(panes)",
+            savedTmuxSessionID: saved.id,
+            savedTmuxSessionIsRestoring: saved.isRestoring
+        )
     }
 
     private static func directoryWorkspaceRow(
