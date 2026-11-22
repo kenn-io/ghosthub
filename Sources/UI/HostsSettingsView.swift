@@ -696,7 +696,7 @@ public struct HostsSettingsView: View {
                             .accessibilityIdentifier("launch-profiles-section")
                         }
 
-                        if isRemoteKwtReady, draft.platform != .windows {
+                        if draft.platform != .windows {
                             settingsSection("Projects") {
                                 Text(
                                     "Register an existing Git checkout explicitly."
@@ -1191,13 +1191,6 @@ public struct HostsSettingsView: View {
             || isInstallingRemoteKwt
             || isInstallingWindowsKwt
             || isRegisteringRemoteProject
-    }
-
-    private var isRemoteKwtReady: Bool {
-        hostProbeResult?.host.lastKnownReachable == true
-            && hostProbeResult?.diagnostics.contains {
-                $0.code == .missingKwt
-            } == false
     }
 
     private var normalizedRemoteProjectPath: String {

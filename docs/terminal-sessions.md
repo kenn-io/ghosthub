@@ -1158,7 +1158,12 @@ Agent hooks installed by kwt record the state. Settings → Hosts → **Agent
 Hooks** runs the host's managed kwt (`kwt agent-hook status --json` and
 `kwt agent-hook install --json`), which edits the user settings of each
 supported agent whose configuration directory exists on that host. Codex asks
-the user to trust new hooks once through `/hooks`.
+the user to trust new hooks once through `/hooks`. For a macOS or Linux SSH
+host, the section loads status when the host is selected and again when its
+connection fields change, once typing pauses; it does not wait for **Test
+Connection**. Like other kwt operations, loading first installs or updates the
+host's managed kwt, and a failure shows in the section. **Projects** likewise
+offers **Add Project** without a connection test.
 
 Each hook event writes the tmux pane option `@kwt_agent` as
 `<state> <unix-seconds> <agent>`, where state is `working`, `approval`,

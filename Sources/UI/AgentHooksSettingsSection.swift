@@ -1,4 +1,5 @@
 import GhosthubSettings
+import GhosthubWorkspace
 import SwiftUI
 
 /// One agent's hook installation on a host, as reported by
@@ -99,10 +100,37 @@ struct AgentHooksSettingsSection: View {
                 .accessibilityIdentifier("install-agent-hooks")
             }
         }
-        .task(id: host?.id) {
+        .task(id: Connection(host)) {
             statuses = nil
             errorMessage = nil
-            await apply(load(host))
+            if host != nil {
+                // Wait for typing in the connection fields to pause, so each
+                // keystroke does not start an SSH command.
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled else { return }
+            }
+            let result = await load(host)
+            // The person selected or edited another host meanwhile.
+            guard !Task.isCancelled else { return }
+            apply(result)
+        }
+    }
+
+    /// The fields that decide which machine the status describes. Editing
+    /// any of them reloads the status; renaming the host does not.
+    private struct Connection: Equatable {
+        var configKey: String?
+        var destination: String?
+        var platform: HostPlatform?
+        var compression: Bool?
+        var forwardAgent: Bool?
+
+        init(_ host: SSHHost?) {
+            configKey = host?.configKey
+            destination = host?.sshDestination
+            platform = host?.platform
+            compression = host?.compression
+            forwardAgent = host?.forwardAgent
         }
     }
 
