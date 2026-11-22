@@ -1,258 +1,263 @@
 ---
-description: Configure SSH hosts, trust, authentication, remote helpers, and reconnect behavior.
+description: Connect SSH hosts, review host keys, handle logins, and configure reconnects and remote helpers.
 icon: lucide/server
 ---
 
 # Remote hosts
 
-Connect a Mac or Linux machine over SSH to open its sessions alongside local
-work. Ghosthub lists tmux sessions, running and stopped Herdr sessions, and
-active Zellij sessions. Herdr and Zellij are optional. Native Windows hosts
-using psmux are experimental and do not support them.
+Add a Mac or Linux machine over SSH to manage its sessions right alongside your
+local ones. Ghosthub lists tmux sessions, running and stopped Herdr sessions,
+Herdr desktop terminals, Rex windows, and active Zellij sessions on each host.
+Herdr, Rex, and Zellij are optional. Native Windows hosts running psmux are
+experimental and support tmux only.
 
 ## Before you add a host
 
-A macOS or Linux host needs:
+A remote macOS or Linux host needs:
 
 - a working OpenSSH server
 - at least one supported multiplexer: tmux 3.2+, Herdr 0.8+, or Zellij 0.44+
-- a destination that your Mac's OpenSSH configuration can resolve
+- an SSH destination your Mac's OpenSSH config can reach
 
-Ghosthub checks the remote multiplexer version when attaching. Cmd-D and
-Cmd-Shift-D pane splitting is available with tmux 3.4 or newer or Herdr 0.8.0
-or newer; older versions continue to work through their normal key bindings.
+Ghosthub checks the remote multiplexer version when it attaches. **Cmd-D** and
+**Cmd-Shift-D** pane splitting requires tmux 3.4 or newer or Herdr 0.8.0 or
+newer; older versions still work with their own split keys.
 
-Test the same destination in Terminal first when diagnosing configuration or
-authentication:
+If you are troubleshooting an SSH config or login issue, check that plain SSH
+works from a terminal first:
 
 ```sh
 ssh devbox
 ```
 
-Ghosthub follows OpenSSH configuration for users, ports, identity files,
-agents, host-key policies, and supported jump routing.
+Ghosthub honors your OpenSSH config for usernames, ports, identity files,
+agents, host-key rules, and supported jump hosts.
 
-If the Herdr CLI is also installed on the remote host, Ghosthub silently adds
-its running and stopped sessions to the host's session list. It still uses Ghosthub's OpenSSH
-trust, authentication, pooling, and reconnect path rather than Herdr's remote
+If Herdr is installed on the remote machine, Ghosthub automatically includes its
+running and stopped sessions in that host's session list. It still connects over
+Ghosthub's own OpenSSH transport, trust prompts, pooling, and reconnect loop
+instead of Herdr's remote transport.
+
+If a Rex server is running under that SSH account, the macOS app lists its
+windows through Ghosthub's managed kwt helper.
+
+If Zellij is installed, Ghosthub adds its active sessions to the host's session
+list and skips exited sessions. Attachments use Ghosthub's normal OpenSSH
 transport.
-
-If a Rex server is running for that account, the macOS app adds its windows
-to the host's session list through Ghosthub's managed kwt helper.
-
-If Zellij is installed, Ghosthub adds its active sessions under **Zellij
-Sessions** and filters out exited/resurrectable entries. Attachments still use
-Ghosthub's ordinary OpenSSH transport rather than a backend-specific remote
-mode.
 
 ## Add and test a host
 
 1. Open **Settings → Hosts**.
-2. Add a destination such as `devbox`, `alice@build-server`, or a configured SSH
-   alias.
-3. Choose the host platform.
-4. Select **Test Connection**.
+2. Add a destination such as `devbox`, `alice@build-server`, or an alias from
+   `~/.ssh/config`.
+3. Pick the host platform.
+4. Click **Test Connection**.
 
-An unreachable host does not block discovery or use of the rest of the fleet.
-An expanded, reachable host with no projects, tmux sessions, Herdr sessions, or Zellij sessions
-says so in the sidebar.
+If one host is unreachable, your other hosts keep working normally. When a
+reachable host has no projects or sessions yet, expanding it in the sidebar says
+so.
 
 ![Ghosthub Host Settings with the connection test and remote host details](/docs/assets/guide-hosts.png)
 
 ## Reorder hosts
 
-Drag **Local Mac** or a remote host in **Settings → Hosts** to change its
-position. The sidebar updates immediately, and the order is saved across launches and shared by all
-Ghosthub windows. Connection edits still take effect when you select **Done**.
+Drag **Local Mac** or any remote host in **Settings → Hosts** to change its
+order. The sidebar updates immediately, and the order stays saved across
+launches and across all Ghosthub windows. Edits to a host's connection settings
+still apply when you click **Done**.
 
-You can also drag a host header in the sidebar to move its whole section,
-including the local Mac or an exe.dev host. The insertion line marks where the
-section will go. Settings shows Local Mac and configured SSH hosts in the same
-order; dragging there preserves the positions of discovered hosts outside that list.
-Local Mac is built in. You can move it, but cannot remove it or edit an SSH
-connection for it.
-Newly added hosts appear after the hosts you have arranged.
+You can also drag a host header directly in the sidebar to move its whole
+section, including your Mac or an exe.dev host. An insertion line shows where
+the section will land. **Settings → Hosts** shows Local Mac and your saved SSH
+hosts in that same order; dragging there keeps the saved positions of discovered
+hosts like exe.dev VMs intact. Local Mac is built in, so you can move it but
+cannot remove it or give it an SSH destination. Newly added hosts appear at the
+bottom.
 
 ## exe.dev hosts
 
-Ghosthub can discover running exe.dev VMs as SSH hosts without adding each VM
-manually. Create and manage VMs through [exe.dev](https://exe.dev/docs), then:
+Ghosthub can discover running exe.dev VMs automatically so you do not have to
+add each VM by hand. Create and manage VMs in [exe.dev](https://exe.dev/docs),
+then:
 
 1. Open **Settings → Integrations**.
 2. Add an exe.dev account. The default SSH destination is `exe.dev`.
-3. Optionally enter **Tags** to narrow discovery, such as `dev` or `dev, prod`.
-4. Select **Connect and Discover VMs** and complete any OpenSSH trust or
-   authentication prompt.
+3. Optionally enter **Tags** to filter which VMs appear, such as `dev` or
+   `dev, prod`.
+4. Click **Connect and Discover VMs** and finish any OpenSSH trust or login
+   prompt.
 
-Running VMs appear with the rest of the host fleet. Ghosthub uses each VM's
-exe.dev-provided SSH destination for ordinary tmux, optional Herdr or Zellij, and optional
-kwt discovery.
+Running VMs appear alongside your other hosts. Ghosthub uses each VM's exe.dev
+SSH destination for tmux, optional Herdr or Zellij, and optional kwt discovery.
 
-Leaving **Tags** empty discovers every VM on the account. With tags entered,
-Ghosthub discovers only VMs carrying at least one of them, and the account's
-status line reports the counts it was scoped to. Tags are matched without
-regard to case, and are managed in exe.dev.
+Leaving **Tags** blank discovers every VM on the account. With tags set,
+Ghosthub shows only VMs that have at least one matching tag, and the account's
+status line shows the filtered count. Tag matching is case-insensitive, and tags
+are managed in exe.dev.
 
 ![Ghosthub Integrations settings showing a connected exe.dev account and discovered VM status](/docs/assets/guide-exe-dev.png)
 
 ## Host-key trust
 
-When OpenSSH encounters an unseen key under an interactive trust policy,
-Ghosthub presents the exact destination and fingerprint for review. Approve it
-only after comparing the fingerprint through a trusted channel.
+When OpenSSH sees a new host key under an interactive trust policy, Ghosthub
+shows the exact destination and fingerprint for you to check. Approve it only
+after verifying the fingerprint through a trusted channel.
 
-ProxyJump routes are reviewed one hop at a time, and every trust or credential
-prompt identifies the machine that controls it. Ghosthub rejects opaque
-`ProxyCommand` routes and jump hosts that themselves use another proxy because
-it cannot safely present the intermediate trust boundaries.
+ProxyJump routes are checked one hop at a time, and every trust or login prompt
+names the machine asking for it. Ghosthub blocks opaque `ProxyCommand` routes
+and jump hosts that chain into another proxy because it cannot show the
+intermediate trust boundaries clearly.
 
 ## Authentication
 
-Ghosthub uses your OpenSSH identities and agent configuration. When SSH asks an
-interactive question, Ghosthub presents a native secure-entry sheet naming the
-host that requested the response. The response is kept only for the running app
-session. **Continue** can intentionally submit an empty response when the
-challenge requires one.
+Ghosthub uses your existing OpenSSH keys and SSH agent. When SSH prompts for a
+passphrase, password, or challenge response, Ghosthub shows a native secure
+sheet naming the host that asked. Your answer stays in memory for the current
+app run only. You can click **Continue** with an empty field when an SSH
+challenge expects one.
 
 ### SSH agent forwarding
 
 In **Settings → Hosts**, choose **Agent forwarding** for a saved host:
 
-- **SSH configuration** follows that host's `ForwardAgent` setting. This is the default.
+- **SSH configuration** follows that host's `ForwardAgent` setting (default).
 - **On** forwards your local SSH agent to the host.
-- **Off** disables forwarding for that host, including when SSH configuration enables it.
+- **Off** turns forwarding off for that host, even if `~/.ssh/config` enables
+  it.
 
-Select **Done**, then reopen the host's sessions to use the new choice. The setting
-applies to the destination; jump hosts keep their own SSH settings.
+Click **Done**, then reopen that host's sessions to pick up the change. The
+setting applies to the target host; jump hosts keep their own SSH config.
 
-Forwarding lets commands on the remote host ask your local agent to sign SSH
-logins. Private keys stay on your computer. Load the intended keys into your
-agent first, for example with `ssh-add ~/.ssh/id_ed25519`. In a remote terminal,
-`ssh-add -l` lists the keys available through forwarding. Forwarding remains
-available while Ghosthub has an active connection to that host.
+Agent forwarding lets commands on the remote machine ask your local agent to
+sign SSH logins while your private keys stay on your Mac. Load the keys you want
+into your agent first, for example with `ssh-add ~/.ssh/id_ed25519`. Inside a
+remote session, `ssh-add -l` shows which keys are forwarded. Forwarding stays
+active as long as Ghosthub has a live connection to that host.
 
-If a host shows a caution icon, select it to review trust, authenticate, or
-retry. A successful ordinary host-inventory authentication refreshes inventory;
-it does not open a tmux, Herdr, or Zellij session by itself.
+If a host shows a warning icon in the sidebar, click it to review its host key,
+sign in, or retry. Signing in to refresh a host's session list updates the
+sidebar without opening a session by itself.
 
 ### Tailscale browser checks
 
-When Tailscale SSH requires a browser check, choose **Open Authentication Page**
-in Ghosthub's authentication sheet and complete the sign-in. Ghosthub keeps
-that SSH attempt open and continues automatically after approval. If the check
-expires, retry the connection to request a fresh link.
+When Tailscale SSH asks for a browser check, click **Open Authentication Page**
+in Ghosthub's prompt and finish signing in. Ghosthub holds that SSH attempt open
+and continues automatically once you approve it. If the link expires, retry the
+connection to get a fresh one.
 
-The sheet shows the host requesting approval, including a jump host when one
-is involved. You can also copy the displayed link into your browser. Cancel
-closes your connection attempt.
+The prompt names the host asking for approval, including a jump host when one is
+involved. You can also copy the URL into your browser. Clicking **Cancel** stops
+that connection attempt.
 
 ![Ghosthub authentication sheet showing a Tailscale sign-in link and waiting status](/docs/assets/guide-ssh-browser-authentication.png)
 
 ## Automatic reconnect
 
-If an active SSH connection drops, Ghosthub shows **Connection interrupted**
-and retries automatically, with no more than 30 seconds between attempts.
-Choose **Reconnect Now** to try immediately. When the connection returns,
-Ghosthub reattaches to the same exact tmux, Herdr, or active Zellij session; the server-side
-processes were never moved into Ghosthub.
+When an active SSH connection drops, Ghosthub shows **Connection interrupted**
+and retries automatically, waiting at most 30 seconds between tries. Click
+**Reconnect Now** to try immediately. Once the host is back, Ghosthub reattaches
+to the exact same tmux, Herdr, or active Zellij session. Your programs stayed on
+the remote server the whole time.
 
-If SSH needs authentication or host-key review, the presentation changes to
-**Connection needs attention**. Complete the native recovery flow to resume the
-same session. If you dismiss it, choose **Review Connection** to
-open it again.
+If SSH needs a login or host-key approval, the view switches to **Connection
+needs attention**. Finish the prompt to return to the same session. If you close
+the sheet, click **Review Connection** to bring it back.
 
-If the connection still fails, Ghosthub shows OpenSSH's explanation and exit
-status. For example, `Permission denied (publickey)` means account
-authentication failed. Trusting a host key confirms the server's identity;
-it does not sign you in. Check the account and SSH key used for that host.
+If the connection still fails, Ghosthub shows OpenSSH's error message and exit
+status. For example, `Permission denied (publickey)` means the server rejected
+your login, not its host key: approving a host key verifies the server's
+identity, while signing in still requires a valid username and SSH key.
 
 ## Slow connections
 
-For text-heavy terminals on a slow connection, SSH compression can reduce the
-amount of output sent over the network. Ghosthub enables it by default for
-remote hosts, including hosts you added before this setting was available.
-exe.dev accounts are the exception: Ghosthub lists their VMs dynamically
-instead of storing them, so neither the account nor its VMs have an **SSH
-compression** toggle, and Ghosthub never requests compression for either.
+On slow or congested links, SSH compression can shrink text-heavy terminal
+output. Ghosthub turns it on by default for saved remote hosts, including hosts
+you added before this toggle existed. exe.dev accounts are the exception:
+because Ghosthub discovers their VMs dynamically instead of storing them,
+neither the account nor its VMs have an **SSH compression** toggle, and Ghosthub
+leaves compression off for them.
 
-To change it for a host, open **Settings → Hosts**, select the host, and change
-**SSH compression**, then select **Done**. The setting takes effect on new SSH
-connections. Saving it releases the host's open attachments; remote sessions
-keep running. Reopen a session to attach with the new setting.
+To change compression for a saved host, open **Settings → Hosts**, select the
+host, toggle **SSH compression**, and click **Done**. The change applies to new
+SSH connections. Saving it detaches open views on that host while leaving the
+remote sessions running; click a session again to reattach with the new setting.
 
-You do not need to edit `~/.ssh/config`. Compression can reduce output
-congestion, but does not eliminate delays caused by an unreliable network.
+You do not need to edit `~/.ssh/config`. Compression helps with heavy output
+over slow links, though it cannot remove lag caused by packet loss or high
+latency.
 
 ## Managed kwt helper
 
-Tmux-only hosts do not need kwt. To show projects and worktrees on a remote
-macOS or Linux host, configure the host normally. Ghosthub automatically copies
-or updates its matching revision-pinned helper during project inventory. It
-verifies the helper, stores it under `~/.ghosthub/`, and does not install or
-replace a system-wide kwt. Passive maintenance failures stay out of the way of
-tmux, Herdr, and Zellij sessions. When you request a project or worktree
-operation, Ghosthub repairs the helper first and shows an error on that action
-only if repair still fails.
+Hosts that only run standalone tmux, Herdr, or Zellij sessions do not need kwt.
+When you use projects, worktrees, or Rex on a remote macOS or Linux host,
+Ghosthub automatically copies and updates its matching revision-pinned kwt
+helper under `~/.ghosthub/`. It verifies the binary and never touches a
+system-wide kwt install.
 
-Register individual repositories with the explicit **Add Project** action.
-Ghosthub never scans a remote filesystem. See
+If a background helper update fails, your tmux, Herdr, and Zellij sessions keep
+working normally. When you trigger a project or worktree action, Ghosthub tries
+to repair the helper first and shows an error only if the repair still fails.
+
+Register individual repositories with **Add Project** in Host Settings. Ghosthub
+never scans a remote filesystem on its own. See
 [Projects and Worktrees](projects-worktrees.md).
 
 ## Tailscale hosts
 
-Importing a Tailscale peer preserves its full MagicDNS name. Ghosthub uses the
-user selected by OpenSSH configuration and falls back to the local macOS user
-name when none is configured. The import picker starts with every peer
-unselected so you can choose only the hosts you want to add.
+Importing a Tailscale peer keeps its full MagicDNS name. Ghosthub uses the
+username from your OpenSSH config, falling back to your local macOS username if
+none is set. The import picker starts with every peer unchecked so you pick only
+the machines you want.
 
 ![Host Settings with explicit Tailscale import controls](/docs/assets/guide-tailscale-import.png)
 
 ## Experimental Windows hosts
 
-Native Windows support requires:
+Connecting from macOS to a native Windows host requires:
 
 - Windows 11 build 22523 or newer
 - Windows OpenSSH
 - Windows PowerShell 5.1 or newer
-- [psmux](https://github.com/marlocarlo/psmux) with its `tmux.exe`
-  compatibility alias available
+- [psmux](https://github.com/marlocarlo/psmux) with its `tmux.exe` alias
+  available
 
-Choose **Windows (psmux)** when adding the host. After a successful connection
-test, **Install Bundled kwt** can upload the matching AMD64 or ARM64 helper for
-that user. The Windows helper is currently unsigned, so this path is intended
-for development machines and power users and is never run automatically.
-Automatic provisioning will remain disabled until the kwt executables are
-Authenticode-signed. Adding a new project from Ghosthub is not yet supported on
-Windows, although already registered project inventory can be shown.
+Choose **Windows (psmux)** when adding the host. After **Test Connection**
+succeeds, you can click **Install Bundled kwt** to upload the matching AMD64 or
+ARM64 helper for that account. Because the Windows helper is not
+Authenticode-signed yet, Ghosthub never installs it automatically; this setup is
+aimed at developers and power users. Adding new projects from Ghosthub is not
+supported on Windows yet, though projects already registered on that host can be
+listed.
 
 [Session activity indicators](sessions.md#activity-indicators) require psmux
-3.3.4 or newer; older supported versions remain attachable but publish no
-passive activity state.
+3.3.4 or newer. Older supported versions still attach normally, just without
+activity dots.
 
 ## Rust source builds
 
-The unreleased Rust/Linux source build also connects to POSIX SSH hosts using
-its bundled KWT controller. See the [native Linux SSH guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
-for setup and current limits. It supports remote tmux, Herdr, and Zellij
-session lifecycle actions, plus [projects and worktrees](projects-worktrees.md#rust-source-builds).
+The unreleased Rust Linux build also connects to macOS and Linux SSH hosts
+through its bundled KWT helper. See the
+[native Linux SSH guide](https://github.com/kenn-io/ghosthub/blob/main/docs/rust-port.md#native-linux-ssh-sessions)
+for setup and limits. It supports remote tmux, Herdr, and Zellij sessions, plus
+[projects and worktrees](projects-worktrees.md#rust-source-builds).
 
-If an active tmux terminal loses its SSH connection, Ghosthub retries
-automatically after 1, 2, 4, 8, 16, then 30 seconds. Automatic attempts have
-a 15-second limit. Select **Refresh** or **Retry** beside the host to try now
-and reset the backoff.
-Automatic retries wait for worktree creation or import and the resulting
-terminal to open, so recovery in another window does not interrupt that work.
-Ghosthub reopens that same session, even if it was renamed. It will not create
-a missing session or open a new session that reused the old name. Selecting
-another session, detaching, or closing the window cancels the pending recovery. If reconnecting or starting the
-terminal fails, **Retry** still opens the original session. Recovery also works
-when tmux alternate-screen switching is disabled. Authentication failures,
-changed SSH settings, and host-key prompts pause automatic attempts; select
-**Retry** to review them. **Cancel** stops an in-progress connection and further
-automatic attempts.
+When an active tmux session loses its SSH connection, Ghosthub retries after 1,
+2, 4, 8, 16, and then 30 seconds, with a 15-second timeout per attempt. Click
+**Refresh** or **Retry** beside the host to try immediately and reset the
+backoff. Automatic retries pause while a worktree is being created or imported
+so background reconnects do not interrupt it.
 
-This recovery supports the default tmux server and KWT's shared server.
-Select retained inactive sessions, protected PR worktrees, Herdr, and Zellij
-again to reopen them.
+Ghosthub always reattaches to that exact session, even if it was renamed. It
+will not create a missing session or attach to a brand-new session that reused
+the same name. Switching to another session, detaching, or closing the window
+cancels pending retries. If reconnecting fails, clicking **Retry** still targets
+the original session. Reconnect also works when tmux alternate-screen switching
+is disabled. Login errors, changed SSH settings, and host-key prompts pause
+automatic retries; click **Retry** to review them. **Cancel** stops an active
+attempt and turns off further automatic retries.
+
+Automatic reconnect covers the default tmux server and kwt's shared server. For
+inactive retained sessions, protected PR worktrees, Herdr, and Zellij, click the
+row again to reopen it.
 
 ![Native Linux Ghosthub after reconnecting to the original tmux shell](/docs/assets/guide-rust-ssh-reconnect.png)
