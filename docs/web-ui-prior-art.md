@@ -1,94 +1,93 @@
 # Web UI prior art: freshell
 
-Architectural notes from studying [freshell](https://github.com/danshapiro/freshell)
-(MIT license), an adjacent browser-terminal system with the same "run at home,
-reach it over VPN / Tailscale / SSH" posture as Ghosthub's web UI. We studied
-its architecture; **no code was copied.** This document records what the study
-validated, what we deliberately do differently, and what is worth adopting, so
-the next person does not re-derive it. It is a design-rationale reference, not a
-contract — [Web UI](web-ui.md) and [Threat model](threat-model.md) remain the
-authorities.
+These notes summarize an architecture review of
+[freshell](https://github.com/danshapiro/freshell) (MIT license), a browser
+terminal with a similar "run locally, reach over VPN, Tailscale, or SSH" model
+to Ghosthub's web UI. **No code was copied.** This document records what the
+review confirmed, what Ghosthub intentionally does differently, and what ideas
+are worth adopting later. It is a design reference only. [Web UI](web-ui.md)
+and [Threat model](threat-model.md) remain the authorities.
 
-## The load-bearing difference
+## The core difference
 
-freshell relays a **bare shell PTY**; Ghosthub relays an **attach client to a
-multiplexer** (tmux / Zellij / Herdr). Almost every architectural divergence
-follows from that one fact. Because freshell owns the raw stream, it must build
-scrollback, replay, resume, and terminal-mode resync itself. Because Ghosthub
-attaches to a multiplexer that already owns all of those, its relay can be far
-simpler — see the state-authority principle in [Web UI](web-ui.md).
+freshell relays a **bare shell PTY**. Ghosthub relays an **attach client to a
+multiplexer** (tmux, Zellij, or Herdr). Almost every design difference follows
+from this boundary. Because freshell owns the raw stream, it must build
+scrollback, output replay, session resume, and terminal-mode resync itself.
+Because Ghosthub attaches to a multiplexer that already owns those behaviors,
+its relay stays parserless and much simpler. See the state-authority rule in
+[Web UI](web-ui.md).
 
-## What the study validated (we already do this)
+## Patterns Ghosthub already shares
 
 - **Process-group teardown.** freshell kills the child's whole process group
-  (`kill(-pid, SIGKILL)`), not just the direct child, and guards against a
-  recycled pid, because a backgrounded grandchild otherwise leaks and can hold
-  the PTY slave open. Ghosthub's PTY teardown independently arrived at the same
-  design (non-reaping `waitid` pins the zombie leader, then the group is swept,
-  then reaped). Convergent designs are reassuring here.
-- **Two-tier output backpressure.** A bounded, drop-oldest per-connection queue
-  guarantees bounded server memory; a sustained-overflow disconnect sheds a
-  truly dead peer. Ghosthub has the bounded output queue plus a stalled-send
-  timeout that cuts a non-draining viewer.
-- **Ordering: `exit` behind queued output.** A terminal-exit signal must not
-  overtake still-queued output, or the client tears down and renders a blank
-  exited pane. freshell threads exit through the same FIFO; Ghosthub's close
-  frame is sent only after teardown, as the teardown acknowledgment.
-- **In-band, non-ambient credential for the websocket** (presented in the hello
-  frame, never a cookie or URL). Ghosthub's scene secret travels the same way,
-  and its fragment-delivered single-use mint code is stronger than freshell's
-  `?token=` (a fragment never reaches the server at all).
+  (`kill(-pid, SIGKILL)`), rather than only the direct child, and guards
+  against PID reuse so a backgrounded grandchild cannot hold the PTY slave
+  open. Ghosthub's PTY teardown reached the same design independently: a
+  non-reaping `waitid` pins the zombie leader, the group is swept, and the
+  leader is reaped last.
+- **Two-tier output backpressure.** A bounded, drop-oldest per-connection
+  queue caps server memory, and a sustained-overflow disconnect drops dead
+  peers. Ghosthub uses a bounded output queue paired with a stalled-send
+  timeout to cut off viewers that stop draining.
+- **Ordering `exit` behind queued output.** An exit signal must not overtake
+  queued output, or the client tears down early and renders a blank pane.
+  freshell threads exit through the output FIFO. Ghosthub sends the websocket
+  close frame only after relay teardown finishes, making it an explicit
+  teardown acknowledgment.
+- **In-band, non-ambient websocket credentials.** freshell sends its
+  websocket credential in the hello frame instead of a cookie or URL.
+  Ghosthub sends its scene secret the same way and strengthens bootstrap by
+  delivering a single-use mint code in the redirect fragment (which browsers
+  never send to servers) instead of a `?token=` query parameter.
 
-## What we deliberately do NOT copy
+## Patterns Ghosthub intentionally avoids
 
-- **A single global bearer token for everything.** freshell authenticates the
-  page, every request, and the websocket with one long-lived shared secret and
-  has **no per-session isolation, no expiry, and no revocation** — any
-  authenticated client owns every shell on the host. Ghosthub's scene
-  credentials are the opposite: per-scene secrets, idle and absolute lifetimes,
-  established only from a single-use mint code. This is the gap that motivated
-  building scene credentials at all.
-- **Server-side UTF-8 decoding of the PTY stream into JSON strings.** freshell
-  is not byte-transparent — invalid UTF-8 becomes U+FFFD, and it juggles UTF-8
-  bytes versus UTF-16 code units for eviction (a real premature-eviction bug for
-  box-drawing TUIs). Ghosthub relays raw **binary** frames; the browser is the
-  only interpreter. Byte fidelity is the whole point of a parserless relay.
-- **Server-side VT scanners** (batch-boundary, mode-projection, idle
-  fingerprint). These exist in freshell only because it owns the raw stream and
-  a bounded replay window; a reconnecting xterm would otherwise render wrong.
-  Ghosthub's multiplexer redraws on reattach, so none of this is needed.
-- **Advisory-only Origin.** freshell's TypeScript server logs Origin mismatches
-  but never rejects (its Rust port hardened this). Ghosthub enforces exact Host
-  and Origin from the start.
+- **One global bearer token for everything.** freshell uses a single
+  long-lived secret across the page, HTTP requests, and websockets, with no
+  per-session isolation, expiry, or revocation. Any authenticated client owns
+  every shell on the host. Ghosthub mints per-scene secrets with idle and
+  absolute lifetimes from a single-use mint code.
+- **Server-side UTF-8 decoding into JSON strings.** freshell decodes PTY
+  output as UTF-8, turning invalid bytes into U+FFFD, and mixes UTF-8 byte
+  counts with UTF-16 code units during buffer eviction (causing premature
+  eviction in box-drawing TUIs). Ghosthub relays raw **binary** frames so the
+  browser stays the sole VT interpreter and byte fidelity stays intact.
+- **Server-side VT scanners.** freshell runs batch-boundary, mode-projection,
+  and idle-fingerprint scanners so a reconnecting xterm.js instance can recover
+  from a bounded replay window. Ghosthub relies on the multiplexer to redraw on
+  reattach, removing the need for server-side VT parsing.
+- **Advisory-only `Origin` checks.** freshell's TypeScript server logs
+  `Origin` mismatches without rejecting them (its Rust port later tightened
+  this). Ghosthub enforces exact `Host` and `Origin` checks from the start.
 
-## Worth adopting later (mainly for the SPA pipeline, `y5d7`)
+## Ideas worth adopting (SPA pipeline, `y5d7`)
 
-- **Asset-cache discipline.** *(Adopted, `y5d7`.)* Serve `index.html` with
-  `no-store`, hashed assets as `immutable`, and — importantly — a **missing
-  hashed asset must 404, never fall back to the SPA shell**, so version skew
-  fails loudly instead of serving a broken bundle. Ghosthub embeds assets in the
-  binary rather than serving from disk, but the cache rules still apply:
-  `build.rs` content-hashes each asset into a `stem.<hash>.ext` name and rewrites
-  the page to match, and `service.rs` serves those names `immutable` and 404s an
-  unknown one. A protocol-mismatch close that tells a stale client to reload is
-  still worth pairing with this once the versioned frontend ships.
-- **Typed gap frames instead of silent loss.** Where bytes can be dropped
-  (queue overflow, replay eviction), freshell emits a typed frame telling the
-  client scrollback was truncated rather than losing it silently. Low priority
-  for Ghosthub — reconnect re-attaches to the multiplexer, which redraws — but a
-  clean idea if the demo raw-shell path is ever kept long-term.
-- **Index-don't-own for history.** freshell never persists agent transcripts; it
-  indexes each CLI's own on-disk history and shells out to the CLI's native
-  `resume`. This is already Ghosthub's philosophy (kwt / tmux / Herdr / Zellij
-  own identity and history; Ghosthub discovers), and it is why "resume from any
-  device" is nearly free for both.
+- **Asset-cache discipline.** *(Adopted in `y5d7`.)* Serve `index.html` with
+  `no-store` and hashed assets as `immutable`, and return `404` for a missing
+  hashed asset instead of falling back to the SPA shell so version skew fails
+  loudly. Ghosthub embeds assets in the binary rather than reading them from
+  disk, and applies the same rules: `build.rs` content-hashes each asset to
+  `stem.<hash>.ext` and rewrites the page to match, while `service.rs` serves
+  matching names as `immutable` and returns `404` for unknown ones. Pairing
+  this with a protocol-mismatch close code that prompts stale clients to reload
+  remains useful once the versioned frontend ships.
+- **Typed gap frames instead of silent drops.** When queue overflow or replay
+  eviction drops bytes, freshell sends a typed frame telling the client that
+  scrollback was truncated. This is low priority for Ghosthub because reconnect
+  reattaches and triggers a multiplexer redraw, but it is a good pattern if a
+  raw-shell demo path is ever kept long-term.
+- **Index history instead of owning it.** freshell never stores agent
+  transcripts; it indexes each CLI's on-disk history and shells out to native
+  `resume`. Ghosthub follows the same rule: kwt, tmux, Herdr, and Zellij own
+  identity and history, and Ghosthub discovers them.
 
-## Things to avoid outright
+## Pitfalls to avoid
 
-- **A dual TypeScript + Rust implementation kept in lockstep.** freshell is
-  mid-port and maintains both, byte-matched. The parity tax is real; Ghosthub
-  has one implementation.
-- **No document CSP.** freshell renders untrusted terminal output and proxies
-  arbitrary dev servers yet sets no document CSP — the study flags this as a
-  gap. Ghosthub ships a strict CSP (script-src stays strict; inline styles are
-  allowed only for the embedded terminal library's runtime stylesheet).
+- **Maintaining two implementations in lockstep.** freshell maintains
+  byte-matched TypeScript and Rust implementations during its port. Ghosthub
+  keeps one Rust implementation.
+- **Omitting a document CSP.** freshell renders untrusted terminal output and
+  proxies local dev servers without a document Content-Security-Policy.
+  Ghosthub ships a strict CSP: `script-src` stays strict, and inline styles are
+  allowed only for the embedded terminal library's runtime stylesheet.
