@@ -47,16 +47,16 @@ const imageAlt = {
       <p class="eyebrow">Five-minute tour</p>
       <h1>Meet Ghosthub</h1>
       <p class="lead">
-        Ghosthub is a native Mac management layer for local and remote terminal
-        multiplexers. Instead of opening a local shell, typing <code>ssh</code>,
-        listing tmux sessions, and reattaching every time Wi-Fi drops, you pick
-        a host and session in Ghosthub and land straight inside it.
+        Ghosthub is a dedicated Mac app for managing local and remote terminal
+        multiplexers. It is an alternative to juggling tmux, Herdr, and Zellij
+        sessions inside a general-purpose terminal like iTerm2, Ghostty, or Kitty.
       </p>
       <p>
-        It works with tmux, Herdr, and Zellij across your Mac and SSH machines,
-        including sessions started by coding agents. Each multiplexer keeps its
-        own panes, history, key bindings, and running programs; Ghosthub handles
-        discovery, switching, live previews, and automatic reconnect.
+        Instead of opening a local shell, typing <code>ssh</code>, listing
+        sessions, and reattaching every time Wi-Fi drops, you pick a host and
+        session in Ghosthub and land straight inside it. Each multiplexer keeps
+        its own panes, history, key bindings, and running programs; Ghosthub
+        handles discovery, switching, live previews, and automatic reconnect.
       </p>
       <p class="docs-callout">
         Looking for setup steps or limits? Go to the <a href="/docs/">Docs</a>.
@@ -307,11 +307,11 @@ const imageAlt = {
         <div>
           <h2>libghostty rendering with your own config</h2>
           <p>
-            Ghosthub renders each attached session with libghostty 1.4.0, so you
-            still get GPU-accelerated rendering and familiar terminal settings.
-            Set fonts, colors, background opacity, and blur in Ghosthub's own
-            <code>ghostty.conf</code>, separate from Ghostty.app, and pick a
-            default theme for new tmux sessions in Settings.
+            Ghosthub uses libghostty 1.4.0 to render each attached session with
+            GPU acceleration while keeping its settings separate from
+            Ghostty.app. Set fonts, colors, background opacity, and blur in
+            Ghosthub's own <code>ghostty.conf</code>, and pick a default theme
+            for new tmux sessions in Settings.
           </p>
           <p><a href="/docs/terminal-configuration/">Terminal configuration guide</a>.</p>
         </div>

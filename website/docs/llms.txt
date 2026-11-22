@@ -1,6 +1,6 @@
 # Ghosthub
 
-> Native Mac management layer for local and remote tmux, Herdr, and Zellij sessions. Browse hosts, attach, reconnect over SSH, and manage optional Git worktrees without touching a local shell.
+> Native Mac management layer for local and remote tmux, Herdr, and Zellij sessions. An alternative to juggling multiplexer sessions in a general-purpose terminal like iTerm2, Ghostty, or Kitty, with no local shell required and optional Git worktrees.
 
 Ghosthub is alpha software. The Overview is a short visual tour, and the Docs below cover setup, daily use, and limits. Every HTML page and `.md` file comes from the same source and tracks `main`. See the Unreleased section of the changelog for changes newer than the latest stable download.
 

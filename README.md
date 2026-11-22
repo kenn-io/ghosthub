@@ -42,16 +42,18 @@
   >
 </p>
 
-Ghosthub is a native Mac management layer for tmux, Herdr, and Zellij across
-your Mac and SSH hosts. Instead of opening a local shell to SSH into each
-machine, list sessions, and reattach whenever a connection drops, Ghosthub
-discovers your sessions, puts them in one sidebar, and drops you straight into
-the one you pick.
+Ghosthub is a dedicated Mac app for managing local and remote tmux, Herdr, and
+Zellij sessions. It replaces the workflow of juggling multiplexer sessions in a
+general-purpose terminal like iTerm2, Ghostty, or Kitty: opening a local shell,
+running `ssh`, listing sessions, and reattaching by hand whenever a connection
+drops. In Ghosthub, you pick a host and session in the sidebar and land straight
+inside it without ever touching a local shell.
 
-Each session stays an ordinary tmux, Herdr, or Zellij session with its own
-panes, scrollback, key bindings, and running programs. Inside Ghosthub,
-attached sessions render with libghostty 1.4.0. If you want a separate Git
-checkout for each task, you can register a repository and use
+Keep your usual terminal emulator for quick local commands. Ghosthub focuses on
+multiplexer sessions across your Mac and SSH hosts, rendering each attached view
+with libghostty 1.4.0 while leaving tmux, Herdr, and Zellij in charge of their
+own panes, scrollback, key bindings, and running programs. If you want a
+separate Git checkout for each task, you can register a repository and use
 [kwt](https://kwt.sh) to create branch or pull-request worktrees with their own
 tmux sessions. Git and worktrees are optional.
 
