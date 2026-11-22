@@ -1,10 +1,11 @@
 # Ghosthub user documentation
 
-The Markdown files in `content/` are the public task guides at
+The Markdown files in `content/` power the public user guides at
 [ghosthub.ai/docs](https://ghosthub.ai/docs/). The
-[Overview](https://ghosthub.ai/overview/) is a short visual tour that links here
-for detailed steps and limits.
+[Overview](https://ghosthub.ai/overview/) is a five-minute visual tour that
+links here for full steps and limits.
 
-Follow [Documentation publishing](../../docs/README.md) for page ownership,
-HTML and Markdown URLs, navigation, screenshots, release labels, and checks.
-Use the [website README](../README.md) for local previews, captures, and deployment.
+See [Documentation publishing](../../docs/README.md) for page ownership, HTML
+and Markdown outputs, navigation, screenshots, and checks. See
+[website/README.md](../README.md) for local previews, screenshot captures, and
+deployment.

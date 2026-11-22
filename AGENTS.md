@@ -1,383 +1,386 @@
 # Ghosthub Agent Guide
 
-This document is the foundational mandate for AI agents (Gemini, Codex, etc.) working on Ghosthub. It provides the mental model, technical constraints, and non-negotiable workflows required to contribute effectively.
+Guidance for coding agents working in Ghosthub. It covers the product model,
+technical boundaries, workflow rules, build commands, and test gates.
 
-## Core Mental Model
+## Core mental model
 
-Ghosthub is a **native terminal for local and remote tmux, Herdr, and Zellij
-fleets** on macOS. It gives equal status to four ways of working:
+Ghosthub is a **native hub for local and remote terminal multiplexers**
+(macOS Swift app, plus an in-progress Rust port for Windows and Linux). It is
+an alternative to juggling SSH and multiplexer tabs in a general-purpose
+terminal like iTerm2, Ghostty, or Kitty, letting users work across hosts
+without touching a local shell.
 
-- Create or attach to any tmux session on a configured host, and restore
-  tmux sessions kwt saved before a reboot.
-- Create, attach to, stop, restart, or delete Herdr TUI sessions on a supported
-  host. On macOS, also discover and attach to backend terminals on local and
-  remote POSIX hosts: live Herdr desktop/core terminals and Rex windows. The
-  backend owns their creation, lifetime, and layout; Ghosthub draws a Rex
-  window's split layout and sends the user's layout changes to Rex.
-- Create, attach to, or kill active Zellij sessions on a supported host.
-- Create tmux sessions bound to git worktrees and manage the worktree lifecycle,
-  including imports from branches and GitHub pull requests.
+Four workflows have equal status:
 
-Worktrees are optional; Ghosthub remains fully useful without them.
+- **tmux:** create or attach to any tmux session on a configured host, and
+  restore tmux sessions kwt saved before a reboot.
+- **Herdr and Rex:** create, attach to, stop, restart, or delete Herdr TUI
+  sessions on supported hosts. On macOS, also discover and attach to backend
+  terminals on local and remote POSIX hosts: live Herdr desktop (`herdr-core`)
+  tabs and terminals, and Rex windows. Herdr desktop owns its creation,
+  lifetime, and split layout (Ghosthub shows desktop tabs read-only). Rex owns
+  its window layout and pane lifetime; Ghosthub draws Rex's layout and sends
+  user layout changes back to Rex.
+- **Zellij:** create, attach to, or kill active Zellij sessions on supported
+  hosts.
+- **Git worktrees (optional):** create tmux sessions bound to Git worktrees and
+  manage branch and GitHub pull-request worktrees through kwt. Ghosthub is
+  fully useful without Git or worktrees.
 
-- **Hosts:** Every machine is a Host. The local Mac is the default host. Remote machines (macOS/Linux) are added via SSH.
-- **Projects:** A Project is a git repository reported by kwt on a specific Host.
-- **Worktrees:** Projects contain kwt workspaces (standard checkouts or linked git worktrees), each with an exact tmux session name.
-- **Sessions:** Worktree sessions and otherwise-unbound tmux sessions open through an ordinary tmux client. Running and stopped Herdr sessions are host inventory; opening a running session attaches, while creating or restarting uses Herdr's launch path. Active Zellij sessions are separate host inventory and open through an ordinary Zellij client. Each backend owns its windows, tabs, panes, layout, history, key bindings, and process lifetime.
-- **Attachment:** Each scene has at most one active interactive native tmux,
-  Herdr, or Zellij presentation. Already-opened tmux clients may remain retained
-  and noninteractive. The explicit Always Live preview mode may also connect
-  every freshly discovered tmux session in the scene without activating it.
-  Preview rendering reuses that session's retained client rather than creating
-  a second client. Ghosthub owns
-  discovery, local/SSH client presentation, keepalives, and reconnect. Closing
-  a presentation detaches. Tmux and Zellij destruction require explicit,
-  confirmed Kill Session actions. Herdr Stop and Delete are separate confirmed
-  actions; Restart and Create are constructive actions.
-- **Middleman:** Sessions created by Middleman remain discoverable because they are ordinary sessions on a host tmux server. Ghosthub does not use Middleman as session authority.
-- **Console Panel:** A host-scoped persistent terminal area (e.g., for `roborev`) that is independent of the active worktree.
+### Key concepts and boundaries
 
-Herdr Core terminals and Rex windows share one backend-terminal model
-(`Sources/BackendTerminal/`): each is a host, kind, and address. A Herdr Core
-terminal attaches in its own surface. A Rex window follows its layout through
-one `kwt rex control` channel and attaches each pane with `kwt rex attach`, in
-the split container from `Sources/TerminalSupport/`. The sidebar lists every session on a host in one
-list, with a backend label on each row: **herdr** for Herdr desktop terminals,
-**herdr tui** for Herdr TUI sessions, and **rex** for Rex windows. Display
-names never identify a terminal. Herdr Core creation, lifecycle, and split
-controls belong to the Herdr TUI; Rex owns its layout, and a change shows once
-Rex reports it. Sibling navigation walks the host's whole session list in
-sidebar order and skips stopped Herdr sessions. Rex attachment runs Ghosthub's
-pinned kwt, never a `rex` client. See
-[Backend terminals](docs/terminal-sessions.md#backend-terminals).
+- **Hosts:** every machine is a Host. The local Mac is the default host; remote
+  macOS and Linux hosts connect over SSH (native Windows/psmux hosts are
+  experimental).
+- **Projects:** Git repositories (and plain directory workspaces) reported by
+  kwt on a host.
+- **Worktrees:** kwt workspaces (primary checkouts or linked Git worktrees),
+  each with an exact tmux session name.
+- **Sessions:** worktree sessions and standalone tmux sessions open through a
+  normal tmux client. Herdr TUI sessions list both running and stopped entries;
+  opening a running one attaches, while creating or restarting runs Herdr's
+  launch path. Active Zellij sessions open through a normal Zellij client. Each
+  backend owns its windows, tabs, panes, layout, history, key bindings, and
+  process lifetime.
+- **Attachment:** each window/tab (`Scene`) has at most one active interactive
+  view. Previously opened tmux clients may stay retained and noninteractive,
+  and **Always Live** preview mode may also connect freshly discovered POSIX
+  tmux sessions without activating them. Previews reuse the retained client
+  rather than opening a second one. Ghosthub owns discovery, local/SSH client
+  views, keepalives, and reconnect. Closing a view detaches only. Ending tmux
+  or Zellij sessions requires a confirmed **Kill Session…** action. Herdr TUI
+  **Stop** and **Delete** are separate confirmed actions; **Restart** and
+  **Create** are constructive.
+- **Backend terminals (`Sources/BackendTerminal/`):** Herdr Core terminals/tabs
+  and Rex windows share one model (host, kind, address). Display names never
+  identify a terminal. A Herdr Core terminal attaches in its own surface, and
+  desktop tabs render in the read-only split view. A Rex window follows its
+  layout over one `kwt rex control` channel and attaches each pane with
+  `kwt rex attach` inside the split container from `Sources/TerminalSupport/`,
+  always using Ghosthub's pinned kwt (never a `rex` client). Layout changes
+  appear once Rex reports them. The sidebar lists every standalone session on a
+  host in one list labeled **tmux**, **zellij**, **herdr**, **herdr tui**, or
+  **rex**. Sibling navigation walks that whole list in sidebar order and skips
+  stopped Herdr sessions. See
+  [Backend terminals](docs/terminal-sessions.md#backend-terminals).
+- **Rust Linux Rex support:** opens remote Rex windows over the existing SSH
+  lease (including SSH over Tailscale), draws Rex's reported tiled layout with
+  one libghostty terminal per pane, and sends pane operations over
+  `kwt rex control`. Closing a view detaches all its clients; closing a pane is
+  a separate confirmed action that ends its program.
+- **Console Panel:** a host-scoped persistent terminal area (for example, for
+  `roborev`) independent of the active worktree.
+- **Middleman:** Ghosthub has no Middleman runtime or API dependency. Sessions
+  created by Middleman appear only because they are ordinary tmux sessions.
 
-The Rust Linux client opens remote Rex windows over the existing SSH lease,
-including SSH over Tailscale. It draws Rex's reported tiled layout with one
-libghostty terminal per pane. Rex owns splits, focus, zoom, sizes, and pane
-lifetime; `kwt rex control` requests those operations and supplies updated
-views. Closing a view detaches all its clients. Closing a pane is a separate,
-confirmed action that ends its program.
+### Authority and non-goals
 
-Ghosthub is alpha software. Treat the entire app, including its persistence
-layer, as subject to direct iteration.
+Ghosthub is alpha software; treat the app and its persistence layer as open to
+direct iteration.
 
-- Kwt's machine-readable CLI is authoritative for project/worktree identity
-  and exact tmux session names. Direct `tmux list-sessions` discovery supplies
-  every otherwise-unbound session on each configured host. Herdr's
-  machine-readable session list independently supplies running and stopped Herdr sessions
-  on the local Mac and remote POSIX hosts; a missing Herdr installation is
-  normal and silent. Zellij's session list independently supplies active
-  Zellij sessions on those hosts; exited/resurrectable sessions are excluded,
-  and a missing Zellij installation is also normal and silent.
-- Packaged builds invoke their revision-pinned bundled kwt for local operations.
-  Configured remote macOS and Linux hosts automatically install or update
-  Ghosthub's matching revision-pinned managed helper under `~/.ghosthub/`.
-  Windows helper installation remains explicit until the kwt executables are
+- **Discovery authority:** kwt's machine-readable CLI owns project/worktree
+  identity and exact tmux session names. Direct `tmux list-sessions` supplies
+  standalone tmux sessions. Herdr's JSON list independently supplies running
+  and stopped Herdr TUI sessions, and Zellij's list independently supplies
+  active Zellij sessions (excluding exited/resurrectable ones). Missing Herdr
+  or Zellij installs are normal and silent.
+- **kwt helper distribution:** packaged builds use their revision-pinned
+  bundled kwt locally and automatically install or update the matching helper
+  under `~/.ghosthub/` on configured remote macOS and Linux hosts. Windows
+  helper installation stays explicit until the executables are
   Authenticode-signed.
-- Fresh remote hosts gain project context through the explicit Host Settings
-  **Add Project** action, which delegates one absolute repository path to kwt;
-  Ghosthub never scans the remote filesystem or edits kwt configuration.
-- Ghosthub never uses `tmux -CC` or reconstructs tmux panes, windows, layouts,
-  history, or terminal output in Swift.
-- Ghosthub never reconstructs Herdr workspaces, tabs, panes, history, or
-  terminal output in Swift, and does not use Herdr as worktree authority.
-  Whole-session create, stop, restart, and delete are the only Herdr lifecycle
-  controls. The explicit Split Right and Split Down app actions may request one
-  pane split from a capable active Herdr attachment; Herdr still chooses the
-  focused pane and owns the resulting layout. Ghosthub never otherwise manages
-  Herdr themes, workspaces, tabs, panes, agents, plugins, installation, updates,
-  configuration, or server-wide state.
-- Ghosthub never reconstructs Zellij tabs, panes, layout, history, or terminal
-  output in Swift and never offers resurrection or deletion of exited Zellij
-  sessions. Whole-session create, attach, and confirmed kill are the only
-  Zellij lifecycle controls. Zellij has no atomic active-only attach command,
-  so an upstream attach may resurrect a session that exits after Ghosthub's
-  final active-state probe; this narrow race is documented, and confirmed
-  kills fence Ghosthub reconnects across scenes. Ghosthub does not manage
-  Zellij themes, plugins, installation, updates, configuration, or server-wide
-  state.
-- Ghosthub has no Middleman runtime or API dependency.
+- **No filesystem scanning:** remote hosts register projects only through Host
+  Settings **Add Project** (passing one absolute repository path to kwt).
+  Ghosthub never scans remote filesystems or edits kwt config.
+- **No backend reconstruction:** Ghosthub never uses `tmux -CC` and never
+  reconstructs tmux, Herdr, or Zellij windows, tabs, panes, layouts, history,
+  or terminal output in Swift.
+- **Herdr scope:** whole-session create, stop, restart, and delete, plus
+  explicit **Split Right** and **Split Down** requests on a capable active
+  Herdr TUI attachment (Herdr still picks the focused pane and owns the
+  layout). Ghosthub does not manage Herdr themes, workspaces, tabs, panes,
+  agents, plugins, installs, updates, config, or server-wide state.
+- **Zellij scope:** active-session create, attach, and confirmed kill only.
+  Zellij has no atomic active-only attach, so an upstream attach can resurrect
+  a session that exits right after Ghosthub's active check; this narrow race is
+  accepted, and confirmed kills fence reconnects across windows. Ghosthub never
+  offers resurrection or exited-session deletion and does not manage Zellij
+  themes, plugins, installs, updates, config, or server-wide state.
 
-## Source of Truth Hierarchy
+## Source of truth hierarchy
 
-1. `AGENTS.md`: This guide (mental model, mandatory workflow, development
-   workflow, build commands, and quality gates).
-2. `docs/architecture.md`: Architecture and Product source of truth.
-3. `docs/threat-model.md`: Security boundaries and trusted-peer assumptions.
-4. `docs/terminal-sessions.md`: Source of truth for terminal ownership, shell startup, and restart semantics.
-5. `docs/release.md`: Signing, notarization, and release process source of truth.
+1. `AGENTS.md`: mental model, workflow rules, build commands, and quality gates.
+2. `docs/architecture.md`: product and architecture source of truth.
+3. `docs/threat-model.md`: security boundaries and trusted-peer assumptions.
+4. `docs/terminal-sessions.md`: terminal ownership, shell startup, and restart
+   semantics.
+5. `docs/release.md`: signing, notarization, and release process.
 
 ## Documentation
 
 - Write for the person using or maintaining Ghosthub. Lead with the outcome,
   name who does what, use short sentences, and explain unfamiliar terms.
-- Organize around reader questions. Put purpose and current capabilities
-  first; separate limitations and future work. Use only the sections the
-  topic needs.
-- Give each bullet one main idea. Use numbered steps for sequences,
-  paragraphs for rationale, and tables or diagrams for comparisons and flows.
-- State rules directly. Preserve exact commands, field names, authorization
-  checks, limits, and failure behavior when simplifying the wording.
-- Give each fact an owning guide or reference and link to it elsewhere.
-  Update that section instead of appending a narrative of the latest change.
-  Indexes should route readers, not repeat implementation status.
-- Describe current architecture separately from approved but unbuilt work,
-  proposals, and historical decisions. Preserve rationale, approvals, and
-  active exceptions with their removal conditions. Label superseded designs
-  and keep them outside normal navigation.
-- Keep the website, its Markdown companions, README, and engineering docs on
-  message. Distinguish the latest release from newer `main` functionality.
-  Follow [docs/README.md](docs/README.md) for the publishing layout and checks.
+- Organize around reader questions. Put purpose and current behavior first;
+  keep limits and future work separate. Include only sections the topic needs.
+- Give each bullet one main idea. Use numbered steps for sequences, paragraphs
+  for rationale, and tables or diagrams for comparisons and flows.
+- State rules directly. Keep exact commands, field names, authorization checks,
+  limits, and failure behavior intact when simplifying prose.
+- Give each fact one owning page and link to it elsewhere. Update that section
+  instead of appending a history of recent changes. Indexes should route
+  readers, not repeat implementation status.
+- Separate current behavior from approved unbuilt work, proposals, and old
+  decisions. Keep rationale, approvals, and active exceptions with their
+  removal conditions. Label superseded designs and keep them out of main nav.
+- Keep the website, its Markdown companions, README, and engineering docs in
+  sync. Distinguish the latest release from newer `main` behavior. Follow
+  [docs/README.md](docs/README.md) for publishing layout and checks.
 
-## Non-Negotiable Workflow Rules
+## Non-negotiable workflow rules
 
-- When a task involves multiple steps, complete all requested steps in sequence
-  without stopping. If the task includes creating a branch, committing, and
-  opening a pull request, finish the entire chain.
-- Commit every turn when you make changes.
-- Commit before responding without asking whether to commit; committing is the
-  expected default after every change.
+### Git, branches, and PRs
+
+- Complete every step in a multi-step request without stopping (for example,
+  branching, committing, and opening a PR).
+- Commit every code- or doc-producing turn before responding, without asking
+  whether to commit. Never leave task-related uncommitted work behind.
 - Push completed task-branch commits to their configured remote before
   responding. Force-push only when the user explicitly requests a history
   rewrite.
-- Ending a completed turn with task-related uncommitted work is forbidden. A
-  clean task worktree is a precondition for handoff and for any roborev
-  interaction.
-- Never commit directly to `main` or `master`. When a task starts on the
-  default branch, create a task-specific branch before the first commit. If a
-  local commit lands on the default branch accidentally, move it to a task
-  branch and restore the local default branch to its upstream before pushing.
-- Never amend commits.
-- Do not leave the app build broken at the end of a turn.
-- If a turn touches Swift app code, terminal integration, `Package.swift`, or bootstrap logic, `make build` must pass before the turn is done.
-- If a turn changes kwt inventory, host resolution, tmux, Herdr, or Zellij discovery,
-  or native session attachment, run `make test-essential-workflows` before claiming the
-  change is correct.
-- If a turn touches release packaging, signing, notarization, or `.github/workflows/release.yml`, update `docs/release.md` in the same turn.
-- `RELEASE_VERSION` is the sole source of the current release version outside
-  dated entries in `website/docs/content/changelog.md` and immutable
-  published tags. Preparing a release updates only `RELEASE_VERSION` and that
-  changelog; Makefiles, shell
-  scripts, workflows, tests, and documentation must read that file or use an
-  `X.Y.Z` placeholder, never duplicate the current version literal.
-- Write changelogs and release notes in plain language. Lead with what people
-  can do or what now works better. Include implementation details only when
-  they explain a useful constraint or a change users need to act on.
-- For Python build tooling and tests, use `uv` rather than bare `python`, `pip`, or ad hoc virtualenv state.
-- Prefer Makefile targets over raw multi-flag test commands; if a Python or test invocation is complex enough to be copied around, add a `make` target for it.
-- Use `kata` for task management (see Issue Tracking below).
-- User-facing workflow changes must update the website Guide when they affect
-  documented behavior. Regenerate and publish the website screenshot set only
-  at feature acceptance and when opening a pull request, and only when the
-  accepted change materially alters visuals shown in those screenshots; copy,
-  accessibility, and non-visual behavior changes do not require new captures.
-  Do not capture or publish screenshots while a feature is still in
-  development. User-facing workflow documentation must include a current
-  screenshot of the UI it tells users to operate. Prefer deterministic demo
-  fixtures with realistic synthetic data; use a manual capture only when the
-  accepted workflow cannot be represented by the demo, and never expose real
-  account, host, project, or session data. Publish required refreshed binaries
-  to the orphan `website-assets` branch so ghosthub.ai does not ship stale
-  product views.
-- Pull request descriptions must use clear, concise bullet points in plain
-  language and be optimized for human scanning. Lead with the user-visible
-  purpose and concrete behavior, then cover material constraints and
-  reviewer-relevant consequences. Do not narrate the development process,
-  review history, or internal deliberation. Avoid boilerplate or navel-gazing
-  sections such as "Changes", "Validation", "Tests", or "Verification";
-  mention unusual validation only inline when it is genuinely useful reviewer
-  context.
-- Give every Rust-port pull request title the `rust-port` scope, as in
-  `feat(rust-port): open imported PR worktrees over SSH`, so changelog and
-  release-note entries clearly identify Rust-port work.
-- Always attach current application screenshots to Rust-port pull requests.
-  Inspect the captures before uploading and use only synthetic session data.
-- The canonical repository is `https://github.com/kenn-io/ghosthub`. Only push
-  or open pull requests when the user explicitly asks.
-- Pull requests must have a user-facing benefit or improve the developer
-  experience, and the body must say which one.
-- The public repository does not accept unsolicited pull requests. Direct bug
-  reports and feature requests to GitHub issues. Prospective code contributors
-  must coordinate privately with Kenn Software before starting work.
-  Contributions use Apache-2.0; no contributor license agreement is required.
-- Never include superpowers planning documents (`docs/superpowers/specs/`,
-  `docs/superpowers/plans/`) in a pull request. Creating and using them locally
-  during development is fine; they are local working artifacts. Remove them
-  from the branch before pushing, opening, or updating a pull request.
-- Do not poll or watch GitHub Actions through `gh`, the GitHub API, or browser automation unless the user explicitly asks you to do so.
-- **NO DATABASE MIGRATIONS** until the first production release. Update the current schema, bootstrap paths, fixtures, and tests directly.
+- Never commit directly to `main` or `master`. Create a task branch before the
+  first commit. If a commit accidentally lands on the default branch, move it
+  to a task branch and reset the local default branch to its upstream before
+  pushing.
+- Never amend commits unless explicitly requested.
+- Canonical repository: `https://github.com/kenn-io/ghosthub`. Only push or
+  open pull requests when the user explicitly asks.
+- Never include local superpowers planning docs (`docs/superpowers/specs/`,
+  `docs/superpowers/plans/`) in a PR; remove them from the branch before
+  pushing or opening a PR.
+- Do not poll or watch GitHub Actions through `gh`, the GitHub API, or browser
+  automation unless the user explicitly asks.
+- Public contribution policy: no unsolicited PRs. Direct bug reports and
+  feature requests to GitHub issues; prospective code contributors coordinate
+  privately with Kenn Software first. Contributions use Apache-2.0 with no CLA.
 
-## Commit Messages
+### Pull request descriptions and screenshots
 
-Commit subjects must use the Conventional Commits format. Pull requests are
-squash-merged: the PR title becomes the commit subject and the PR description
-becomes the commit body, so PR titles use the same format.
+- Every PR must state whether it delivers a user-facing benefit or a developer
+  experience improvement.
+- Write PR descriptions as short, scannable plain-language bullets. Lead with
+  user-visible purpose and concrete behavior, then material constraints or
+  consequences. Do not narrate development history or add boilerplate headings
+  like "Changes", "Validation", "Tests", or "Verification"; mention unusual
+  validation inline only when it helps reviewers.
+- Prefix every Rust-port PR title with the `rust-port` scope (for example,
+  `feat(rust-port): open imported PR worktrees over SSH`) and attach inspected
+  screenshots made with synthetic session data.
+- Update the website user guides whenever a user-facing workflow changes.
+  Regenerate and publish website screenshots only at feature acceptance and PR
+  time, and only when accepted visuals actually changed (copy, accessibility,
+  and non-visual changes do not need new captures). Prefer deterministic demo
+  fixtures with synthetic data; never expose real account, host, project, or
+  session data. Publish refreshed binaries to the orphan `website-assets`
+  branch.
+
+### Build, release, and schema rules
+
+- Never leave the app build broken at the end of a turn.
+- If a turn touches Swift app code, terminal integration, `Package.swift`, or
+  bootstrap logic, `make build` must pass before ending the turn.
+- If a turn changes kwt inventory, host resolution, tmux/Herdr/Zellij
+  discovery, or native session attachment, run `make test-essential-workflows`.
+- If a turn touches release packaging, signing, notarization, or
+  `.github/workflows/release.yml`, update `docs/release.md` in the same turn.
+- `RELEASE_VERSION` is the single source of the current release version outside
+  dated entries in `website/docs/content/changelog.md` and published tags.
+  Preparing a release updates only `RELEASE_VERSION` and that changelog;
+  scripts, Makefiles, workflows, tests, and docs must read `RELEASE_VERSION` or
+  use `X.Y.Z`.
+- Write changelogs and release notes in plain language: lead with what users
+  can do or what works better, and include implementation details only when
+  they explain a constraint or required user action.
+- Use `uv` for all Python tooling and tests (never bare `python`, `pip`, or ad
+  hoc virtualenvs).
+- Prefer Makefile targets over long raw commands; add a `make` target if a test
+  or Python invocation is complex enough to copy around.
+- **No database migrations** until the first production release. Update the
+  current schema, bootstrap paths, fixtures, and tests directly.
+
+## Commit messages
+
+Use Conventional Commits for commit subjects and PR titles (PRs squash-merge,
+so the PR title becomes the commit subject and the description becomes the
+body):
 
 ```text
 type(scope): summary
 ```
 
-The scope is optional and names the part of the project the change touches.
-Use one of these types:
+Allowed types:
 
-- `feat`: a new capability users can see or use.
-- `fix`: a bug fix users can notice.
-- `perf`: faster or lighter behavior users can notice.
-- `refactor`, `test`, `docs`, `build`, `ci`, or `chore`: a change that leaves
-  product behavior as it was.
+- `feat`: new capability users can see or use.
+- `fix`: user-visible bug fix.
+- `perf`: user-visible speed or resource improvement.
+- `refactor`, `test`, `docs`, `build`, `ci`, `chore`: no product behavior
+  change.
 
-Mark a breaking change with `!` before the colon, as in
-`feat(api)!: remove the v1 endpoints`, and describe the break in a
-`BREAKING CHANGE:` footer at the end of the commit body or PR description.
+Mark breaking changes with `!` before the colon (`feat(api)!: remove v1`) and a
+`BREAKING CHANGE:` footer. Releases and release notes are generated from these
+types, and version bumps follow the largest change since the last release.
 
-This format is required. Releases and release notes are generated from these
-messages: the type decides whether a change appears in the notes and under
-which heading, and the version bump follows the largest change since the last
-release, from a breaking change to `feat` to `fix`.
+## Issue tracking
 
-## Issue Tracking
+Use `kata` (bound via `.kata.toml`) as the sole work tracker. Do not create
+markdown TODO lists or parallel trackers.
 
-Use `kata` as the only work tracker for this project. The workspace is bound
-via `.kata.toml` at the repo root. Do not create markdown TODO lists or
-parallel planning systems.
-
-- See `kata quickstart` for the full agent guide.
-- List open work: `kata list --json` (filter further with `--status open`).
-- Read an issue: `kata show <number> --json`.
-- Search before creating: `kata search "<terms>" --json`.
+- Full guide: `kata quickstart`
+- List open work: `kata list --json` (filter with `--status open`)
+- Read an issue: `kata show <number> --json`
+- Search before creating: `kata search "<terms>" --json`
 - Create follow-up work:
-  `kata create "<title>" --body "<body>" --label area:host --label priority:p2 --idempotency-key "<unique-key>" --json`.
-- Comment: `kata comment <number> --body "<text>" --json`.
-- Add/remove labels: `kata label add <number> <label>` / `kata label remove`.
-- Link issues via `kata edit <ref>`: `--parent <ref>` (set parent, at most one),
-  `--blocks <ref>` / `--blocked-by <ref>` (ordering), `--related <ref>`
-  (symmetric). Remove with the `--remove-*` variants.
-- Close: `kata close <number> --reason done --json` (only when the work is
-  actually complete).
+  `kata create "<title>" --body "<body>" --label area:host --label priority:p2 --idempotency-key "<unique-key>" --json`
+- Comment: `kata comment <number> --body "<text>" --json`
+- Labels: `kata label add <number> <label>` / `kata label remove`
+- Link issues with `kata edit <ref>`: `--parent <ref>` (at most one),
+  `--blocks <ref>`, `--blocked-by <ref>`, `--related <ref>`, or `--remove-*`
+- Close when actually done: `kata close <number> --reason done --json`
 - Never run `kata delete` or `kata purge` without explicit user instruction.
 
-**Labels in use:** `area:{host,ui,infra,docs,remote,tests}`,
-`priority:{p1,p2,p3}`, `epic`, plus `bug` and `enhancement`. Label new issues
-appropriately; do not invent new label prefixes without updating this file.
+**Allowed labels:** `area:{host,ui,infra,docs,remote,tests}`,
+`priority:{p1,p2,p3}`, `epic`, `bug`, `enhancement`. Do not invent new label
+prefixes without updating this file.
 
-**Epics:** the parent issue is labeled `epic` and lists children via a
-markdown checklist in the body. Children also have a `parent` link via
-`kata edit <child> --parent <epic>`. When closing a child, re-check the
-parent's checklist.
+**Epics:** label the parent `epic`, list children in a markdown checklist in
+its body, link each child with `kata edit <child> --parent <epic>`, and update
+the checklist when closing a child.
 
-## Test Suite Policy
+## Testing and quality gates
 
-- Tests must exercise observable behavior or a meaningful security or
-  operational contract. Do not test that committed source contains particular
-  strings, ordering, or exact text merely to restate the implementation.
-- Default to Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`) for new tests. Do not add new XCTest suites unless the harness genuinely requires XCTest.
-- Prefer `pytest` for Python tests, run through `uv` and the Makefile targets.
-  All Python tests live in `tools/tests/`. Keep `Tests/` Swift-only.
-- Migrate existing XCTest coverage to Swift Testing whenever you touch a test and the harness allows it, especially for pure-logic and host coverage. Do not churn large stable suites that still need XCTest just to change frameworks.
-- Keep XCTest where the current harness still genuinely needs it, especially AppKit, SwiftUI host lifecycle, libghostty, and other UI/smoke paths that are already working.
-- When migrating repetitive tests, prefer parameterized Swift Testing coverage over copy-pasted single-case methods.
-- If you fix a regression, add or strengthen the narrowest test that would have caught it before moving on.
-- Every new executable or library module ships with tests in the same change.
-- Prefer deterministic unit tests around parsing, prompt generation, and
-  process orchestration.
-- Add integration tests at subprocess and file-system boundaries.
+### Test suite policy
 
-## Quality Gates
+- Test observable behavior and real security or operational contracts. Never
+  assert that source files contain specific strings or ordering just to restate
+  the implementation.
+- Use Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`) for new
+  Swift tests. Keep XCTest only where the harness genuinely needs it (AppKit,
+  SwiftUI host lifecycle, libghostty, and existing UI/smoke suites). Migrate
+  touched pure-logic/host tests to Swift Testing when practical, using
+  parameterized tests for repetitive cases.
+- Put all Python tests in `tools/tests/` using `pytest` via `uv` and Makefile
+  targets. Keep `Tests/` Swift-only.
+- Fix regressions with the narrowest test that catches the bug.
+- Ship tests alongside every new executable or library module. Prefer
+  deterministic unit tests for parsing, prompts, and orchestration, plus
+  integration tests at subprocess and filesystem boundaries.
 
-- Run `make format` before committing Swift changes. CI runs
-  `make format-check` and fails on drift.
-- Linux commits run Swift formatting and basic file checks. The Prek Swift
-  compiler hook runs only on macOS; macOS CI runs `make swift-warning-check`.
-  Use the formatter pinned in `mise.toml`; do not bypass hooks for Linux work.
+### Required checks
+
+- Run `make format` before committing Swift changes (`make format-check` runs
+  in CI). Use the formatter pinned in `mise.toml`; do not bypass hooks.
+- Prek hooks run Swift formatting and basic file checks on both Linux and
+  macOS; the Swift compiler warning hook runs on macOS, and macOS CI runs
+  `make swift-warning-check`.
 - Run Swift tests with `make swift-test` or targeted `xcodebuild test`.
 - Tests that start a real tmux server must use `TestTmuxServer` and run under
-  `tools/run_swift_tests.sh`; command-construction-only and Zellij tests do not
-  need that fixture.
-- Tests that create a `TerminalSurfaceView`, directly or through a coordinator,
-  must own it through teardown and await `shutdown()` before the test worker
-  exits. Do not rely on view deinitialization or process exit to stop its shell.
+  `tools/run_swift_tests.sh` (command-construction-only and Zellij tests do not
+  need it).
+- Tests creating a `TerminalSurfaceView` (directly or via a coordinator) must
+  own it through teardown and await `shutdown()` before exiting; never rely on
+  `deinit` or process exit to stop its shell.
 - Run Python tests with `make python-test`.
 
 ## Naming
 
-- Avoid ceremonial naming. Prefer the shortest name that is still clear.
-- Do not prefix files, types, tests, helpers, or fixtures with `Ghosthub` when the surrounding module or directory already provides that context.
-- Prefer names like `HostProtocolTests` over `GhosthubHostProtocolTests`.
-- Use `Libghostty...` for Ghosthub-owned wrappers around the embedded terminal library.
-- Use `Ghostty` only when referring specifically to the upstream Ghostty project or source tree, Ghostty.app, its license, its configuration format, or upstream API/module names such as `GhosttyKit` and `ghostty_surface_t`.
-- Never describe Ghosthub as embedding or running Ghostty. It embeds `libghostty`; Ghostty.app is a separate application.
-- When touching existing code, clean up obviously redundant naming drift instead of extending it.
+- Pick the shortest clear name. Do not prefix files, types, tests, helpers, or
+  fixtures with `Ghosthub` when the module or directory already gives that
+  context (use `HostProtocolTests`, not `GhosthubHostProtocolTests`).
+- Use `Libghostty...` for Ghosthub wrappers around the embedded terminal
+  library.
+- Use `Ghostty` only for the upstream Ghostty project/source, Ghostty.app, its
+  license, its config format, or upstream API names (`GhosttyKit`,
+  `ghostty_surface_t`).
+- Never say Ghosthub embeds or runs Ghostty. It embeds `libghostty`;
+  Ghostty.app is a separate app.
+- Clean up redundant naming drift when touching existing files.
 
-## Terminal Parity Rules
+## Terminal parity rules
 
-This is the most failure-prone part of the project. Treat it as a hard constraint.
+This is the most failure-prone area in the codebase. Treat every rule below as
+a hard constraint:
 
-- Ghosthub must behave like a normal macOS terminal app for shell startup and keybindings.
-- Ghosthub is isolated from Ghostty.app configuration and state, but its embedded libghostty runtime should preserve the upstream library's macOS shell-startup semantics.
-- Do not disable shell integration to work around keybinding bugs. Ghosthub relies on libghostty's shell integration for correct zsh startup behavior.
-- Do not force a custom local shell command unless there is a very strong reason. Let libghostty launch the user shell using its normal macOS login-shell path.
-- Do not leak launcher-terminal environment into embedded shells. In particular, `EDITOR` and `VISUAL` from the terminal used to launch Ghosthub can change zsh keymaps and break `Ctrl-A`, `Ctrl-E`, `Ctrl-K`, and `Option-D`.
-- Keep `TERM_PROGRAM` Ghosthub-specific (`ghosthub`), but preserve working shell behavior.
-- Do not pin `shell-integration-features` to work around cursor or keybinding issues unless Ghosthub exposes that behavior as a deliberate user setting.
-- Ghosthub terminal config should remain Ghosthub-owned at `~/.config/ghosthub/ghostty.conf`.
-- Ghosthub mutable application state should live under `~/.ghosthub/` rather than `~/Library/Application Support/` or `~/.config/ghosthub/`.
-- Global Ghostty.app config must not affect Ghosthub.
+- Shell startup and keybindings must match a normal macOS terminal.
+- Keep Ghosthub isolated from Ghostty.app config and state while preserving
+  libghostty's upstream macOS login-shell startup.
+- Never disable shell integration to work around keybinding bugs; zsh startup
+  depends on it.
+- Do not force a custom local shell command without a compelling reason; let
+  libghostty launch the user's normal macOS login shell.
+- Do not leak launcher-terminal environment into embedded shells, especially
+  `EDITOR` and `VISUAL` (which can switch zsh keymaps and break `Ctrl-A`,
+  `Ctrl-E`, `Ctrl-K`, and `Option-D`).
+- Keep `TERM_PROGRAM` set to `ghosthub`.
+- Do not pin `shell-integration-features` to work around cursor or keybinding
+  bugs unless exposed as a deliberate user setting.
+- Keep Ghosthub terminal config at `~/.config/ghosthub/ghostty.conf` and
+  mutable app state under `~/.ghosthub/` (not `~/Library/Application Support/`
+  or `~/.config/ghosthub/`). Global Ghostty.app config must never affect
+  Ghosthub.
 
-## Terminal Regression Checks
+### Terminal regression checks
 
-If you touch terminal startup, shell environment, config layering, embedded libghostty bootstrap, key handling, or remote logic, run all of these:
+Whenever you touch terminal startup, shell environment, config layering,
+libghostty bootstrap, key handling, or remote logic, run all four:
 
 - `make test-libghostty-bootstrap`
 - `make python-test`
 - `make swift-test`
 - `make build`
 
-If the change is specifically about interactive shell behavior, also verify the existing smoke coverage around:
+For interactive shell changes, also verify smoke coverage for dirty launcher
+env, default shell integration loading user zsh startup files, and
+`Ctrl-A`/`Option-D` through the workspace-hosted terminal path.
 
-- dirty launcher env not breaking default shell bindings
-- default libghostty shell integration loading user zsh startup files
-- `Ctrl-A` / `Option-D` behavior through the workspace-hosted terminal path
+### Practical guardrails
 
-## Practical Guardrails
+- Fix terminal bugs at the shell-startup or environment boundary before
+  changing AppKit key handling.
+- Prefer end-to-end terminal smoke tests over helper-only unit tests for
+  user-visible bugs.
+- Bump the Ghosthub bootstrap schema and rebuild artifacts whenever you change
+  libghostty bootstrap patches.
+- Document Ghosthub-specific shell or config changes when you make them.
 
-- Prefer fixing terminal issues at the shell-startup or environment boundary before changing AppKit key handling.
-- Prefer stronger end-to-end terminal smoke tests over helper-only unit tests when the bug is user-visible.
-- If you change libghostty bootstrap patches, bump the Ghosthub bootstrap schema and rebuild artifacts.
-- Keep Ghosthub-specific shell/config behavior documented when you change it.
+## Code organization and shell safety
 
-## Code Organization
+- Keep execution logic, issue-tracker access, and prompt rendering separate,
+  and favor small focused files.
+- Update `docs/architecture.md` whenever an architectural assumption changes.
+- Use non-interactive shell flags (`cp -f`, `mv -f`, `rm -f`, `rm -rf`) so
+  commands never hang on prompts.
 
-- Keep execution logic, issue-tracker access, and prompt rendering separated.
-- Favor small files with clear responsibilities.
-- Update `docs/architecture.md` when implementation changes an architectural
-  assumption.
+## Directory map
 
-## Shell Safety
-
-Use non-interactive shell flags so agents do not hang on prompts: `cp -f`,
-`mv -f`, `rm -f`, `rm -rf`.
-
-## Directory Map
-
-- `Sources/`: Swift app modules (`GhosthubApp`, `GhosthubUI`,
-  `GhosthubWorkspace`, `GhosthubSettings`, `GhosthubTerminal`,
-  `GhosthubTerminalSupport`, `GhosthubPersistence`, `GhosthubTransport`,
-  `GhosthubTmux`, `GhosthubHerdr`, `GhosthubZellij`).
-- `Sources/App/`: Main macOS app logic and UI.
-- `Sources/UI/`: Reusable SwiftUI/AppKit presentation components.
-- `Sources/Workspace/`: Pure workspace, host, project, worktree, and session models.
-- `Sources/Settings/`: Native settings and preferences.
+- `Sources/`: Swift modules (`GhosthubApp`, `GhosthubUI`, `GhosthubWorkspace`,
+  `GhosthubSettings`, `GhosthubTerminal`, `GhosthubTerminalSupport`,
+  `GhosthubPersistence`, `GhosthubTransport`, `GhosthubTmux`, `GhosthubHerdr`,
+  `GhosthubZellij`, plus `BackendTerminal`).
+- `Sources/App/`: main macOS app logic and UI.
+- `Sources/UI/`: reusable SwiftUI/AppKit components.
+- `Sources/Workspace/`: pure workspace, host, project, worktree, and session
+  models.
+- `Sources/Settings/`: native settings and preferences.
 - `Sources/Terminal/`: `libghostty` integration and surface management.
-- `Sources/TerminalSupport/`: libghostty config/bootstrap support and the
-  split-tree layout and container, which compile without the linked library.
-- `Sources/Persistence/`: Database schema, models, and GRDB repositories.
-- `Sources/Transport/`: Shared local/SSH command routing and shell helpers.
-- `Sources/Tmux/`: Native tmux attachment command model.
-- `Sources/Herdr/`: Native Herdr discovery and attachment command model.
+- `Sources/TerminalSupport/`: libghostty config/bootstrap helpers and the
+  split-tree layout/container (compiles without linking `libghostty`).
+- `Sources/Persistence/`: database schema, models, and GRDB repositories.
+- `Sources/Transport/`: local/SSH command routing and shell helpers.
+- `Sources/Tmux/`: tmux attachment command model.
+- `Sources/Herdr/`: Herdr discovery and attachment command model.
 - `Sources/BackendTerminal/`: Herdr Core and Rex discovery, attachment
-  commands, and the Rex window layout model.
-- `Sources/Zellij/`: Native Zellij discovery and attachment command model.
-- `tools/`: Python-based build, bootstrap (including `libghostty`), and
-  packaging automation.
+  commands, and Rex window layout model.
+- `Sources/Zellij/`: Zellij discovery and attachment command model.
+- `tools/`: Python build, bootstrap (`libghostty`), and packaging automation.
 - `Tests/`: Swift test suites.
-- `tools/tests/`: Python tests for build, packaging, and importable tool code.
+- `tools/tests/`: Python tests for build, packaging, and tool code.

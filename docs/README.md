@@ -1,51 +1,51 @@
 # Documentation publishing
 
-Ghosthub has two documentation sites. Public guides help people use the app.
-Engineering references help Kenn engineers and approved contributors maintain
-it. The root README introduces the product and links to those guides.
+Ghosthub has two documentation sites: public guides for people using the app,
+and engineering references for Kenn engineers and approved contributors. The
+root README introduces Ghosthub and links to both.
 
 ## Where does a page belong?
 
 | Content | Source | Published location |
 | --- | --- | --- |
-| Product introduction and visual tour | `website/src/` | [ghosthub.ai](https://ghosthub.ai/) and `/overview/` |
+| Product landing page and five-minute tour | `website/src/` | [ghosthub.ai](https://ghosthub.ai/) and `/overview/` |
 | User setup, tasks, limits, and troubleshooting | `website/docs/content/` | [ghosthub.ai/docs](https://ghosthub.ai/docs/) |
-| Architecture, development, operations, and release procedures | `docs/` | Separate engineering site built with `make docs-build` |
-| Release history | `website/docs/content/changelog.md` | [ghosthub.ai/docs/changelog](https://ghosthub.ai/docs/changelog/) and the release appcast notes |
-| Product screenshots | Orphan `website-assets` branch | Copied into both website and docs assets during the website build |
+| Architecture, development, operations, and release steps | `docs/` | Engineering site built with `make docs-build` |
+| Release history | `website/docs/content/changelog.md` | [ghosthub.ai/docs/changelog](https://ghosthub.ai/docs/changelog/) and Sparkle appcast notes |
+| Product screenshots | Orphan `website-assets` branch | Synced into website and docs assets during the website build |
 
-Give each topic one owner. Keep exact steps and limits in that guide, and link
-to it from summaries. The [public documentation index](../website/docs/content/index.md)
-routes users to tasks. The [engineering index](index.md) routes maintainers to
+Give each topic one owning page. Keep exact steps and limits there and link to
+it from summaries. The [public docs index](../website/docs/content/index.md)
+routes users to tasks; the [engineering index](index.md) routes maintainers to
 references. Follow the [writing guidance](../AGENTS.md#documentation).
 
-## How are public pages published?
+## How public pages are published
 
-Keep public Markdown sources flat in `website/docs/content/`. A page named
-`sessions.md` produces both `/docs/sessions/` and `/docs/sessions.md`. The index
-produces `/docs/` and `/docs.md`. The build copies the same Markdown sources;
-do not maintain a separate version for machine readers.
+Keep public Markdown files flat inside `website/docs/content/`. A file named
+`sessions.md` generates both `/docs/sessions/` and `/docs/sessions.md`;
+`index.md` generates `/docs/` and `/docs.md`. Both HTML and Markdown outputs
+come from the same file, so never maintain a separate copy for agents.
 
-Add public pages to both `website/zensical.toml` and `website/docs/llms.txt`.
-Use `/docs/assets/<filename>.png` for screenshots so links resolve from HTML
-pages and Markdown companions, including `/docs.md`. Add each screenshot to
-`website/scripts/sync-assets.sh` so a production build cannot omit it.
+Add every new public page to both `website/zensical.toml` and
+`website/docs/llms.txt`. Reference screenshots as `/docs/assets/<filename>.png`
+so links work from both HTML pages and Markdown copies (including `/docs.md`),
+and register each filename in `website/scripts/sync-assets.sh` so production
+builds cannot miss it.
 
-The public docs follow `main`. Describe newer features as unreleased until
-published, link to the canonical changelog, and keep stable downloads pointed
-at the latest release. Do not copy the current version number into guides;
-`RELEASE_VERSION` owns it. See the [release procedure](release.md) when preparing
-or publishing binaries.
+Public docs track `main`. Label anything not yet shipped as **Unreleased**,
+link to the changelog, and keep download links pointed at the latest stable
+release. Never hardcode the current version number in guides; `RELEASE_VERSION`
+owns it. See [Release](release.md) when preparing or publishing binaries.
 
-## How do I check documentation changes?
+## Checking documentation changes
 
-From the repository root, build the engineering site:
+Build the engineering docs from the repository root:
 
 ```sh
 make docs-build
 ```
 
-From `website/`, install the pinned dependencies and check the public site:
+Check and build the public site from `website/`:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -56,40 +56,40 @@ pnpm build
 pnpm test:browser
 ```
 
-The website build checks the public docs in strict mode, copies the changelog,
-and verifies that each page has HTML and Markdown output. Also open changed
-pages at desktop and narrow widths. Follow their links and check screenshots
-at full resolution. Build success alone does not check the wording or layout.
+The website build runs Zensical in strict mode, copies the changelog, and checks
+that every page has both HTML and Markdown outputs. After building, open
+changed pages at desktop and mobile widths, follow their links, and inspect
+screenshots at full resolution.
 
-For local previews, use `make docs-serve`, `make site-docs-serve`, or
-`pnpm dev` from `website/`.
+For local previews, run `make docs-serve`, `make site-docs-serve`, or `pnpm dev`
+inside `website/`.
 
-CI runs the shared [first-paint check](https://github.com/kenn-io/actions/tree/main/first-paint)
-on the built website, both docs sites, and the Rust web UI. It fails when a
-page can paint before its stylesheets and fonts load. Website and docs pages
-embed their fonts in a render-blocking stylesheet and inline
-`hold-first-paint.js` right after `<meta charset>`; the Rust web UI uses only
-system fonts and needs neither. Both Zensical sites share
-`website/docs/overrides/`, which holds that script, the template that inlines
-it, and the embedded Inter and JetBrains Mono faces. Keep the theme's Google
-Fonts loading off (`font = false`). To run the check locally, set it up in a
-kenn-io/actions checkout as its README describes, then run
+CI runs the shared
+[first-paint check](https://github.com/kenn-io/actions/tree/main/first-paint) on
+the built website, both docs sites, and the Rust web UI. It fails if a page can
+paint before its stylesheets and fonts load. Website and docs pages embed their
+fonts in a render-blocking stylesheet and inline `hold-first-paint.js` right
+after `<meta charset>` (the Rust web UI uses system fonts only and needs
+neither). Both Zensical sites share `website/docs/overrides/` for that script,
+its template, and the embedded Inter and JetBrains Mono faces; keep the theme's
+Google Fonts loading off (`font = false`). To run the check locally, set up a
+`kenn-io/actions` checkout per its README and run
 `node <checkout>/first-paint/check-first-paint.mjs --dist <built site>`.
 
-## How do I refresh screenshots and deploy?
+## Refreshing screenshots and deploying
 
-Follow the [website capture and deployment instructions](../website/README.md).
-Use synthetic demo data, inspect every outgoing image, and keep screenshot
-binaries on `website-assets`. Refresh screenshots after the feature is accepted.
-Pushing that branch alone does not deploy the website.
+Follow [website/README.md](../website/README.md). Use synthetic demo data,
+inspect every outgoing image at full resolution, and keep screenshot binaries
+on `website-assets`. Refresh screenshots only after a feature is accepted.
+Pushing `website-assets` alone does not deploy the site.
 
-## Where do design documents go?
+## Design documents
 
-Describe current behavior in maintained references. Label approved but unbuilt
-work and proposals, and link to them from the separate design section of the
-[engineering index](index.md). Preserve decisions, approvals, and active
-exceptions with their removal conditions. Keep superseded designs outside the
-normal site navigation.
+Keep maintained references focused on current behavior. Clearly label approved
+unbuilt work and proposals, and link them from the separate section in
+[docs/index.md](index.md). Keep decisions, approvals, and active exceptions
+with their removal conditions, and keep superseded designs outside main
+navigation.
 
-Agent instructions stay in the root [AGENTS.md](../AGENTS.md), with
-[CLAUDE.md](../CLAUDE.md) referring to the same guide.
+Agent instructions live in the root [AGENTS.md](../AGENTS.md), with
+[CLAUDE.md](../CLAUDE.md) symlinked to it.
