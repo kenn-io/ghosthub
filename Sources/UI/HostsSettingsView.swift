@@ -212,6 +212,7 @@ public struct HostsSettingsView: View {
     @State private var sshAuthenticationSucceeded = false
     @State private var isTrustingSSHHost = false
     @State private var hostTrustErrorMessage: String?
+    @State private var hostConnectionChecks = 0
     @Binding var sshHosts: [SSHHostDraft]
     @Binding var selectedSSHHostDraftID: UUID?
     @Binding var hostProbeResult: HostProbeSummary?
@@ -253,6 +254,8 @@ public struct HostsSettingsView: View {
         (SSHHost) async -> Result<Void, HostProbeError>
     let loadAgentHooks: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
     let installAgentHooks: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
+    /// The hosts as saved, before this window's unsaved edits.
+    let savedSSHHosts: [SSHHost]
 
     public init(
         sshHosts: Binding<[SSHHostDraft]>,
@@ -304,7 +307,8 @@ public struct HostsSettingsView: View {
         installAgentHooks: @escaping (SSHHost?) async -> Result<
             [AgentHookSetupStatus],
             HostProbeError
-        > = { _ in .success([]) }
+        > = { _ in .success([]) },
+        savedSSHHosts: [SSHHost]
     ) {
         _sshHosts = sshHosts
         _selectedSSHHostDraftID = selectedSSHHostDraftID
@@ -333,6 +337,7 @@ public struct HostsSettingsView: View {
         self.installWindowsKwt = installWindowsKwt
         self.loadAgentHooks = loadAgentHooks
         self.installAgentHooks = installAgentHooks
+        self.savedSSHHosts = savedSSHHosts
     }
 
     public var body: some View {
@@ -696,61 +701,85 @@ public struct HostsSettingsView: View {
                             .accessibilityIdentifier("launch-profiles-section")
                         }
 
-                        if isRemoteKwtReady, draft.platform != .windows {
-                            settingsSection("Projects") {
-                                Text(
-                                    "Register an existing Git checkout explicitly."
-                                        + " Ghosthub does not scan the remote"
-                                        + " filesystem or edit kwt configuration."
-                                )
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                                HStack(spacing: 8) {
-                                    TextField(
-                                        "/absolute/path/to/repository",
-                                        text: $remoteProjectPath
+                        if draft.platform != .windows {
+                            if isConnectionConfirmed(draft) {
+                                settingsSection("Projects") {
+                                    Text(
+                                        "Register an existing Git checkout explicitly."
+                                            + " Ghosthub does not scan the remote"
+                                            + " filesystem or edit kwt configuration."
                                     )
-                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
 
-                                    Button(
-                                        isRegisteringRemoteProject
-                                            ? "Adding\u{2026}"
-                                            : "Add Project"
-                                    ) {
-                                        Task {
-                                            await addRemoteProject(on: draft)
+                                    HStack(spacing: 8) {
+                                        TextField(
+                                            "/absolute/path/to/repository",
+                                            text: $remoteProjectPath
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+
+                                        Button(
+                                            isRegisteringRemoteProject
+                                                ? "Adding\u{2026}"
+                                                : "Add Project"
+                                        ) {
+                                            Task {
+                                                await addRemoteProject(on: draft)
+                                            }
                                         }
+                                        .disabled(
+                                            isHostActionInProgress
+                                                || !isRemoteProjectPathAbsolute
+                                        )
                                     }
-                                    .disabled(
-                                        isHostActionInProgress
-                                            || !isRemoteProjectPathAbsolute
-                                    )
-                                }
 
-                                if !normalizedRemoteProjectPath.isEmpty,
-                                   !isRemoteProjectPathAbsolute {
-                                    Text("Enter an absolute path beginning with /.")
+                                    if !normalizedRemoteProjectPath.isEmpty,
+                                       !isRemoteProjectPathAbsolute {
+                                        Text("Enter an absolute path beginning with /.")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.red)
+                                    }
+
+                                    if let remoteProjectMessage {
+                                        Text(remoteProjectMessage)
+                                            .font(.system(
+                                                size: 12,
+                                                weight: .semibold
+                                            ))
+                                            .foregroundStyle(.green)
+                                    }
+                                }
+                            } else {
+                                settingsSection("Projects") {
+                                    Text("Save or test the connection to add a project.")
                                         .font(.system(size: 12))
-                                        .foregroundStyle(.red)
-                                }
-
-                                if let remoteProjectMessage {
-                                    Text(remoteProjectMessage)
-                                        .font(.system(
-                                            size: 12,
-                                            weight: .semibold
-                                        ))
-                                        .foregroundStyle(.green)
+                                        .foregroundStyle(.secondary)
                                 }
                             }
 
-                            AgentHooksSettingsSection(
-                                host: draft.sshHost,
-                                load: loadAgentHooks,
-                                install: installAgentHooks
-                            )
+                            if isConnectionConfirmed(draft) {
+                                AgentHooksSettingsSection(
+                                    host: draft.sshHost,
+                                    refreshID: hostConnectionChecks,
+                                    load: loadAgentHooks,
+                                    install: installAgentHooks
+                                )
+                                // A connection check may have approved the host
+                                // key or sign-in that an earlier load needed.
+                                .onChange(of: hostProbeResult) { _, result in
+                                    if result != nil {
+                                        hostConnectionChecks += 1
+                                    }
+                                }
+                            } else {
+                                settingsSection("Agent Hooks") {
+                                    Text("Save or test the connection to see hook status.")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                     } else {
                         settingsSection("Local Mac") {
@@ -1193,11 +1222,14 @@ public struct HostsSettingsView: View {
             || isRegisteringRemoteProject
     }
 
-    private var isRemoteKwtReady: Bool {
-        hostProbeResult?.host.lastKnownReachable == true
-            && hostProbeResult?.diagnostics.contains {
-                $0.code == .missingKwt
-            } == false
+    /// Reading hook status and adding a project reach the host over SSH and
+    /// record the result for the saved host, so Settings offers them only
+    /// for a connection that is saved or that Test Connection just checked,
+    /// never for an address that is still being typed.
+    private func isConnectionConfirmed(_ draft: SSHHostDraft) -> Bool {
+        let connection = AgentHookConnection(draft.sshHost)
+        return hostProbeResult != nil
+            || savedSSHHosts.contains { AgentHookConnection($0) == connection }
     }
 
     private var normalizedRemoteProjectPath: String {

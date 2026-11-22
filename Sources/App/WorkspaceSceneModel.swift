@@ -7611,10 +7611,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 host.sshDestination = host.sshDestination.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 )
-                try await ensureRemoteKwtForOperation(
-                    on: host,
-                    hostID: snapshot.hosts.first { $0.configKey == host.configKey }?.id
-                )
+                // Settings may hold unsaved connection edits, so the result
+                // says nothing about the saved host's kwt; inventory tracks that.
+                try await ensureRemoteKwtForOperation(on: host)
             }
             return try await .success(KwtAgentHookClient().run(action, on: target))
         } catch {
@@ -7642,11 +7641,16 @@ final class WorkspaceSceneModel: ObservableObject {
             compression: host.compression,
             forwardAgent: host.forwardAgent
         ))
+        // Settings may hold unsaved edits to a saved host. Registration
+        // must use the saved connection, and checking first keeps a failed
+        // attempt at another address from marking the saved host's kwt.
+        let savedHost = snapshot.hosts.first { $0.configKey == host.configKey }
+        if let savedHost, CommandHostResolver.resolve(savedHost) != target {
+            return .failure(.message("Save the connection before adding a project."))
+        }
         var provisioningHost = host
         provisioningHost.sshDestination = destination
-        let hostID = snapshot.hosts.first {
-            $0.configKey == host.configKey
-        }?.id
+        let hostID = savedHost?.id
         return await performProjectRegistration(
             projectPath,
             on: target,

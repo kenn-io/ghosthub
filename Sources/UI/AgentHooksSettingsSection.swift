@@ -34,12 +34,18 @@ public struct AgentHookSetupStatus: Decodable, Equatable, Sendable {
 /// A nil host means this Mac.
 struct AgentHooksSettingsSection: View {
     let host: SSHHost?
-    let load: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
-    let install: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
+    /// Changes when the status should load again for the same host, such as
+    /// after a connection check approved its host key or sign-in.
+    var refreshID = 0
+    let load: AgentHookSetup.Operation
+    let install: AgentHookSetup.Operation
 
-    @State private var statuses: [AgentHookSetupStatus]?
-    @State private var errorMessage: String?
-    @State private var isInstalling = false
+    @State private var setup = AgentHookSetup()
+    @State private var retries = 0
+
+    private var statuses: [AgentHookSetupStatus]? {
+        setup.statuses
+    }
 
     private var agents: [AgentHookSetupStatus] {
         (statuses ?? []).filter(\.available)
@@ -73,7 +79,7 @@ struct AgentHooksSettingsSection: View {
                     }
                     .accessibilityIdentifier("agent-hook-statuses")
                 }
-            } else if errorMessage == nil {
+            } else if setup.errorMessage == nil {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -84,42 +90,39 @@ struct AgentHooksSettingsSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let errorMessage {
+            if let errorMessage = setup.errorMessage {
                 Text(errorMessage)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if statuses == nil, !setup.isInstalling {
+                    Button("Retry") { retries += 1 }
+                        .accessibilityIdentifier("retry-agent-hooks")
+                }
             }
 
             if needsInstall {
-                Button(isInstalling ? "Installing\u{2026}" : "Install Hooks") {
-                    Task { await runInstall() }
+                Button(setup.isInstalling ? "Installing\u{2026}" : "Install Hooks") {
+                    Task { await setup.install(host, using: install) }
                 }
-                .disabled(isInstalling)
+                .disabled(setup.isInstalling)
                 .accessibilityIdentifier("install-agent-hooks")
             }
         }
-        .task(id: host?.id) {
-            statuses = nil
-            errorMessage = nil
-            await apply(load(host))
+        .task(id: LoadRequest(
+            connection: AgentHookConnection(host),
+            refreshID: refreshID,
+            retries: retries
+        )) {
+            await setup.load(host, using: load)
         }
     }
 
-    private func runInstall() async {
-        isInstalling = true
-        defer { isInstalling = false }
-        errorMessage = nil
-        await apply(install(host))
-    }
-
-    private func apply(_ result: Result<[AgentHookSetupStatus], HostProbeError>) {
-        switch result {
-        case let .success(loaded):
-            statuses = loaded
-        case let .failure(error):
-            errorMessage = error.displayMessage
-        }
+    private struct LoadRequest: Equatable {
+        var connection: AgentHookConnection
+        var refreshID: Int
+        var retries: Int
     }
 
     static func stateLabel(_ status: AgentHookSetupStatus) -> String {

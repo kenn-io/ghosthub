@@ -438,7 +438,8 @@ public struct SettingsView: View {
             loadTailscalePeers: actions.loadTailscalePeers,
             installWindowsKwt: actions.installWindowsKwt,
             loadAgentHooks: actions.loadAgentHooks,
-            installAgentHooks: actions.installAgentHooks
+            installAgentHooks: actions.installAgentHooks,
+            savedSSHHosts: store.sshHosts
         )
     }
 
@@ -637,6 +638,11 @@ public struct SettingsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+                Text("Requires agent hooks on each host, installed under Hosts.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
