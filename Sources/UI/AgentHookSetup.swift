@@ -35,11 +35,6 @@ final class AgentHookSetup {
     /// Counts installs whose result was shown. A load that was running
     /// when one finished may have read the host before the install.
     private var shownInstalls = 0
-    @ObservationIgnored private let typingDelay: Duration
-
-    init(typingDelay: Duration = .milliseconds(400)) {
-        self.typingDelay = typingDelay
-    }
 
     /// Whether the host Settings shows is installing hooks now.
     var isInstalling: Bool {
@@ -54,12 +49,6 @@ final class AgentHookSetup {
         shown = connection
         statuses = nil
         errorMessage = nil
-        if host != nil {
-            // Wait for typing in the connection fields to pause, so each
-            // keystroke does not start an SSH command.
-            try? await Task.sleep(for: typingDelay)
-            guard !Task.isCancelled else { return }
-        }
         let result = await load(host)
         guard !Task.isCancelled,
               shown == connection,

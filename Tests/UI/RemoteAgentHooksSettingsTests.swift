@@ -55,7 +55,7 @@ struct RemoteAgentHooksSettingsTests {
     }
 
     /// Awaits rather than spinning the run loop, so the section's load can
-    /// resume on the main actor after its typing delay.
+    /// resume on the main actor.
     @MainActor
     private func waitUntil(_ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(3)
@@ -82,6 +82,49 @@ struct RemoteAgentHooksSettingsTests {
     }
 
     @MainActor
+    private static func show(_ harness: HostsHarness, _ defaults: UserDefaults) -> NSWindow {
+        let window = NSWindow(
+            contentViewController: NSHostingController(
+                rootView: harness
+                    .defaultAppStorage(defaults)
+                    .frame(width: 800, height: 744)
+            )
+        )
+        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+        window.orderBack(nil)
+        return window
+    }
+
+    @MainActor
+    @Test("an unsaved address is checked only after Test Connection")
+    func unsavedAddressWaitsForConnectionCheck() async throws {
+        let suiteName = "ghosthub.settings.agent-hooks.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let requested = Mutex<[String?]>([])
+        var actions = SettingsActions()
+        actions.loadAgentHooks = { host in
+            requested.withLock { $0.append(host?.sshDestination) }
+            return .success([])
+        }
+        let state = HostsState(
+            host: Self.buildServer, editedDestination: "user@typo.example.test"
+        )
+        let window = Self.show(HostsHarness(state: state, actions: actions), defaults)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(requested.withLock { $0 }.isEmpty)
+
+        state.probeResult = HostProbeSummary(host: HostSummary(
+            id: UUID(), configKey: "build-server", name: "Build Server",
+            kind: .remote, platform: .linux, sshDestination: "user@typo.example.test"
+        ))
+        try await waitUntil { !requested.withLock { $0 }.isEmpty }
+
+        #expect(requested.withLock { $0 } == ["user@typo.example.test"])
+    }
+
+    @MainActor
     @Test("a connection check reloads hook status that could not load before it")
     func connectionCheckReloadsHookStatus() async throws {
         let suiteName = "ghosthub.settings.agent-hooks.\(UUID().uuidString)"
@@ -100,15 +143,7 @@ struct RemoteAgentHooksSettingsTests {
                 : .success([])
         }
         let state = HostsState(host: Self.buildServer)
-        let window = NSWindow(
-            contentViewController: NSHostingController(
-                rootView: HostsHarness(state: state, actions: actions)
-                    .defaultAppStorage(defaults)
-                    .frame(width: 800, height: 744)
-            )
-        )
-        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
-        window.orderBack(nil)
+        let window = Self.show(HostsHarness(state: state, actions: actions), defaults)
         defer { window.close() }
         try await waitUntil { loads.withLock { $0 } == 1 }
 
@@ -132,8 +167,16 @@ private final class HostsState {
     var selectedDraftID: UUID?
     var probeResult: HostProbeSummary?
 
-    init(host: SSHHost) {
-        let draft = SSHHostDraft(host)
+    let savedHosts: [SSHHost]
+
+    /// Settings with `host` saved; `editedDestination` is an address typed
+    /// in the form but not saved.
+    init(host: SSHHost, editedDestination: String? = nil) {
+        savedHosts = [host]
+        var draft = SSHHostDraft(host)
+        if let editedDestination {
+            draft.sshDestination = editedDestination
+        }
         drafts = [draft]
         selectedDraftID = draft.id
     }
@@ -169,7 +212,8 @@ private struct HostsHarness: View {
             loadTailscalePeers: actions.loadTailscalePeers,
             installWindowsKwt: actions.installWindowsKwt,
             loadAgentHooks: actions.loadAgentHooks,
-            installAgentHooks: actions.installAgentHooks
+            installAgentHooks: actions.installAgentHooks,
+            savedSSHHosts: state.savedHosts
         )
     }
 }

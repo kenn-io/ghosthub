@@ -33,7 +33,7 @@ struct AgentHookSetupTests {
 
     @Test("an install that finishes after a host switch leaves the new host's status")
     func installAfterSwitchIsNotShown() async {
-        let setup = AgentHookSetup(typingDelay: .zero)
+        let setup = AgentHookSetup()
         await setup.load(Self.hostA) { _ in .success(Self.notInstalled) }
         let (finish, release) = AsyncStream<Void>.makeStream()
         let installing = Task {
@@ -59,7 +59,7 @@ struct AgentHookSetupTests {
 
     @Test("a load that finishes after a host switch leaves the new host's status")
     func loadAfterSwitchIsNotShown() async {
-        let setup = AgentHookSetup(typingDelay: .zero)
+        let setup = AgentHookSetup()
         let (finish, release) = AsyncStream<Void>.makeStream()
         let startedA = Mutex(false)
         let loadingA = Task {
@@ -84,7 +84,7 @@ struct AgentHookSetupTests {
 
     @Test("a status read before an install finished does not replace its result")
     func loadFromBeforeInstallIsNotShown() async {
-        let setup = AgentHookSetup(typingDelay: .zero)
+        let setup = AgentHookSetup()
         await setup.load(Self.hostA) { _ in .success(Self.notInstalled) }
         let (installDone, finishInstall) = AsyncStream<Void>.makeStream()
         let (loadDone, finishLoad) = AsyncStream<Void>.makeStream()
@@ -121,7 +121,7 @@ struct AgentHookSetupTests {
 
     @Test("an install on the shown host shows its result")
     func installOnShownHostIsShown() async {
-        let setup = AgentHookSetup(typingDelay: .zero)
+        let setup = AgentHookSetup()
         await setup.load(Self.hostA) { _ in .success(Self.notInstalled) }
         await setup.install(Self.hostA) { _ in .success(Self.installed) }
 

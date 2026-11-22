@@ -254,6 +254,8 @@ public struct HostsSettingsView: View {
         (SSHHost) async -> Result<Void, HostProbeError>
     let loadAgentHooks: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
     let installAgentHooks: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
+    /// The hosts as saved, before this window's unsaved edits.
+    let savedSSHHosts: [SSHHost]
 
     public init(
         sshHosts: Binding<[SSHHostDraft]>,
@@ -305,7 +307,8 @@ public struct HostsSettingsView: View {
         installAgentHooks: @escaping (SSHHost?) async -> Result<
             [AgentHookSetupStatus],
             HostProbeError
-        > = { _ in .success([]) }
+        > = { _ in .success([]) },
+        savedSSHHosts: [SSHHost]
     ) {
         _sshHosts = sshHosts
         _selectedSSHHostDraftID = selectedSSHHostDraftID
@@ -334,6 +337,7 @@ public struct HostsSettingsView: View {
         self.installWindowsKwt = installWindowsKwt
         self.loadAgentHooks = loadAgentHooks
         self.installAgentHooks = installAgentHooks
+        self.savedSSHHosts = savedSSHHosts
     }
 
     public var body: some View {
@@ -747,17 +751,25 @@ public struct HostsSettingsView: View {
                                 }
                             }
 
-                            AgentHooksSettingsSection(
-                                host: draft.sshHost,
-                                refreshID: hostConnectionChecks,
-                                load: loadAgentHooks,
-                                install: installAgentHooks
-                            )
-                            // A connection check may have approved the host
-                            // key or sign-in that an earlier load needed.
-                            .onChange(of: hostProbeResult) { _, result in
-                                if result != nil {
-                                    hostConnectionChecks += 1
+                            if canCheckAgentHooks(draft) {
+                                AgentHooksSettingsSection(
+                                    host: draft.sshHost,
+                                    refreshID: hostConnectionChecks,
+                                    load: loadAgentHooks,
+                                    install: installAgentHooks
+                                )
+                                // A connection check may have approved the host
+                                // key or sign-in that an earlier load needed.
+                                .onChange(of: hostProbeResult) { _, result in
+                                    if result != nil {
+                                        hostConnectionChecks += 1
+                                    }
+                                }
+                            } else {
+                                settingsSection("Agent Hooks") {
+                                    Text("Save or test the connection to see hook status.")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -1200,6 +1212,15 @@ public struct HostsSettingsView: View {
             || isInstallingRemoteKwt
             || isInstallingWindowsKwt
             || isRegisteringRemoteProject
+    }
+
+    /// Hook status is read over SSH, so Settings reads it only for a
+    /// connection that is saved or that Test Connection just checked, never
+    /// for an address that is still being typed.
+    private func canCheckAgentHooks(_ draft: SSHHostDraft) -> Bool {
+        let connection = AgentHookConnection(draft.sshHost)
+        return hostProbeResult != nil
+            || savedSSHHosts.contains { AgentHookConnection($0) == connection }
     }
 
     private var normalizedRemoteProjectPath: String {

@@ -438,7 +438,8 @@ public struct SettingsView: View {
             loadTailscalePeers: actions.loadTailscalePeers,
             installWindowsKwt: actions.installWindowsKwt,
             loadAgentHooks: actions.loadAgentHooks,
-            installAgentHooks: actions.installAgentHooks
+            installAgentHooks: actions.installAgentHooks,
+            savedSSHHosts: store.sshHosts
         )
     }
 
