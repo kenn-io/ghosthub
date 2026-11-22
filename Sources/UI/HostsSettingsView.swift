@@ -702,56 +702,64 @@ public struct HostsSettingsView: View {
                         }
 
                         if draft.platform != .windows {
-                            settingsSection("Projects") {
-                                Text(
-                                    "Register an existing Git checkout explicitly."
-                                        + " Ghosthub does not scan the remote"
-                                        + " filesystem or edit kwt configuration."
-                                )
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                                HStack(spacing: 8) {
-                                    TextField(
-                                        "/absolute/path/to/repository",
-                                        text: $remoteProjectPath
+                            if isConnectionConfirmed(draft) {
+                                settingsSection("Projects") {
+                                    Text(
+                                        "Register an existing Git checkout explicitly."
+                                            + " Ghosthub does not scan the remote"
+                                            + " filesystem or edit kwt configuration."
                                     )
-                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
 
-                                    Button(
-                                        isRegisteringRemoteProject
-                                            ? "Adding\u{2026}"
-                                            : "Add Project"
-                                    ) {
-                                        Task {
-                                            await addRemoteProject(on: draft)
+                                    HStack(spacing: 8) {
+                                        TextField(
+                                            "/absolute/path/to/repository",
+                                            text: $remoteProjectPath
+                                        )
+                                        .textFieldStyle(.roundedBorder)
+
+                                        Button(
+                                            isRegisteringRemoteProject
+                                                ? "Adding\u{2026}"
+                                                : "Add Project"
+                                        ) {
+                                            Task {
+                                                await addRemoteProject(on: draft)
+                                            }
                                         }
+                                        .disabled(
+                                            isHostActionInProgress
+                                                || !isRemoteProjectPathAbsolute
+                                        )
                                     }
-                                    .disabled(
-                                        isHostActionInProgress
-                                            || !isRemoteProjectPathAbsolute
-                                    )
-                                }
 
-                                if !normalizedRemoteProjectPath.isEmpty,
-                                   !isRemoteProjectPathAbsolute {
-                                    Text("Enter an absolute path beginning with /.")
+                                    if !normalizedRemoteProjectPath.isEmpty,
+                                       !isRemoteProjectPathAbsolute {
+                                        Text("Enter an absolute path beginning with /.")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.red)
+                                    }
+
+                                    if let remoteProjectMessage {
+                                        Text(remoteProjectMessage)
+                                            .font(.system(
+                                                size: 12,
+                                                weight: .semibold
+                                            ))
+                                            .foregroundStyle(.green)
+                                    }
+                                }
+                            } else {
+                                settingsSection("Projects") {
+                                    Text("Save or test the connection to add a project.")
                                         .font(.system(size: 12))
-                                        .foregroundStyle(.red)
-                                }
-
-                                if let remoteProjectMessage {
-                                    Text(remoteProjectMessage)
-                                        .font(.system(
-                                            size: 12,
-                                            weight: .semibold
-                                        ))
-                                        .foregroundStyle(.green)
+                                        .foregroundStyle(.secondary)
                                 }
                             }
 
-                            if canCheckAgentHooks(draft) {
+                            if isConnectionConfirmed(draft) {
                                 AgentHooksSettingsSection(
                                     host: draft.sshHost,
                                     refreshID: hostConnectionChecks,
@@ -1214,10 +1222,11 @@ public struct HostsSettingsView: View {
             || isRegisteringRemoteProject
     }
 
-    /// Hook status is read over SSH, so Settings reads it only for a
-    /// connection that is saved or that Test Connection just checked, never
-    /// for an address that is still being typed.
-    private func canCheckAgentHooks(_ draft: SSHHostDraft) -> Bool {
+    /// Reading hook status and adding a project reach the host over SSH and
+    /// record the result for the saved host, so Settings offers them only
+    /// for a connection that is saved or that Test Connection just checked,
+    /// never for an address that is still being typed.
+    private func isConnectionConfirmed(_ draft: SSHHostDraft) -> Bool {
         let connection = AgentHookConnection(draft.sshHost)
         return hostProbeResult != nil
             || savedSSHHosts.contains { AgentHookConnection($0) == connection }

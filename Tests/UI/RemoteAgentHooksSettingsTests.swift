@@ -124,6 +124,57 @@ struct RemoteAgentHooksSettingsTests {
         #expect(requested.withLock { $0 } == ["user@typo.example.test"])
     }
 
+    /// Whether the window shows the Add Project path field.
+    @MainActor
+    private static func showsProjectPathField(_ window: NSWindow) -> Bool {
+        func search(_ view: NSView) -> Bool {
+            if let field = view as? NSTextField,
+               field.placeholderString == "/absolute/path/to/repository" {
+                return true
+            }
+            return view.subviews.contains(where: search)
+        }
+        return window.contentView.map(search) ?? false
+    }
+
+    @MainActor
+    @Test(
+        "Add Project is offered only for a saved or tested connection",
+        arguments: [false, true]
+    )
+    func addProjectWaitsForConfirmedConnection(tested: Bool) async throws {
+        let suiteName = "ghosthub.settings.agent-hooks.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let saved = HostsState(host: Self.buildServer)
+        let edited = HostsState(
+            host: Self.buildServer, editedDestination: "user@typo.example.test"
+        )
+        let savedWindow = Self.show(
+            HostsHarness(state: saved, actions: SettingsActions()),
+            defaults
+        )
+        defer { savedWindow.close() }
+        let editedWindow = Self.show(
+            HostsHarness(state: edited, actions: SettingsActions()),
+            defaults
+        )
+        defer { editedWindow.close() }
+        if tested {
+            edited.probeResult = HostProbeSummary(host: HostSummary(
+                id: UUID(), configKey: "build-server", name: "Build Server",
+                kind: .remote, platform: .linux, sshDestination: "user@typo.example.test"
+            ))
+        }
+        try await waitUntil {
+            Self.showsProjectPathField(savedWindow)
+                && Self.showsProjectPathField(editedWindow) == tested
+        }
+
+        #expect(Self.showsProjectPathField(savedWindow))
+        #expect(Self.showsProjectPathField(editedWindow) == tested)
+    }
+
     @MainActor
     @Test("a connection check reloads hook status that could not load before it")
     func connectionCheckReloadsHookStatus() async throws {

@@ -1168,7 +1168,8 @@ kwt operations, loading first installs or updates the host's managed kwt; a
 failed load shows its error with **Retry**. The check never changes the saved
 host's kwt availability, which inventory tracks. A load or install that
 finishes after the person switches hosts does not change the status shown.
-**Projects** offers **Add Project** without a connection test.
+**Projects** follows the same rule: **Add Project** is available for a saved
+connection or one that **Test Connection** just checked.
 
 Each hook event writes the tmux pane option `@kwt_agent` as
 `<state> <unix-seconds> <agent>`, where state is `working`, `approval`,
