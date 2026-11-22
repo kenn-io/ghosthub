@@ -13,7 +13,6 @@ Connected SSH hosts support tmux creation, attachment, and confirmed kills
 bound to the live session identity. Remote Herdr supports creation, attachment,
 restart, and confirmed stop/delete. Remote Zellij supports creation, attachment,
 and confirmed kills of active sessions.
-Distribution packaging remains separate parity work.
 Herdr support in the Rust port currently means the older TUI. The macOS app's
 newer `herdr-core` desktop-terminal integration remains separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
@@ -26,6 +25,20 @@ multiplexer fleets on Windows and Linux. It is not a rewrite of the macOS
 application, a shared runtime embedded into Swift, or a reason to change macOS
 away from SwiftUI.
 
+### Download a preview
+
+Kenn-dist publishes Rust preview archives for Linux and Windows on x86-64
+and ARM64. The [unstable download index](https://dl.kenn.sh/channels/unstable/install-index-v1)
+points to a manifest with each Ghosthub archive's URL, SHA-256, and source
+revision. Preview publication uses a reviewed source pin. A merge to Ghosthub
+can reach source builds before that pin is updated.
+
+Extract the archive and open `ghosthub` on Linux or `ghosthub.exe` on
+Windows. Keep the Windows DLLs beside the executable. On Debian and Ubuntu,
+install `libxkbcommon-x11-0` if the loader reports that
+`libxkbcommon-x11.so.0` is missing. Windows connections to remote SSH
+hosts still use the selected WSL2 distro's OpenSSH configuration.
+
 ## 1. Product and Dependency Boundary
 
 ### Platform split
@@ -36,7 +49,7 @@ away from SwiftUI.
 - Linux enables X11 and Wayland in the native Rust/GPUI shell and uses a
   native PTY for local tmux clients. X11 development acceptance does not
   establish Wayland or hardware-GPU acceptance. Linux builds embed the pinned
-  KWT helper; distribution packaging remains planned work.
+  KWT helper.
 - All platforms preserve the Host, Project, Worktree, and ordinary
   multiplexer-session mental model.
 - Kwt remains authoritative for project/worktree identity and exact session
@@ -1646,8 +1659,10 @@ Only tiled terminal panes are drawn.
 
 Rex control and pane clients use separate KWT-managed SSH connections from
 tmux and inventory. Each extra connection carries up to eight Rex sessions,
-and Ghosthub opens another when those slots fill. A new connection may prompt
-for authentication. Failure to start one pane leaves its neighbors usable.
+and Ghosthub opens another when those slots fill. If a server enforces a lower
+limit, Ghosthub uses another connection for the refused pane. A new connection
+may prompt for authentication. Failure to start one pane leaves its neighbors
+usable.
 
 Rex confirms split, resize, focus, zoom, and close requests through its control
 channel. The UI chooses directional focus from the window it displays, rather

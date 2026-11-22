@@ -64,15 +64,10 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(e) = self.workspace.focus_rex_pane(presentation) {
-            self.diagnostic = Some(e.to_string());
-            cx.notify();
-            return;
-        }
         let result = match action {
-            PaneAction::SplitRight => self.workspace.split_rex_pane(false),
-            PaneAction::SplitDown => self.workspace.split_rex_pane(true),
-            PaneAction::Zoom => self.workspace.zoom_rex_pane(),
+            PaneAction::SplitRight => self.workspace.split_rex_pane(presentation, false),
+            PaneAction::SplitDown => self.workspace.split_rex_pane(presentation, true),
+            PaneAction::Zoom => self.workspace.zoom_rex_pane(presentation),
             PaneAction::Close => {
                 if let Some(pane) = self
                     .workspace
@@ -112,20 +107,20 @@ impl RootView {
         rex: &workspace::RexWindowSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let focused = rex.panes.iter().find_map(|pane| {
+            (pane.focused && pane.rect.width > 0.0 && pane.rect.height > 0.0)
+                .then_some(pane.presentation_id)
+        });
         let mut body = div()
             .relative()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event, window, cx| {
-                if let Some(id) =
-                    super::terminal_presentation_id(this.workspace.snapshot().content())
-                {
+            .on_key_down(cx.listener(move |this, event, window, cx| {
+                if let Some(id) = focused {
                     this.on_key_down(id, event, window, cx);
                 }
             }))
-            .on_key_up(cx.listener(|this, event, window, cx| {
-                if let Some(id) =
-                    super::terminal_presentation_id(this.workspace.snapshot().content())
-                {
+            .on_key_up(cx.listener(move |this, event, window, cx| {
+                if let Some(id) = focused {
                     this.on_key_up(id, event, window, cx);
                 }
             }))
@@ -279,7 +274,9 @@ impl RootView {
                     .on_mouse_down(
                         GpuiMouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
-                            if let Err(e) = this.workspace.focus_rex_pane(presentation) {
+                            if let Err(e) = this.workspace.focus_rex_pane(presentation)
+                                && !e.is_stale_input()
+                            {
                                 this.diagnostic = Some(e.to_string());
                             }
                             window.focus(&this.focus);

@@ -79,6 +79,12 @@ fn ui_probe(command: &str) {
     ui_key("Return");
 }
 
+fn ui_retry_probe(command: &str) {
+    // A partially delivered command can leave the shell at a continuation prompt.
+    ui(&["key", "--clearmodifiers", "ctrl+c"]);
+    ui_probe(command);
+}
+
 fn ui_palette(query: &str) {
     ui_key("Escape");
     ui_key("ctrl+shift+p");
@@ -219,7 +225,7 @@ fn desktop_routes_keyboard_to_the_focused_rex_pane() {
         );
     }
     wait_ui(&fixture, "first pane did not accept input", || {
-        ui_probe("rex_pane=one; printf '%s' \"$rex_pane\" > /tmp/rex-gui-ready");
+        ui_retry_probe("rex_pane=one; printf '%s' \"$rex_pane\" > /tmp/rex-gui-ready");
         std::fs::read_to_string("/tmp/rex-gui-ready").is_ok_and(|s| s == "one")
     });
     ui_key("ctrl+shift+d");
@@ -227,7 +233,7 @@ fn desktop_routes_keyboard_to_the_focused_rex_pane() {
         gui_view(&fixture, window)["view"]["windows"][0]["layers"][0]["layout"]["split"].is_object()
     });
     wait_ui(&fixture, "second pane did not accept input", || {
-        ui_probe("rex_pane=two; printf '%s' \"$rex_pane\" > /tmp/rex-gui-second");
+        ui_retry_probe("rex_pane=two; printf '%s' \"$rex_pane\" > /tmp/rex-gui-second");
         std::fs::read_to_string("/tmp/rex-gui-second").is_ok_and(|s| s == "two")
     });
     ui_key("ctrl+alt+Left");
@@ -261,9 +267,7 @@ fn desktop_routes_keyboard_to_the_focused_rex_pane() {
     });
     wait_ui(&fixture, "ordinary terminal lost keyboard focus", || {
         // tmux can list its client before Ghosthub accepts input for it.
-        // Clear any partial shell input before trying the probe again.
-        ui(&["key", "--clearmodifiers", "ctrl+u"]);
-        ui_probe("tmux display-message -p -t \"$TMUX_PANE\" '#S' > /tmp/rex-gui-tmux");
+        ui_retry_probe("tmux display-message -p -t \"$TMUX_PANE\" '#S' > /tmp/rex-gui-tmux");
         std::fs::read_to_string("/tmp/rex-gui-tmux").is_ok_and(|s| s == "review\n")
     });
     ui_palette("Work rex");
@@ -272,7 +276,7 @@ fn desktop_routes_keyboard_to_the_focused_rex_pane() {
         "Rex programs did not survive switching away",
         || {
             // Reopening starts new SSH clients. Probe until their terminal is ready.
-            ui_probe("printf '%s' \"$rex_pane\" > /tmp/rex-gui-reopened");
+            ui_retry_probe("printf '%s' \"$rex_pane\" > /tmp/rex-gui-reopened");
             std::fs::read_to_string("/tmp/rex-gui-reopened").is_ok_and(|s| s == "two")
         },
     );
@@ -391,7 +395,10 @@ fn remote_windows_keep_backend_layout_and_programs_after_detach() {
         .wait(|_| std::fs::read_to_string("/tmp/rex-original").is_ok_and(|s| s == "rex-ready\n"));
     let original_presentation =
         fixture.workspace.snapshot().rex_window().unwrap().panes[0].presentation_id;
-    fixture.workspace.split_rex_pane(false).unwrap();
+    fixture
+        .workspace
+        .split_rex_pane(focused_presentation(&fixture), false)
+        .unwrap();
     fixture.wait(|snapshot| {
         snapshot.rex_window().is_some_and(|w| {
             assert!(w.error.is_none(), "{:?}", w.error);
@@ -429,10 +436,12 @@ fn remote_windows_keep_backend_layout_and_programs_after_detach() {
         .unwrap();
     fixture.wait(|_| std::fs::read_to_string("/tmp/rex-new").is_ok_and(|s| s == "new-pane\n"));
     fixture.wait(|_| std::fs::read_to_string("/tmp/rex-grid").is_ok_and(|s| s == "28 49\n"));
+    let second_presentation = focused_presentation(&fixture);
     fixture
         .workspace
         .focus_rex_pane(original_presentation)
         .unwrap();
+    stale_input_does_not_follow_focus(&fixture, second_presentation);
     fixture
         .workspace
         .send_key(KeyInput::text(
@@ -447,12 +456,48 @@ fn remote_windows_keep_backend_layout_and_programs_after_detach() {
     fixture.wait(|_| {
         std::fs::read_to_string("/tmp/rex-focused").is_ok_and(|s| s == "focused-original\n")
     });
-    fixture.workspace.zoom_rex_pane().unwrap();
+    // A pane header can be clicked after the other pane takes focus.
+    fixture
+        .workspace
+        .focus_rex_pane(second_presentation)
+        .unwrap();
+    fixture
+        .workspace
+        .zoom_rex_pane(original_presentation)
+        .unwrap();
     fixture.wait(|s| {
-        s.rex_window()
-            .is_some_and(|w| w.panes.iter().filter(|p| p.rect.width > 0.0).count() == 1)
+        s.rex_window().is_some_and(|w| {
+            w.panes
+                .iter()
+                .filter(|p| p.rect.width > 0.0)
+                .map(|p| p.presentation_id)
+                .eq([original_presentation])
+        })
     });
-    fixture.workspace.zoom_rex_pane().unwrap();
+    // Hold the pump between issuing the request and reading Rex's new layout.
+    let paused = fixture.workspace.pause_event_pump();
+    fixture.workspace.move_rex_focus(1, 0, 0).unwrap();
+    stale_input_does_not_follow_focus(&fixture, original_presentation);
+    stale_input_does_not_follow_focus(&fixture, second_presentation);
+    drop(paused);
+    fixture.wait(|_| {
+        let view = gui_view(&fixture, window_id);
+        view["view"]["windows"][0]["focused_block_id"].as_str() != Some(original_block)
+    });
+    let view = gui_view(&fixture, window_id);
+    if let Some(zoomed) = view["view"]["windows"][0]["zoomed_block_id"].as_str() {
+        let target = fixture
+            .workspace
+            .snapshot()
+            .rex_window()
+            .unwrap()
+            .panes
+            .iter()
+            .find(|p| p.id == zoomed)
+            .unwrap()
+            .presentation_id;
+        fixture.workspace.zoom_rex_pane(target).unwrap();
+    }
     fixture.wait(|s| s.rex_window().is_some_and(|w| w.dividers.len() == 1));
     let divider = fixture.workspace.snapshot().rex_window().unwrap().dividers[0]
         .id
@@ -462,12 +507,24 @@ fn remote_windows_keep_backend_layout_and_programs_after_detach() {
         s.rex_window()
             .is_some_and(|w| (w.dividers[0].ratio - 0.7).abs() < 0.01)
     });
-    fixture.workspace.split_rex_pane(true).unwrap();
+    fixture
+        .workspace
+        .focus_rex_pane(second_presentation)
+        .unwrap();
+    fixture
+        .workspace
+        .split_rex_pane(original_presentation, true)
+        .unwrap();
     fixture.wait(|s| {
         s.rex_window().is_some_and(|w| {
             w.panes.len() == 3 && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
         })
     });
+    assert!(
+        gui_view(&fixture, window_id)["view"]["windows"][0]["layers"][0]["layout"]["split"]
+            ["before"]["split"].is_object(),
+        "Split Down must target the original pane even after focus moved"
+    );
     let closing = fixture
         .workspace
         .snapshot()
@@ -660,13 +717,32 @@ fn remote_rex_navigation_and_pane_reconnect_preserve_clients() {
     fixture.workspace.switch_session(&local).unwrap();
     fixture.wait(|s| matches!(s.content(), WorkspaceContent::Terminal { session, .. } if session == "local-one"));
 
-    leave_pending_rex(&fixture, &selection, &unopened);
+    while_rex_open_pending(&fixture, &selection, || {
+        fixture.workspace.select_host(unopened.host_id()).unwrap();
+        fixture.workspace.switch_session(&unopened).unwrap();
+    });
+    fixture.wait(|s| {
+        s.rex_window().is_none()
+            && matches!(s.content(),
+        WorkspaceContent::Terminal { session, .. } if session == unopened.session())
+    });
+    while_rex_open_pending(&fixture, &selection, || {
+        fixture.workspace.connect_host(&fixture.host_id).unwrap();
+    });
+    fixture.wait(|s| {
+        !matches!(s.content(), WorkspaceContent::Attaching { .. })
+            && s.rex_window().is_none()
+            && s.hosts().iter().any(|h| {
+                h.connection() == HostConnectionState::Ready
+                    && h.rex_windows().iter().any(|w| w.id == window)
+            })
+    });
     open_rex();
     reconnect_failed_pane(&fixture, block);
     fixture.workspace.close();
 }
 
-fn leave_pending_rex(fixture: &Fixture, rex: &SessionSelection, local: &SessionSelection) {
+fn while_rex_open_pending(fixture: &Fixture, rex: &SessionSelection, action: impl FnOnce()) {
     // Keep the real terminfo probe in flight before the control channel is published.
     let probe = fixture.root.join("bin/infocmp");
     let started = fixture.root.join("rex-probe-started");
@@ -690,19 +766,16 @@ fn leave_pending_rex(fixture: &Fixture, rex: &SessionSelection, local: &SessionS
                 }
             )
     });
-    fixture.workspace.select_host(local.host_id()).unwrap();
-    let result = fixture.workspace.switch_session(local);
+    action();
     std::fs::remove_file(gate).unwrap();
-    result.unwrap();
-    fixture.wait(|s| {
-        s.rex_window().is_none()
-            && matches!(s.content(),
-        WorkspaceContent::Terminal { session, .. } if session == local.session())
-    });
+    std::fs::remove_file(started).unwrap();
 }
 
 fn reconnect_failed_pane(fixture: &Fixture, block: &str) {
-    fixture.workspace.split_rex_pane(false).unwrap();
+    fixture
+        .workspace
+        .split_rex_pane(focused_presentation(fixture), false)
+        .unwrap();
     fixture.wait(|s| {
         s.rex_window().is_some_and(|w| {
             w.panes.len() == 2 && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
@@ -720,6 +793,7 @@ fn reconnect_failed_pane(fixture: &Fixture, block: &str) {
         .find(|p| p.id == block)
         .unwrap()
         .presentation_id;
+    paste_prompt_stays_with_its_worker(fixture, other, first);
     fixture.workspace.focus_rex_pane(first).unwrap();
     rex_probe(
         fixture,
@@ -773,6 +847,28 @@ fn reconnect_failed_pane(fixture: &Fixture, block: &str) {
     });
 }
 
+fn paste_prompt_stays_with_its_worker(fixture: &Fixture, source: u64, destination: u64) {
+    let workspace = &fixture.workspace;
+    workspace.focus_rex_pane(source).unwrap();
+    workspace
+        .send_key_to(source, KeyInput::paste("echo withheld\necho withheld"))
+        .unwrap();
+    fixture.wait(|_| workspace.pending_paste_id(source).is_some());
+    let paste = workspace.pending_paste_id(source).unwrap();
+    workspace.focus_rex_pane(destination).unwrap();
+    assert!(workspace.pending_paste_id(destination).is_none());
+    assert!(
+        workspace
+            .resolve_terminal_paste(source, paste, true)
+            .unwrap_err()
+            .is_stale_input()
+    );
+    workspace.focus_rex_pane(source).unwrap();
+    rex_probe(fixture, "printf '%s' resumed > /tmp/rex-paste-resumed");
+    fixture
+        .wait(|_| std::fs::read_to_string("/tmp/rex-paste-resumed").is_ok_and(|s| s == "resumed"));
+}
+
 fn rex_probe(fixture: &Fixture, text: &str) {
     fixture
         .workspace
@@ -782,6 +878,51 @@ fn rex_probe(fixture: &Fixture, text: &str) {
         .workspace
         .send_key(KeyInput::named(NamedKey::Enter, Modifiers::default()))
         .unwrap();
+}
+
+fn focused_presentation(fixture: &Fixture) -> u64 {
+    fixture
+        .workspace
+        .snapshot()
+        .rex_window()
+        .unwrap()
+        .panes
+        .iter()
+        .find(|pane| pane.focused)
+        .expect("a focused Rex pane")
+        .presentation_id
+}
+
+fn stale_input_does_not_follow_focus(fixture: &Fixture, presentation: u64) {
+    use workspace::{MouseAction, MouseInput};
+    for input in [
+        KeyInput::text("wrong-pane", Modifiers::default()),
+        KeyInput::paste("wrong-pane\nwrong-pane"),
+    ] {
+        assert!(
+            fixture
+                .workspace
+                .send_key_to(presentation, input)
+                .unwrap_err()
+                .is_stale_input()
+        );
+    }
+    assert!(
+        fixture
+            .workspace
+            .send_mouse_to(
+                presentation,
+                MouseInput {
+                    action: MouseAction::Move(None),
+                    column: 1,
+                    row: 1,
+                    modifiers: Modifiers::default(),
+                    click_count: 0,
+                }
+            )
+            .unwrap_err()
+            .is_stale_input()
+    );
 }
 
 fn resize_with_full_input_queue(fixture: &Fixture) {
@@ -827,7 +968,10 @@ fn resize_with_full_input_queue(fixture: &Fixture) {
         .workspace
         .resize_rex_window(1000.0, 600.0, 10.0, 20.0)
         .unwrap();
-    fixture.workspace.zoom_rex_pane().unwrap();
+    fixture
+        .workspace
+        .zoom_rex_pane(focused_presentation(fixture))
+        .unwrap();
     fixture.wait(|s| {
         s.rex_window().is_some_and(|w| {
             assert!(
@@ -840,7 +984,10 @@ fn resize_with_full_input_queue(fixture: &Fixture) {
                 .any(|p| p.focused && (p.rect.width - 1000.0).abs() < 0.01)
         })
     });
-    fixture.workspace.zoom_rex_pane().unwrap();
+    fixture
+        .workspace
+        .zoom_rex_pane(focused_presentation(fixture))
+        .unwrap();
     fixture.wait(|s| {
         s.rex_window().is_some_and(|w| {
             w.dividers.len() == 1
@@ -879,6 +1026,7 @@ fn large_rex_window_keeps_ssh_capacity_and_isolates_pane_startup_failure() {
     ) else {
         return;
     };
+    limit_ssh_sessions(&fixture);
     let _server = server(&fixture);
     let created = rex(
         &fixture,
@@ -963,15 +1111,29 @@ fn large_rex_window_keeps_ssh_capacity_and_isolates_pane_startup_failure() {
         .unwrap();
     fixture.wait(|s| {
         s.rex_window().is_some_and(|w| {
-            w.error.is_none()
-                && w.panes.len() == blocks.len()
+            assert!(w.error.is_none(), "Rex control failed: {:?}", w.error);
+            assert!(
+                w.panes.iter().all(|p| p.error.is_none()),
+                "Rex panes failed: {:?}",
+                w.panes
+                    .iter()
+                    .filter_map(|p| p.error.as_deref())
+                    .collect::<Vec<_>>()
+            );
+            w.panes.len() == blocks.len()
                 && w.panes.iter().any(|p| p.focused)
-                && w.panes.iter().all(|p| !p.connecting && p.error.is_none())
+                && w.panes.iter().all(|p| !p.connecting)
                 && blocks.iter().all(|id| rex_attach_pid(id).is_some())
         })
     });
     let before = fixture.workspace.snapshot();
     let original = &before.rex_window().unwrap().panes;
+    assert!(
+        std::fs::read_to_string(fixture.root.join("sshd.log"))
+            .unwrap()
+            .contains("no more sessions"),
+        "the Rex clients must have hit the server's session limit"
+    );
 
     let other = fixture.open_scene();
     other.workspace.select_host(&fixture.host_id).unwrap();
@@ -984,7 +1146,10 @@ fn large_rex_window_keeps_ssh_capacity_and_isolates_pane_startup_failure() {
     let changed = reviewed.replace("User ghosthub", "User wrong-account");
     assert_ne!(changed, reviewed);
     std::fs::write(&config, changed).unwrap();
-    fixture.workspace.split_rex_pane(false).unwrap();
+    fixture
+        .workspace
+        .split_rex_pane(focused_presentation(&fixture), false)
+        .unwrap();
     fixture.wait(|s| {
         s.rex_window().is_some_and(|w| {
             w.error.is_none()
@@ -1024,6 +1189,38 @@ fn large_rex_window_keeps_ssh_capacity_and_isolates_pane_startup_failure() {
     });
     other.workspace.close();
     fixture.workspace.close();
+}
+
+fn limit_ssh_sessions(fixture: &Fixture) {
+    let log_path = fixture.root.join("sshd.log");
+    let listening = || {
+        std::fs::read_to_string(&log_path)
+            .unwrap()
+            .matches("Server listening")
+            .count()
+    };
+    let previous = listening();
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(fixture.root.join("sshd_config"))
+            .unwrap(),
+        "MaxSessions 4"
+    )
+    .unwrap();
+    let pid = std::fs::read_to_string(fixture.root.join("sshd.pid")).unwrap();
+    assert!(
+        Command::new("kill")
+            .args(["-HUP", pid.trim()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while listening() <= previous {
+        assert!(Instant::now() < deadline, "sshd did not reload MaxSessions");
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn rex_attach_pid(block: &str) -> Option<String> {

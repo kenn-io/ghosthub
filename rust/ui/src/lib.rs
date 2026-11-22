@@ -383,7 +383,6 @@ pub struct RootView {
     kill_focus: FocusHandle,
     diagnostic: Option<String>,
     terminal_notice: TransientNotice,
-    paste_confirmation: bool,
     observed_presentation_id: Option<u64>,
     observed_revision: u64,
     observed_surface_generation: u64,
@@ -1889,7 +1888,6 @@ impl RootView {
             kill_focus: cx.focus_handle(),
             diagnostic: None,
             terminal_notice: TransientNotice::default(),
-            paste_confirmation: false,
             observed_presentation_id: None,
             observed_revision: u64::MAX,
             observed_surface_generation: u64::MAX,
@@ -3506,7 +3504,6 @@ impl RootView {
 
     fn clear_terminal_input(&mut self) {
         clear_terminal_input_state(
-            &mut self.paste_confirmation,
             &mut self.pending_input,
             &mut self.pending_input_bytes,
             &mut self.input_refusal,
@@ -3570,7 +3567,6 @@ impl RootView {
                         );
                     }
                 }
-                WorkspaceEvent::ConfirmPaste => self.paste_confirmation = true,
                 WorkspaceEvent::SshPrompt(request) => {
                     if !self
                         .workspace
@@ -3845,8 +3841,8 @@ impl RootView {
                         apply_new_worktree_failure(dialog, operation_id, &project_path, message);
                     }
                 }
-                // Recovery status follows the snapshot and disappears when its target clears.
-                WorkspaceEvent::RemoteSessionInterrupted(_) => {}
+                // Paste and recovery notices read their current workspace state.
+                WorkspaceEvent::ConfirmPaste | WorkspaceEvent::RemoteSessionInterrupted(_) => {}
                 WorkspaceEvent::SessionRenamed {
                     operation_id,
                     result,
@@ -4039,7 +4035,9 @@ impl RootView {
             && self.rex_close.is_none()
             && let Err(e) = self.workspace.focus_rex_pane(presentation_id)
         {
-            self.diagnostic = Some(e.to_string());
+            if !e.is_stale_input() {
+                self.diagnostic = Some(e.to_string());
+            }
             return;
         }
         if !self.presentation_accepts_input(presentation_id) {
@@ -4373,12 +4371,33 @@ impl RootView {
         true
     }
 
+    fn deliver_terminal_input(
+        &self,
+        queued: &QueuedUiInput,
+    ) -> Result<(), workspace::WorkspaceError> {
+        let presentation = queued.presentation_id;
+        match &queued.input {
+            PendingUiInput::Key(input) => self.workspace.send_key_to(presentation, input.clone()),
+            PendingUiInput::Mouse(input) => self.workspace.send_mouse_to(presentation, *input),
+            PendingUiInput::CopySelection => {
+                self.workspace.copy_terminal_selection_from(presentation)
+            }
+            PendingUiInput::Wheel(batch) => self.workspace.send_mouse_to(presentation, batch.input),
+            PendingUiInput::ClipboardResponse(generation, bytes) => self
+                .workspace
+                .send_clipboard_response(*generation, bytes.clone()),
+            PendingUiInput::Resize(resize) => self.workspace.resize_with_pixels(
+                resize.columns,
+                resize.rows,
+                resize.pixel_width,
+                resize.pixel_height,
+            ),
+        }
+    }
+
     fn flush_pending_input(&mut self) -> bool {
         let mut changed = self.sync_terminal_scope();
         let mut delivered_wheel_steps = 0;
-        if self.paste_confirmation {
-            return changed;
-        }
         loop {
             let Some(input) = self.pending_input.front() else {
                 if clears_when_input_queue_is_empty(self.diagnostic.as_deref()) {
@@ -4399,22 +4418,14 @@ impl RootView {
                 changed = true;
                 continue;
             }
-            let result = match &input.input {
-                PendingUiInput::Key(input) => self.workspace.send_key(input.clone()),
-                PendingUiInput::Mouse(input) => self.workspace.send_mouse(*input),
-                PendingUiInput::CopySelection => self.workspace.copy_terminal_selection(),
-                PendingUiInput::Wheel(batch) => self.workspace.send_mouse(batch.input),
-                PendingUiInput::ClipboardResponse(generation, bytes) => self
-                    .workspace
-                    .send_clipboard_response(*generation, bytes.clone()),
-                PendingUiInput::Resize(resize) => self.workspace.resize_with_pixels(
-                    resize.columns,
-                    resize.rows,
-                    resize.pixel_width,
-                    resize.pixel_height,
-                ),
-            };
-            match result {
+            if self
+                .workspace
+                .pending_paste_id(input.presentation_id)
+                .is_some()
+            {
+                return changed;
+            }
+            match self.deliver_terminal_input(input) {
                 Ok(()) => {
                     if let Some(QueuedUiInput {
                         input: PendingUiInput::Wheel(batch),
@@ -4448,9 +4459,7 @@ impl RootView {
                     changed = true;
                 }
                 Err(error) if error.is_stale_input() => {
-                    // An expected race outcome: the response outlived its
-                    // terminal. Drop just this entry — the keystrokes
-                    // queued behind it belong to the live presentation.
+                    // Input for an old presentation must never go to its replacement.
                     let dropped = self.pending_input.pop_front().expect("front input exists");
                     self.pending_input_bytes =
                         self.pending_input_bytes.saturating_sub(dropped.bytes);
@@ -4546,24 +4555,20 @@ impl RootView {
         }
     }
 
-    fn approve_paste(&mut self, presentation_id: u64, cx: &mut Context<Self>) {
-        if !self.presentation_accepts_input(presentation_id) {
-            return;
-        }
-        if let Err(error) = self.workspace.approve_paste() {
+    fn resolve_paste(
+        &mut self,
+        presentation: u64,
+        paste_id: u64,
+        approve: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self
+            .workspace
+            .resolve_terminal_paste(presentation, paste_id, approve)
+            && !error.is_stale_input()
+        {
             self.diagnostic = Some(error.to_string());
         }
-        self.paste_confirmation = false;
-        let _changed = self.flush_pending_input();
-        cx.notify();
-    }
-
-    fn cancel_paste(&mut self, presentation_id: u64, cx: &mut Context<Self>) {
-        if !self.presentation_accepts_input(presentation_id) {
-            return;
-        }
-        self.workspace.cancel_paste();
-        self.paste_confirmation = false;
         let _changed = self.flush_pending_input();
         cx.notify();
     }
@@ -9008,12 +9013,10 @@ fn coalesce_last_wheel(
 }
 
 fn clear_terminal_input_state(
-    paste_confirmation: &mut bool,
     pending_input: &mut VecDeque<QueuedUiInput>,
     pending_input_bytes: &mut usize,
     input_refusal: &mut InputRefusal,
 ) {
-    *paste_confirmation = false;
     pending_input.clear();
     *pending_input_bytes = 0;
     *input_refusal = InputRefusal::default();
@@ -9135,8 +9138,8 @@ impl Render for RootView {
                     .child(diagnostic.clone()),
             );
         }
-        if self.paste_confirmation
-            && let Some(presentation_id) = terminal_presentation_id(snapshot.content())
+        if let Some(presentation_id) = terminal_presentation_id(snapshot.content())
+            && let Some(paste_id) = self.workspace.pending_paste_id(presentation_id)
         {
             root = root.child(
                 div()
@@ -9163,7 +9166,7 @@ impl Render for RootView {
                                     .cursor_pointer()
                                     .child("Cancel")
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.cancel_paste(presentation_id, cx);
+                                        this.resolve_paste(presentation_id, paste_id, false, cx);
                                     })),
                             )
                             .child(
@@ -9176,7 +9179,7 @@ impl Render for RootView {
                                     .bg(rgb(0x8a_62_2a))
                                     .child("Paste")
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.approve_paste(presentation_id, cx);
+                                        this.resolve_paste(presentation_id, paste_id, true, cx);
                                     })),
                             ),
                     ),
@@ -12644,7 +12647,6 @@ mod tests {
     #[test]
     fn presentation_transition_clears_all_terminal_input_state() {
         let mut observed = Some(7);
-        let mut paste_confirmation = true;
         let mut pending_input = VecDeque::from([QueuedUiInput {
             presentation_id: 7,
             input: PendingUiInput::Key(KeyInput::Named {
@@ -12660,20 +12662,13 @@ mod tests {
         refusal.refuse();
 
         assert!(transitioned_presentation(&mut observed, None));
-        clear_terminal_input_state(
-            &mut paste_confirmation,
-            &mut pending_input,
-            &mut pending_input_bytes,
-            &mut refusal,
-        );
+        clear_terminal_input_state(&mut pending_input, &mut pending_input_bytes, &mut refusal);
 
         assert_eq!(observed, None);
-        assert!(!paste_confirmation);
         assert!(pending_input.is_empty());
         assert_eq!(pending_input_bytes, 0);
         assert!(!refusal.is_pending());
 
-        paste_confirmation = true;
         pending_input.push_back(QueuedUiInput {
             presentation_id: 7,
             input: PendingUiInput::Key(KeyInput::Named {
@@ -12687,15 +12682,9 @@ mod tests {
         pending_input_bytes = 64;
         refusal.refuse();
         assert!(transitioned_presentation(&mut observed, Some(8)));
-        clear_terminal_input_state(
-            &mut paste_confirmation,
-            &mut pending_input,
-            &mut pending_input_bytes,
-            &mut refusal,
-        );
+        clear_terminal_input_state(&mut pending_input, &mut pending_input_bytes, &mut refusal);
 
         assert_eq!(observed, Some(8));
-        assert!(!paste_confirmation);
         assert!(pending_input.is_empty());
         assert_eq!(pending_input_bytes, 0);
         assert!(!refusal.is_pending());

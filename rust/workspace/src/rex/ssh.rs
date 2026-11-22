@@ -6,12 +6,18 @@ use crate::{CancellationToken, RuntimeRemoteHost, Scene, WorkspaceError, scene};
 const MASTERS: usize = 15; // KWT indexes 1–15. Index 0 stays available for existing host traffic.
 const SESSIONS_PER_MASTER: u8 = 8;
 
-type Usage = Mutex<[u8; MASTERS]>;
+#[derive(Clone, Copy)]
+struct Master {
+    reserved: u8,
+    limit: u8,
+}
+
+type Usage = Mutex<[Master; MASTERS]>;
 
 #[derive(Default)]
 pub(crate) struct Connections(Mutex<HashMap<String, Weak<Usage>>>);
 
-struct Slot {
+pub(super) struct Slot {
     usage: Arc<Usage>,
     index: usize,
 }
@@ -27,7 +33,12 @@ impl Connections {
             .get(route)
             .and_then(Weak::upgrade)
             .unwrap_or_else(|| {
-                let usage = Arc::new(Mutex::new([0; MASTERS]));
+                let usage = Arc::new(Mutex::new(
+                    [Master {
+                        reserved: 0,
+                        limit: SESSIONS_PER_MASTER,
+                    }; MASTERS],
+                ));
                 routes.insert(route.to_owned(), Arc::downgrade(&usage));
                 usage
             });
@@ -38,16 +49,29 @@ impl Connections {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let index = counts
                 .iter()
-                .position(|count| *count < SESSIONS_PER_MASTER)
+                .position(|master| master.reserved < master.limit)
                 .ok_or_else(|| {
                     WorkspaceError::new(
                         "The SSH connections for Rex are full. Close a Rex window and try again.",
                     )
                 })?;
-            counts[index] += 1;
+            counts[index].reserved += 1;
             index
         };
         Ok(Slot { usage, index })
+    }
+}
+
+impl Slot {
+    pub(super) fn refused(&self) {
+        let mut counts = self
+            .usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let master = &mut counts[self.index];
+        // The refusing reservation will be released with its worker. Keep
+        // the remaining reservations on this master and reuse freed slots.
+        master.limit = master.limit.min(master.reserved.saturating_sub(1));
     }
 }
 
@@ -57,13 +81,13 @@ impl Drop for Slot {
             .usage
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        counts[self.index] -= 1;
+        counts[self.index].reserved -= 1;
     }
 }
 
 pub(super) struct Connection {
     pub(super) lease: host::SshLease,
-    _slot: Slot,
+    pub(super) slot: Arc<Slot>,
 }
 
 impl Connection {
@@ -85,6 +109,16 @@ impl Connection {
                 scene::request_ssh_prompt(scene, host_id, prompt_id, prompt, cancellation, false)
             })
             .map_err(|error| WorkspaceError::new(error.to_string()))?;
-        Ok(Self { lease, _slot: slot })
+        Ok(Self {
+            lease,
+            slot: Arc::new(slot),
+        })
     }
+}
+
+pub(crate) fn session_refused(code: u32, output: &str) -> bool {
+    code == 255 && output.lines().any(|line| {
+        line.trim()
+            == "mux_client_request_session: session request failed: Session open refused by peer"
+    })
 }

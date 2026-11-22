@@ -14,7 +14,12 @@ use super::{Pane, RexRect, Window, error, lock, ssh};
 pub(super) struct Pending {
     id: u64,
     cancellation: CancellationToken,
-    result: Receiver<Result<TerminalWorker, WorkspaceError>>,
+    result: Receiver<Result<Attachment, WorkspaceError>>,
+}
+
+struct Attachment {
+    worker: TerminalWorker,
+    slot: Arc<ssh::Slot>,
 }
 
 impl Drop for Pending {
@@ -50,6 +55,7 @@ impl Pane {
                 initial_grid(),
             ))),
             worker: None,
+            slot: None,
             pending: None,
             queued: true,
             generation: 0,
@@ -57,6 +63,18 @@ impl Pane {
             accepted_size: None,
             error: None,
         }
+    }
+
+    pub(super) fn fail(&mut self, message: String, session_refused: bool) {
+        if let Some(slot) = self.slot.take()
+            && session_refused
+        {
+            slot.refused();
+            self.queued = true;
+        } else {
+            self.error = Some(message);
+        }
+        self.worker.take();
     }
 }
 
@@ -74,9 +92,10 @@ impl Window {
             };
             pane.pending.take();
             match result {
-                Ok(worker) => {
+                Ok(Attachment { worker, slot }) => {
                     pane.id = next_presentation_id(&scene.runtime);
                     pane.surface = worker.surface_handle();
+                    pane.slot = Some(slot);
                     pane.accepted_size = None;
                     if self.focused.as_ref() == Some(id) {
                         worker.set_clipboard_writes_enabled(true);
@@ -147,6 +166,7 @@ impl Window {
                     if cancellation.is_cancelled() {
                         return Err(error("Rex pane connection cancelled."));
                     }
+                    let slot = Arc::clone(&connection.slot);
                     let worker = TerminalWorker::attach_rex_with_metadata(
                         &plan,
                         Box::new(connection),
@@ -159,7 +179,7 @@ impl Window {
                     )
                     .map_err(|e| error(e.to_string()))?;
                     worker.set_clipboard_writes_enabled(false);
-                    Ok(worker)
+                    Ok(Attachment { worker, slot })
                 })();
                 let _ = sender.send(result);
             }),

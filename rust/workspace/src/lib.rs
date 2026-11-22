@@ -2596,6 +2596,7 @@ impl<T> Published<T> {
 }
 
 struct PendingPaste {
+    id: u64,
     worker_generation: u64,
     input: input::EncodedInput,
 }
@@ -7846,16 +7847,14 @@ impl Workspace {
     ///
     /// Returns an error when no terminal is active or its worker has stopped.
     pub fn send_key(&self, input: KeyInput) -> Result<(), WorkspaceError> {
-        let worker = self
-            .scene
-            .worker
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        worker
-            .active()
-            .ok_or_else(|| WorkspaceError::new("no active terminal"))?
-            .send_key(input)
-            .map_err(|error| WorkspaceError::from_worker(&error))
+        self.terminal_input(None, |worker| worker.send_key(input))
+    }
+
+    /// Queue input only if this presentation still owns the visible terminal.
+    /// # Errors
+    /// Rejects stale input and reports worker errors.
+    pub fn send_key_to(&self, presentation: u64, input: KeyInput) -> Result<(), WorkspaceError> {
+        self.terminal_input(Some(presentation), |worker| worker.send_key(input))
     }
 
     /// Queue a terminal-grid mouse event for the active presentation.
@@ -7864,16 +7863,18 @@ impl Workspace {
     ///
     /// Returns an error when no terminal is active or its worker has stopped.
     pub fn send_mouse(&self, input: MouseInput) -> Result<(), WorkspaceError> {
-        let worker = self
-            .scene
-            .worker
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        worker
-            .active()
-            .ok_or_else(|| WorkspaceError::new("no active terminal"))?
-            .send_mouse(input)
-            .map_err(|error| WorkspaceError::from_worker(&error))
+        self.terminal_input(None, |worker| worker.send_mouse(input))
+    }
+
+    /// Queue mouse input only if this presentation still owns the visible terminal.
+    /// # Errors
+    /// Rejects stale input and reports worker errors.
+    pub fn send_mouse_to(
+        &self,
+        presentation: u64,
+        input: MouseInput,
+    ) -> Result<(), WorkspaceError> {
+        self.terminal_input(Some(presentation), |worker| worker.send_mouse(input))
     }
 
     /// Copy the active terminal's selection through the scene's clipboard events.
@@ -7881,16 +7882,50 @@ impl Workspace {
     /// # Errors
     /// Returns an error when no terminal is active or its input queue is unavailable.
     pub fn copy_terminal_selection(&self) -> Result<(), WorkspaceError> {
+        self.terminal_input(None, TerminalWorker::copy_selection)
+    }
+
+    /// Copy only from the specified presentation.
+    /// # Errors
+    /// Rejects stale input and reports worker errors.
+    pub fn copy_terminal_selection_from(&self, presentation: u64) -> Result<(), WorkspaceError> {
+        self.terminal_input(Some(presentation), TerminalWorker::copy_selection)
+    }
+
+    fn terminal_input(
+        &self,
+        presentation: Option<u64>,
+        send: impl FnOnce(&TerminalWorker) -> Result<(), terminal::WorkerError>,
+    ) -> Result<(), WorkspaceError> {
+        let _navigation = lock_live_navigation(&self.scene)?;
+        if !self.accepts_terminal_input(presentation) {
+            return Err(WorkspaceError::stale_input(
+                "The terminal presentation changed.",
+            ));
+        }
         let worker = self
             .scene
             .worker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        worker
-            .active()
-            .ok_or_else(|| WorkspaceError::new("no active terminal"))?
-            .copy_selection()
-            .map_err(|error| WorkspaceError::from_worker(&error))
+        send(
+            worker
+                .active()
+                .ok_or_else(|| WorkspaceError::new("no active terminal"))?,
+        )
+        .map_err(|error| WorkspaceError::from_worker(&error))
+    }
+
+    // The caller holds the navigation fence so the Rex focus and worker
+    // cannot change between validation and queueing.
+    fn accepts_terminal_input(&self, presentation: Option<u64>) -> bool {
+        rex::accepts_input(&self.scene, presentation)
+            && presentation.is_none_or(|id| {
+                matches!(
+                    &*self.scene.state.read().unwrap_or_else(std::sync::PoisonError::into_inner),
+                    WorkspaceContent::Terminal { presentation_id, .. } if *presentation_id == id
+                )
+            })
     }
 
     /// Approve the one pending unsafe paste request.
@@ -7899,18 +7934,73 @@ impl Workspace {
     ///
     /// Returns an error when no paste is pending or the terminal stopped.
     pub fn approve_paste(&self) -> Result<(), WorkspaceError> {
+        self.resolve_paste(None, true)
+    }
+
+    /// Identify the pending paste tied to this presentation's current worker.
+    #[must_use]
+    pub fn pending_paste_id(&self, presentation: u64) -> Option<u64> {
+        let _navigation = lock_live_navigation(&self.scene).ok()?;
+        if !self.accepts_terminal_input(Some(presentation)) {
+            return None;
+        }
+        let pending = self
+            .scene
+            .pending_paste
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let worker = self
+            .scene
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending
+            .as_ref()
+            .filter(|paste| paste.worker_generation == worker.generation())
+            .map(|paste| paste.id)
+    }
+
+    /// Resolve the paste whose confirmation the desktop displayed.
+    /// # Errors
+    /// Rejects a retired worker and reports worker errors.
+    pub fn resolve_terminal_paste(
+        &self,
+        presentation: u64,
+        paste_id: u64,
+        approve: bool,
+    ) -> Result<(), WorkspaceError> {
+        self.resolve_paste(Some((presentation, paste_id)), approve)
+    }
+
+    fn resolve_paste(
+        &self,
+        target: Option<(u64, u64)>,
+        approve: bool,
+    ) -> Result<(), WorkspaceError> {
         // Fenced and held through the worker confirmation: closure either
         // follows a fully delivered approval or the approval fails closed —
         // the close path's paste deny can no longer interleave with an
         // approval it then cannot see.
         let _navigation = lock_live_navigation(&self.scene)?;
-        let paste = self
+        if !self.accepts_terminal_input(target.map(|(presentation, _)| presentation)) {
+            return Err(WorkspaceError::stale_input(
+                "The terminal presentation changed.",
+            ));
+        }
+        let mut pending = self
             .scene
             .pending_paste
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if target.is_some_and(|(_, id)| pending.as_ref().is_none_or(|paste| paste.id != id)) {
+            return Err(WorkspaceError::stale_input(
+                "The paste confirmation changed.",
+            ));
+        }
+        let paste = pending
             .take()
             .ok_or_else(|| WorkspaceError::new("no paste is awaiting confirmation"))?;
+        drop(pending);
         let worker = self
             .scene
             .worker
@@ -7921,11 +8011,15 @@ impl Workspace {
                 "paste confirmation belongs to a closed terminal",
             ));
         }
-        worker
+        let worker = worker
             .active()
-            .ok_or_else(|| WorkspaceError::new("no active terminal"))?
-            .confirm_paste(paste.input)
-            .map_err(|error| WorkspaceError::new(error.to_string()))
+            .ok_or_else(|| WorkspaceError::new("no active terminal"))?;
+        if approve {
+            worker.confirm_paste(paste.input)
+        } else {
+            worker.cancel_paste()
+        }
+        .map_err(|error| WorkspaceError::new(error.to_string()))
     }
 
     pub fn cancel_paste(&self) {

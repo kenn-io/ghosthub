@@ -2264,6 +2264,7 @@ fn retained_stale_failure_preserves_the_visible_terminal_and_pending_input() {
         },
     );
     *workspace.scene.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
+        id: 1,
         worker_generation: 7,
         input: input::encode_paste("pending\ninput", false),
     });
@@ -3037,6 +3038,7 @@ fn terminfo_retry_unpublishes_terminal_and_preserves_session_kind() {
         rex_window: None,
     });
     *workspace.scene.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
+        id: 1,
         worker_generation: 1,
         input: input::encode_paste("first\nsecond", false),
     });
@@ -14198,6 +14200,7 @@ fn overflowing_inbox_cancels_a_dropped_prompt_and_keeps_fifo_survivors() {
 fn overflowing_inbox_denies_a_dropped_paste_confirmation() {
     let workspace = Workspace::preview(WorkspaceSnapshot::shell(Appearance::default(), Vec::new()));
     *workspace.scene.pending_paste.lock().expect("pending paste") = Some(PendingPaste {
+        id: 1,
         worker_generation: 7,
         input: input::encode_paste("withheld\ninput", false),
     });

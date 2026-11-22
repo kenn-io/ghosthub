@@ -215,14 +215,32 @@ impl Workspace {
                 }
                 Ok(Some(TerminalEvent::ConfirmPaste(paste))) => {
                     processed += 1;
+                    let Ok(_navigation) = crate::scene::lock_live_navigation(&self.scene) else {
+                        break;
+                    };
+                    let accepts_paste = self.accepts_terminal_input(None);
                     let mut pending = self
                         .scene
                         .pending_paste
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if pending.is_none() {
+                    let worker = self
+                        .scene
+                        .worker
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let Some((active, generation)) = worker.active_with_generation() else {
+                        continue;
+                    };
+                    if generation != source_worker_generation {
+                        continue;
+                    }
+                    if !accepts_paste {
+                        let _ = active.cancel_paste();
+                    } else if pending.is_none() {
                         *pending = Some(PendingPaste {
-                            worker_generation: source_worker_generation,
+                            id: crate::next_operation_id(&self.scene.runtime),
+                            worker_generation: generation,
                             input: paste,
                         });
                         emitted.push(WorkspaceEvent::ConfirmPaste);
@@ -443,20 +461,23 @@ impl Workspace {
             let (worker, generation) = worker.active_with_generation()?;
             let event = worker.try_event();
             let failure = match &event {
-                Ok(Some(TerminalEvent::Exited { .. })) => Some("Attachment closed.".to_owned()),
-                Ok(Some(TerminalEvent::Error(error))) => Some(error.clone()),
-                Err(error) => Some(error.to_string()),
+                Ok(Some(TerminalEvent::Exited { code, output_tail })) => Some((
+                    "Attachment closed.".to_owned(),
+                    crate::rex::session_refused(*code, output_tail),
+                )),
+                Ok(Some(TerminalEvent::Error(error))) => Some((error.clone(), false)),
+                Err(error) => Some((error.to_string(), false)),
                 _ => None,
             };
             (
                 event,
                 generation,
                 worker.is_confirmed_live(),
-                failure.map(|message| (worker.surface_handle(), message)),
+                failure.map(|(message, refused)| (worker.surface_handle(), message, refused)),
             )
         };
-        if let Some((surface, message)) = failed
-            && crate::rex::pane_failed(&self.scene, &surface, message)
+        if let Some((surface, message, refused)) = failed
+            && crate::rex::pane_failed(&self.scene, &surface, message, refused)
         {
             return Some((Ok(None), worker_generation, confirmed));
         }

@@ -264,7 +264,9 @@ impl RootView {
             || self.settings_dialog.is_some()
             || self.renaming_session.is_some()
             || !self.ssh_prompts.is_empty()
-            || self.paste_confirmation
+            || terminal_presentation_id(self.workspace.snapshot().content())
+                .and_then(|id| self.workspace.pending_paste_id(id))
+                .is_some()
             || self.workspace.session_kill_confirmation().is_some()
             || self.workspace.herdr_lifecycle_confirmation().is_some()
         {
