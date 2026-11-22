@@ -7,10 +7,9 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>All your multiplexers. One native terminal.</strong>
+  <strong>One native Mac terminal for tmux, Herdr, and Zellij.</strong>
   <br>
-  Open tmux, Herdr, and Zellij sessions on your Mac and SSH hosts.
-  Add Git worktrees when you need them.
+  Connect to sessions on your Mac and over SSH. Add Git worktrees when you want them.
 </p>
 
 <p align="center">
@@ -43,122 +42,131 @@
   >
 </p>
 
-Ghosthub opens tmux, Herdr, and Zellij sessions on your Mac and on machines
-reached over SSH. A terminal multiplexer keeps your shells and programs running
-when you close a terminal or lose a connection. Ghosthub helps you find those
-sessions, switch between them, and reconnect.
+Ghosthub is a native Mac app for tmux, Herdr, and Zellij sessions on your Mac
+and on machines you reach over SSH. Terminal multiplexers keep your shells and
+programs running when you close a window or lose your connection. Ghosthub puts
+those sessions in one sidebar, lets you switch between them, and reconnects
+when SSH drops.
 
-Each multiplexer keeps its panes, history, key bindings, and running programs.
-You can also register a Git repository and use [kwt](https://kwt.sh) to create
-worktrees from branches or GitHub pull requests. A worktree is a separate
-checkout of a branch. Git and worktrees are optional.
+Your sessions stay ordinary tmux, Herdr, and Zellij sessions with their own
+panes, scrollback, key bindings, and running programs. If you want a separate
+Git checkout for each task, you can register a repository and use
+[kwt](https://kwt.sh) to create worktrees from branches or GitHub pull
+requests. You do not need Git or worktrees to use Ghosthub.
 
-Ghosthub is alpha software. Report bugs and request features through
+Ghosthub is alpha software. File bug reports and feature requests in
 [GitHub issues](https://github.com/kenn-io/ghosthub/issues).
 
-## What can I do with it?
+## What it does
 
-- Open local and remote sessions together in native Mac windows and tabs.
-- Keep remote sessions connected through ordinary SSH interruptions.
-- Preview tmux sessions and see which ones are producing output.
-- Create Git worktrees, inspect changed files, and flag work to return to later.
-- Rename standalone tmux sessions while their programs keep running.
-- Search sessions, projects, and actions with **Command-Shift-P**.
-- Set fonts and colors in Ghosthub's own `ghostty.conf`. Ghosthub uses
-  libghostty 1.4.0 for rendering and does not load Ghostty.app's settings.
+- Open local and remote sessions side by side in native Mac windows and tabs.
+- Reconnect to remote sessions automatically after ordinary SSH drops.
+- Preview tmux sessions in the sidebar and see which ones have new output.
+- Create Git worktrees, check changed files from the sidebar, and flag work to
+  come back to.
+- Rename standalone tmux sessions without stopping the programs inside them.
+- Jump to any session, project, or action with **Command-Shift-P**.
+- Render terminals with libghostty 1.4.0 and configure fonts and colors in
+  Ghosthub's own `ghostty.conf`, separate from Ghostty.app.
 
-See the [visual overview](https://ghosthub.ai/overview/) for a tour. The
-[public guides](https://ghosthub.ai/docs/) explain setup, controls, and limits.
+Take the [visual overview](https://ghosthub.ai/overview/) for a quick tour, or
+read the [public guides](https://ghosthub.ai/docs/) for setup, controls, and
+limits.
 
 ## Install and open a session
 
-You need an Apple Silicon Mac with macOS 15 (Sequoia) or newer. Install Ghosthub:
+You need an Apple Silicon Mac running macOS 15 (Sequoia) or newer. Install
+Ghosthub with Homebrew:
 
 ```sh
 brew install kenn-io/tap/ghosthub
 ```
 
 Or download the [latest stable DMG](https://github.com/kenn-io/ghosthub/releases/latest)
-and drag **Ghosthub** to **Applications**.
+and drag **Ghosthub** into **Applications**.
 
 Install at least one supported multiplexer on the host where you work: tmux
-3.2+, Herdr 0.8.0+, or Zellij 0.44+. For tmux on your Mac:
+3.2+, Herdr 0.8.0+, or Zellij 0.44+. To install tmux on your Mac:
 
 ```sh
 brew install tmux
 ```
 
-1. Launch **Ghosthub** from **Applications**.
+1. Open **Ghosthub** from **Applications**.
 2. Expand your Mac in the sidebar.
-3. Select an existing session, or select the **+** beside a session group to
-   create one.
+3. Click an existing session to open it, or click **+** beside your Mac to
+   start a new one.
 
-Closing a terminal view detaches from its session. The session keeps running.
-Ending it requires a separate, confirmed **Kill Session…** or **Stop Session…**
-action. See [Sessions](https://ghosthub.ai/docs/sessions/).
+Closing a window or tab only detaches. Your programs keep running in the
+multiplexer until you choose **Kill Session…** or **Stop Session…** and
+confirm. See [Sessions](https://ghosthub.ai/docs/sessions/).
 
-This README and the website docs follow `main`. The
-[Unreleased changelog](website/docs/content/changelog.md#unreleased) identifies changes newer than
-the latest stable release. Read about
+This README and the website docs track `main`. Anything newer than the latest
+stable release appears under
+[Unreleased](website/docs/content/changelog.md#unreleased) in the changelog.
+Read about
 [stable and nightly builds](https://ghosthub.ai/docs/getting-started/#release-and-nightly-builds)
-before trying them.
+before switching channels.
 
-Ghosthub on macOS also opens individual terminals from the newer Herdr
-desktop app. Its [split layout stays in Herdr desktop](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
-See [Herdr desktop terminals](https://ghosthub.ai/docs/sessions/#herdr-desktop-terminals)
-for setup and scope. It also opens [Rex windows](https://ghosthub.ai/docs/sessions/#rex-windows),
-with their split panes, on this Mac and on SSH hosts.
-The Linux client opens [remote Rex windows and their split panes](https://ghosthub.ai/docs/sessions/#linux-remote-rex-windows)
-over SSH, including SSH over Tailscale.
+On macOS, Ghosthub also opens
+[Herdr desktop terminals and tabs](https://ghosthub.ai/docs/sessions/#herdr-desktop-terminals).
+You see [Herdr's split layout](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits)
+as read-only panes, while Herdr desktop keeps control of splits and sizing.
+Ghosthub also opens [Rex windows](https://ghosthub.ai/docs/sessions/#rex-windows)
+and their split panes on your Mac and on SSH hosts. The Linux client opens
+[remote Rex windows](https://ghosthub.ai/docs/sessions/#linux-remote-rex-windows)
+over SSH, including over Tailscale.
 
 ## Work with your agents
 
-Start a session from Ghosthub, a shell, or an agent, then open it from the
-sidebar. The same tmux, Herdr, and Zellij sessions remain available through
-their own command-line tools. Closing Ghosthub leaves the work running.
+Start a session from Ghosthub, a shell, or a coding agent, then open it from
+the sidebar. Because sessions live in tmux, Herdr, or Zellij, you and your
+tools share the same running session from either the CLI or Ghosthub, and
+closing Ghosthub leaves everything running.
 
-Agents can use [kwt](https://kwt.sh) for project and worktree operations and
-its JSON output for inventory. See [sessions started by tools and agents](https://ghosthub.ai/docs/sessions/#sessions-started-by-tools-and-agents)
-for discovery and tmux server details.
+For Git projects, agents can manage worktrees with [kwt](https://kwt.sh) and
+read its JSON output. See
+[Sessions started by tools and agents](https://ghosthub.ai/docs/sessions/#sessions-started-by-tools-and-agents)
+for how discovery and tmux sockets work.
 
-Give your agent [the documentation index](https://ghosthub.ai/llms.txt).
-Every public guide has a Markdown copy with the same instructions as the
-web page, such as [sessions.md](https://ghosthub.ai/docs/sessions.md).
+Point your agent at [`llms.txt`](https://ghosthub.ai/llms.txt) to find the user
+guides. Every guide has a Markdown copy built from the same source as the web
+page, such as [sessions.md](https://ghosthub.ai/docs/sessions.md).
 
-## Where do I go next?
+## Guides
 
-| I want to… | Guide |
+| If you want to… | Read |
 | --- | --- |
-| Connect another machine or arrange hosts | [Remote hosts](https://ghosthub.ai/docs/remote-hosts/) |
+| Connect another machine or reorder hosts | [Remote hosts](https://ghosthub.ai/docs/remote-hosts/) |
 | Create worktrees or find a moved project | [Projects and worktrees](https://ghosthub.ai/docs/projects-worktrees/) |
 | Save a command for a new tmux session | [Launch profiles](https://ghosthub.ai/docs/launch-profiles/) |
 | Use windows, tabs, and the Command Palette | [Windows and navigation](https://ghosthub.ai/docs/windows-navigation/) |
-| Change fonts, colors, themes, or clipboard behavior | [Terminal configuration](https://ghosthub.ai/docs/terminal-configuration/) |
+| Change fonts, colors, themes, or clipboard settings | [Terminal configuration](https://ghosthub.ai/docs/terminal-configuration/) |
 | Find or change a shortcut | [Keyboard shortcuts](https://ghosthub.ai/docs/keyboard-shortcuts/) |
-| Understand or turn off anonymous usage reporting | [Privacy](https://ghosthub.ai/docs/privacy/) |
-| Diagnose a connection or session problem | [Troubleshooting](https://ghosthub.ai/docs/troubleshooting/) |
+| Review or turn off anonymous usage reporting | [Privacy](https://ghosthub.ai/docs/privacy/) |
+| Fix a connection or session problem | [Troubleshooting](https://ghosthub.ai/docs/troubleshooting/) |
 
-Ghosthub uses your OpenSSH configuration and presents host-key reviews and
-authentication prompts when needed. Remote macOS and Linux hosts can use tmux,
-Herdr, or Zellij. Connections from the Mac app to native Windows/psmux hosts
-are experimental; see the [requirements and limits](https://ghosthub.ai/docs/remote-hosts/#experimental-windows-hosts).
+Ghosthub reads your OpenSSH config and prompts for host-key checks or logins
+when needed. Remote macOS and Linux hosts work with tmux, Herdr, and Zellij.
+Connecting from macOS to native Windows hosts running psmux is experimental;
+see [experimental Windows hosts](https://ghosthub.ai/docs/remote-hosts/#experimental-windows-hosts)
+for requirements and limits.
 
 ## Development and contributions
 
-Ghosthub does not accept unsolicited pull requests. Bug reports and feature
-requests are welcome through
-[GitHub issues](https://github.com/kenn-io/ghosthub/issues). Prospective code
-contributors should [read the contribution policy](CONTRIBUTING.md) and
-contact Kenn Software privately before starting work. Contributions use the
-Apache License 2.0; no contributor license agreement is required.
+Ghosthub does not accept unsolicited pull requests. File bug reports and
+feature requests in [GitHub issues](https://github.com/kenn-io/ghosthub/issues).
+If you want to contribute code, read [CONTRIBUTING.md](CONTRIBUTING.md) and
+contact Kenn Software before starting work. Contributions use the Apache
+License 2.0, with no contributor license agreement.
 
-Internal build instructions, architecture, security boundaries, terminal
-behavior, and release operations are documented in [`docs/`](docs/README.md).
+Build instructions, architecture notes, security boundaries, and release steps
+live in [`docs/`](docs/README.md).
 
 ## License
 
 Copyright 2026 Kenn Software LLC.
 
 Ghosthub is free and open source software licensed under the
-[Apache License 2.0](LICENSE). Third-party components retain their own licenses;
+[Apache License 2.0](LICENSE). Third-party components keep their own licenses;
 see [the notices](LICENSES/THIRD-PARTY-NOTICES.md).

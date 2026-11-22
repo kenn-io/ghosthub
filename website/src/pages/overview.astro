@@ -16,14 +16,14 @@ import { RELEASES_URL } from '../config';
 
 const title = 'Ghosthub overview';
 const description =
-  'Open local and remote tmux, Herdr, and Zellij sessions, manage Git worktrees, '
-  + 'and arrange your work in native Mac windows and tabs.';
+  'See how Ghosthub handles local and remote tmux, Herdr, and Zellij sessions, '
+  + 'Git worktrees, and native Mac windows and tabs.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
 const imageAlt = {
   sessions:
-    'Ghosthub workspace showing Tmux, Herdr, and Zellij sessions for local and remote hosts',
+    'Ghosthub workspace showing tmux, Herdr, and Zellij sessions for local and remote hosts',
   sessionPreviews:
     'Ghosthub sidebar with Always Live previews expanded for discovered tmux sessions',
   hosts: 'Ghosthub Hosts settings with a configured remote GPU host',
@@ -33,7 +33,7 @@ const imageAlt = {
     'Ghosthub sidebar showing staged, modified, and untracked worktree files',
   commandPalette: 'Ghosthub Command Palette filtered to a reconnect worktree',
   commandCenter:
-    'Four real Ghosthub windows arranged in a tight two-by-two matrix, each attached to a different tmux session with its sidebar collapsed',
+    'Four Ghosthub windows arranged in a tight 2x2 grid, each attached to a different tmux session with its sidebar collapsed',
   nativeTabs:
     'Six numbered native Ghosthub workspace tabs, each attached to a different tmux session',
   terminal:
@@ -44,22 +44,23 @@ const imageAlt = {
 <SiteLayout title={title} description={description} path="/overview/">
   <section class="intro">
     <div class="container narrow">
-      <p class="eyebrow">Five-minute overview</p>
+      <p class="eyebrow">Five-minute tour</p>
       <h1>Meet Ghosthub</h1>
       <p class="lead">
-        Open your tmux, Herdr, and Zellij sessions in one native Mac app.
-        Pick up work started by you or your agents, locally or over SSH. Add Git
-        worktrees when you want a separate checkout for each task.
+        Open tmux, Herdr, and Zellij sessions across your Mac and SSH hosts in
+        one native app. Jump into work started by you or your agents, and add
+        Git worktrees when you want a separate checkout for a task.
       </p>
       <p>
-        Your multiplexer keeps its panes, history, key bindings, and running
-        programs. Ghosthub finds sessions and reconnects when SSH drops.
+        Each multiplexer keeps its own panes, history, key bindings, and running
+        programs. Ghosthub finds your sessions, puts them in one sidebar, and
+        reconnects when SSH drops.
       </p>
       <p class="docs-callout">
-        For setup and step-by-step help, visit the <a href="/docs/">Docs</a>.
-        This tour and its screenshots follow <code>main</code>; see{' '}
+        Looking for setup steps or limits? Go to the <a href="/docs/">Docs</a>.
+        This tour tracks <code>main</code>, so check{' '}
         <a href="/docs/getting-started/#release-and-nightly-builds">release and nightly builds</a>{' '}
-        for features newer than the stable download.
+        if a feature is newer than the stable download.
       </p>
       <p class="promise" aria-label="Automatic SSH reconnect plus exact session reattach">
         <span class="promise-icon" aria-hidden="true">↻</span>
@@ -70,7 +71,7 @@ const imageAlt = {
       <div class="requirements" aria-label="Requirements">
         <span>Apple Silicon</span>
         <span>macOS 15+</span>
-        <span>tmux 3.2+, Herdr 0.8+, and/or Zellij 0.44+</span>
+        <span>tmux 3.2+, Herdr 0.8+, or Zellij 0.44+</span>
       </div>
       <InstallCommand />
     </div>
@@ -78,12 +79,12 @@ const imageAlt = {
 
   <nav class="contents container" aria-label="On this page">
     <a href="#sessions"><b>01</b> Sessions</a>
-    <a href="#session-previews"><b>02</b> Session previews</a>
+    <a href="#session-previews"><b>02</b> Previews</a>
     <a href="#hosts"><b>03</b> Mac and SSH</a>
-    <a href="#worktrees"><b>04</b> Project context</a>
-    <a href="#command-palette"><b>05</b> Move quickly</a>
-    <a href="#command-center"><b>06</b> Command center</a>
-    <a href="#terminal"><b>07</b> Make it yours</a>
+    <a href="#worktrees"><b>04</b> Worktrees</a>
+    <a href="#command-palette"><b>05</b> Quick jump</a>
+    <a href="#command-center"><b>06</b> Windows &amp; tabs</a>
+    <a href="#terminal"><b>07</b> Terminal setup</a>
   </nav>
 
   <ol class="steps">
@@ -91,16 +92,16 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">01</p>
         <div>
-          <h2>Your sessions in one place</h2>
+          <h2>Every session in one sidebar</h2>
           <p>
-            Find tmux, Herdr, and Zellij sessions under each host in the sidebar.
-            Select one to open it, or create a new session with the group's
-            plus button. Projects and their worktrees appear alongside them.
-            Sessions started by a shell or agent appear here too.
+            Each host lists its tmux, Herdr, and Zellij sessions, followed by
+            any registered Git projects and worktrees. Click a session to open
+            it, or click the plus button next to a host to start a new one.
+            Sessions started from a shell or a coding agent show up here too.
           </p>
           <p>
-            Close a terminal and its session keeps running. Ending a session
-            requires a separate confirmation. <a href="/docs/sessions/">Explore session behavior</a>.
+            Closing a terminal only detaches. Your programs keep running until
+            you confirm a kill or stop action. <a href="/docs/sessions/">How sessions work</a>.
           </p>
         </div>
       </div>
@@ -121,15 +122,16 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">02</p>
         <div>
-          <h2>Keep an eye on running tmux sessions</h2>
+          <h2>Watch tmux sessions without switching</h2>
           <p>
-            Expand a sidebar preview to see a tmux session without switching
-            to it. Efficient keeps a still image; Live refreshes up to four
-            inactive previews. Always Live opens and previews discovered tmux
-            sessions on macOS and Linux hosts automatically. It requires tmux
-            3.4+ and uses more system resources and SSH connections.
+            Expand a preview in the sidebar to check on a tmux session while
+            staying in your current window. Efficient mode shows a still
+            snapshot. Live mode refreshes up to four inactive previews. Always
+            Live automatically connects to discovered tmux sessions on macOS and
+            Linux hosts so every preview stays current; it needs tmux 3.4+ and
+            uses more CPU, memory, and SSH connections.
           </p>
-          <p><a href="/docs/sessions/#preview-opened-tmux-sessions">Explore session previews</a>.</p>
+          <p><a href="/docs/sessions/#preview-opened-tmux-sessions">Read about preview modes</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -148,22 +150,22 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">03</p>
         <div>
-          <h2>One view across Mac and SSH hosts</h2>
+          <h2>Your Mac and SSH hosts side by side</h2>
           <p>
-            Add a machine using its SSH address or an alias from your OpenSSH
-            configuration. You can also discover running exe.dev VMs. Ghosthub
-            shows login prompts and reconnects after ordinary network interruptions.
+            Add a machine with an SSH address or an alias from your OpenSSH
+            config, or let Ghosthub discover running exe.dev VMs. Ghosthub
+            handles host-key checks and login prompts, and reconnects after
+            ordinary network drops.
           </p>
           <p>
-            Drag host headers in the sidebar or move
-            Local Mac and SSH hosts in Settings. Both views share the saved order.
-            See <a href="/docs/remote-hosts/#reorder-hosts">Reorder hosts</a>.
+            Drag hosts in the sidebar or reorder them in Settings; both share
+            the same saved order. See <a href="/docs/remote-hosts/#reorder-hosts">Reorder hosts</a>.
           </p>
           <p>
-            Choose <a href="/docs/remote-hosts/#ssh-agent-forwarding">SSH agent forwarding</a>
-            per host in Settings, or follow your OpenSSH configuration.
+            Turn <a href="/docs/remote-hosts/#ssh-agent-forwarding">SSH agent forwarding</a>
+            on or off per host in Settings, or defer to your OpenSSH config.
           </p>
-          <p><a href="/docs/remote-hosts/">Set up a remote host</a>.</p>
+          <p><a href="/docs/remote-hosts/">Set up remote hosts</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -182,24 +184,25 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">04</p>
         <div>
-          <h2>Project context when you want it</h2>
+          <h2>Git worktrees when you want them</h2>
           <p>
-            Register a repository to create tmux-backed worktrees from branches
-            or GitHub pull requests. Worktree rows summarize live tmux window
-            counts, while native tabs use readable project and worktree names.
-            You do not need Git to use tmux, Herdr, or Zellij sessions.
+            Register a repository to spin up tmux-backed worktrees from branches
+            or GitHub pull requests. Each worktree row shows how many tmux
+            windows are open, and native tabs display the project and worktree
+            name. Git is optional if you only want standalone sessions.
           </p>
           <p>
-            Pull-request imports need Git 2.42 or newer and the GitHub CLI on
-            the Mac or Linux host that owns the project.
+            Importing a pull request requires Git 2.42+ and the GitHub CLI on
+            the Mac or Linux host that holds the repository.
           </p>
           <p>
             Expand a worktree to see staged, modified, and untracked files
-            without opening its terminal. To open the whole project together,
-            choose <strong>Open All Worktrees as Tabs</strong> from its context menu.
-            Use <strong>Flag Worktree</strong> to mark work you want to return to.
+            without opening a terminal. Right-click a project and choose
+            <strong>Open All Worktrees as Tabs</strong> to open the whole repo
+            at once, or use <strong>Flag Worktree</strong> to mark work to come
+            back to.
           </p>
-          <p><a href="/docs/projects-worktrees/">Explore projects and worktrees</a>.</p>
+          <p><a href="/docs/projects-worktrees/">Projects and worktrees guide</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -228,13 +231,13 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">05</p>
         <div>
-          <h2>Find your next session quickly</h2>
+          <h2>Jump anywhere from the keyboard</h2>
           <p>
-            Search sessions, hosts, projects, worktrees, settings, and common
-            actions from the Command Palette instead of navigating the sidebar
-            by hand.
+            Press <code>Command-Shift-P</code> to open the Command Palette and
+            search sessions, hosts, projects, worktrees, settings, and actions
+            without clicking through the sidebar.
           </p>
-          <p><a href="/docs/keyboard-shortcuts/">Explore keyboard shortcuts</a>.</p>
+          <p><a href="/docs/keyboard-shortcuts/">See all keyboard shortcuts</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -253,19 +256,20 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">06</p>
         <div>
-          <h2>Build your command center</h2>
+          <h2>Arrange windows and native tabs</h2>
           <p>
-            Use independent macOS windows and tabs for different tmux, Herdr, or Zellij
-            sessions, then hide each sidebar when the terminal should fill the
-            frame. Jump directly between native tabs with Command-1 through
-            Command-8, or use Command-9 for the last tab.
+            Open different tmux, Herdr, or Zellij sessions in separate macOS
+            windows or native tabs, and hide the sidebar when you want the
+            terminal to fill the frame. Switch tabs directly with Command-1
+            through Command-8, or Command-9 for the last tab.
           </p>
           <p>
-            Give each window a useful name with <strong>Window → Rename
-            Window…</strong>. Names return after relaunch. Command-W closes the
-            active terminal view without ending its session; Shift-Command-W closes the whole window.
+            Name a window with <strong>Window → Rename Window…</strong> and
+            Ghosthub remembers the name across relaunches. Command-W closes the
+            current terminal view without stopping its session; Shift-Command-W
+            closes the whole window.
           </p>
-          <p><a href="/docs/windows-navigation/">Explore windows and navigation</a>.</p>
+          <p><a href="/docs/windows-navigation/">Windows and navigation guide</a>.</p>
         </div>
       </div>
       <figure class="container command-matrix">
@@ -294,14 +298,14 @@ const imageAlt = {
       <div class="container step-copy">
         <p class="number">07</p>
         <div>
-          <h2>Make the terminal yours</h2>
+          <h2>Configure fonts, colors, and themes</h2>
           <p>
             Set fonts, colors, background opacity, and blur in Ghosthub's own
-            <code>ghostty.conf</code>. Rendering uses libghostty 1.4.0;
-            Ghostty.app settings stay separate.
-            You can also choose a theme for new tmux sessions in Settings.
+            <code>ghostty.conf</code>. Ghosthub renders terminals with
+            libghostty 1.4.0 and keeps its config separate from Ghostty.app. You
+            can also pick a default theme for new tmux sessions in Settings.
           </p>
-          <p><a href="/docs/terminal-configuration/">Explore terminal configuration</a>.</p>
+          <p><a href="/docs/terminal-configuration/">Terminal configuration guide</a>.</p>
         </div>
       </div>
       <figure class="container window">
@@ -319,10 +323,10 @@ const imageAlt = {
 
   <section class="finish">
     <div class="container narrow">
-      <p class="eyebrow">That’s it</p>
-      <h2>Bring the tools you already use</h2>
+      <p class="eyebrow">No lock-in</p>
+      <h2>Keep using the tools you already know</h2>
       <p>
-        Your tmux, Herdr, and Zellij sessions stay available from their own
+        Your tmux, Herdr, and Zellij sessions still work from their own CLI
         clients, even when Ghosthub is closed.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
