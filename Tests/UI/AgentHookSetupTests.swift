@@ -82,6 +82,43 @@ struct AgentHookSetupTests {
         #expect(setup.errorMessage == nil)
     }
 
+    @Test("a status read before an install finished does not replace its result")
+    func loadFromBeforeInstallIsNotShown() async {
+        let setup = AgentHookSetup(typingDelay: .zero)
+        await setup.load(Self.hostA) { _ in .success(Self.notInstalled) }
+        let (installDone, finishInstall) = AsyncStream<Void>.makeStream()
+        let (loadDone, finishLoad) = AsyncStream<Void>.makeStream()
+        let installing = Task {
+            await setup.install(Self.hostA) { _ in
+                for await _ in installDone {
+                    break
+                }
+                return .success(Self.installed)
+            }
+        }
+        await settle { setup.isInstalling }
+        // Test Connection reloads the status while the install runs, and
+        // that load reads the host before the install finishes.
+        let startedLoad = Mutex(false)
+        let reloading = Task {
+            await setup.load(Self.hostA) { _ in
+                startedLoad.withLock { $0 = true }
+                for await _ in loadDone {
+                    break
+                }
+                return .success(Self.notInstalled)
+            }
+        }
+        await settle { startedLoad.withLock { $0 } }
+
+        finishInstall.yield()
+        await installing.value
+        finishLoad.yield()
+        await reloading.value
+
+        #expect(setup.statuses == Self.installed)
+    }
+
     @Test("an install on the shown host shows its result")
     func installOnShownHostIsShown() async {
         let setup = AgentHookSetup(typingDelay: .zero)

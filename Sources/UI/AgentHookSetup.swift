@@ -32,6 +32,9 @@ final class AgentHookSetup {
     private(set) var errorMessage: String?
     private var shown: AgentHookConnection?
     private var installing: AgentHookConnection?
+    /// Counts installs whose result was shown. A load that was running
+    /// when one finished may have read the host before the install.
+    private var shownInstalls = 0
     @ObservationIgnored private let typingDelay: Duration
 
     init(typingDelay: Duration = .milliseconds(400)) {
@@ -47,6 +50,7 @@ final class AgentHookSetup {
     /// cancelled when the host or its connection changes.
     func load(_ host: SSHHost?, using load: Operation) async {
         let connection = AgentHookConnection(host)
+        let installsBefore = shownInstalls
         shown = connection
         statuses = nil
         errorMessage = nil
@@ -57,7 +61,10 @@ final class AgentHookSetup {
             guard !Task.isCancelled else { return }
         }
         let result = await load(host)
-        guard !Task.isCancelled, shown == connection else { return }
+        guard !Task.isCancelled,
+              shown == connection,
+              shownInstalls == installsBefore
+        else { return }
         apply(result)
     }
 
@@ -73,6 +80,7 @@ final class AgentHookSetup {
         }
         guard shown == connection else { return }
         apply(result)
+        shownInstalls += 1
     }
 
     private func apply(_ result: Result<[AgentHookSetupStatus], HostProbeError>) {
