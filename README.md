@@ -7,9 +7,9 @@
 <h1 align="center">Ghosthub</h1>
 
 <p align="center">
-  <strong>One native Mac terminal for tmux, Herdr, and Zellij.</strong>
+  <strong>Manage local and remote tmux, Herdr, and Zellij without touching a local shell.</strong>
   <br>
-  Connect to sessions on your Mac and over SSH. Add Git worktrees when you want them.
+  Browse hosts, attach to sessions, reconnect over SSH, and spin up Git worktrees from one native Mac app.
 </p>
 
 <p align="center">
@@ -42,32 +42,36 @@
   >
 </p>
 
-Ghosthub is a native Mac app for tmux, Herdr, and Zellij sessions on your Mac
-and on machines you reach over SSH. Terminal multiplexers keep your shells and
-programs running when you close a window or lose your connection. Ghosthub puts
-those sessions in one sidebar, lets you switch between them, and reconnects
-when SSH drops.
+Ghosthub is a native Mac management layer for tmux, Herdr, and Zellij across
+your Mac and SSH hosts. Instead of opening a local shell to SSH into each
+machine, list sessions, and reattach whenever a connection drops, Ghosthub
+discovers your sessions, puts them in one sidebar, and drops you straight into
+the one you pick.
 
-Your sessions stay ordinary tmux, Herdr, and Zellij sessions with their own
-panes, scrollback, key bindings, and running programs. If you want a separate
-Git checkout for each task, you can register a repository and use
-[kwt](https://kwt.sh) to create worktrees from branches or GitHub pull
-requests. You do not need Git or worktrees to use Ghosthub.
+Each session stays an ordinary tmux, Herdr, or Zellij session with its own
+panes, scrollback, key bindings, and running programs. Inside Ghosthub,
+attached sessions render with libghostty 1.4.0. If you want a separate Git
+checkout for each task, you can register a repository and use
+[kwt](https://kwt.sh) to create branch or pull-request worktrees with their own
+tmux sessions. Git and worktrees are optional.
 
 Ghosthub is alpha software. File bug reports and feature requests in
 [GitHub issues](https://github.com/kenn-io/ghosthub/issues).
 
 ## What it does
 
-- Open local and remote sessions side by side in native Mac windows and tabs.
-- Reconnect to remote sessions automatically after ordinary SSH drops.
-- Preview tmux sessions in the sidebar and see which ones have new output.
-- Create Git worktrees, check changed files from the sidebar, and flag work to
-  come back to.
+- Manage tmux, Herdr, and Zellij sessions across your Mac and SSH hosts without
+  opening a local shell.
+- Open local and remote sessions side by side in native Mac windows and tabs,
+  and reconnect automatically after ordinary SSH drops.
+- Preview tmux sessions in the sidebar and see which ones have new output
+  without switching windows.
+- Create Git worktrees from branches or pull requests, check changed files from
+  the sidebar, and flag work to come back to.
 - Rename standalone tmux sessions without stopping the programs inside them.
-- Jump to any session, project, or action with **Command-Shift-P**.
-- Render terminals with libghostty 1.4.0 and configure fonts and colors in
-  Ghosthub's own `ghostty.conf`, separate from Ghostty.app.
+- Jump straight to any session, host, project, or action with **Command-Shift-P**.
+- Render attached sessions with libghostty 1.4.0, configured in Ghosthub's own
+  `ghostty.conf` separate from Ghostty.app.
 
 Take the [visual overview](https://ghosthub.ai/overview/) for a quick tour, or
 read the [public guides](https://ghosthub.ai/docs/) for setup, controls, and
