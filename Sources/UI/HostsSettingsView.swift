@@ -212,6 +212,7 @@ public struct HostsSettingsView: View {
     @State private var sshAuthenticationSucceeded = false
     @State private var isTrustingSSHHost = false
     @State private var hostTrustErrorMessage: String?
+    @State private var hostConnectionChecks = 0
     @Binding var sshHosts: [SSHHostDraft]
     @Binding var selectedSSHHostDraftID: UUID?
     @Binding var hostProbeResult: HostProbeSummary?
@@ -748,9 +749,17 @@ public struct HostsSettingsView: View {
 
                             AgentHooksSettingsSection(
                                 host: draft.sshHost,
+                                refreshID: hostConnectionChecks,
                                 load: loadAgentHooks,
                                 install: installAgentHooks
                             )
+                            // A connection check may have approved the host
+                            // key or sign-in that an earlier load needed.
+                            .onChange(of: hostProbeResult) { _, result in
+                                if result != nil {
+                                    hostConnectionChecks += 1
+                                }
+                            }
                         }
                     } else {
                         settingsSection("Local Mac") {
