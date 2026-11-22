@@ -1,15 +1,15 @@
 # Contributing
 
-Ghosthub is licensed under the [Apache License 2.0](LICENSE).
-Contributions use the same license; no contributor license agreement is required.
+Ghosthub is licensed under the [Apache License 2.0](LICENSE). Code contributions
+use the same license, and there is no contributor license agreement.
 
-The project does not accept unsolicited pull requests.
+We do not accept unsolicited pull requests.
 
-Bug reports and feature requests are welcome through
-[GitHub issues](https://github.com/kenn-io/ghosthub/issues). If you are
-interested in contributing code, contact Kenn Software privately before
-starting work.
+Please file bug reports and feature requests in
+[GitHub issues](https://github.com/kenn-io/ghosthub/issues). If you want to
+contribute code, contact Kenn Software before starting work so we can coordinate
+first.
 
-The material in [`docs/`](docs/README.md) describes Ghosthub's internal
-engineering workflows. It is published with the source for transparency, not
-as an invitation to begin contribution work without prior coordination.
+The engineering guides in [`docs/`](docs/README.md) document how we build, test,
+and release Ghosthub internally. We keep them in the repository so the project
+stays open and inspectable; please still check in with us before starting work.

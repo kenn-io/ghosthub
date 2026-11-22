@@ -138,7 +138,7 @@ function setupInstallCommands(): void {
         : 'failed';
       status.textContent = result === 'copied'
         ? 'Copied'
-        : 'Copy failed — select the command to copy';
+        : 'Copy failed. Select the command to copy it.';
       window.clearTimeout(resetTimer);
       if (result === 'copied') {
         resetTimer = window.setTimeout(() => {
