@@ -7,6 +7,7 @@ mod windows_key;
 mod agent_hooks_settings;
 mod command_palette;
 mod keyboard_settings;
+mod rex_window;
 mod session_rename;
 mod sidebar;
 mod terminal_links;
@@ -382,12 +383,15 @@ pub struct RootView {
     kill_focus: FocusHandle,
     diagnostic: Option<String>,
     terminal_notice: TransientNotice,
-    paste_confirmation: bool,
     observed_presentation_id: Option<u64>,
     observed_revision: u64,
     observed_surface_generation: u64,
     observed_surface_identity: Option<usize>,
     paint_cache: SurfacePaintCache,
+    rex_paint: HashMap<u64, SurfacePaintCache>,
+    rex_dimensions: (f32, f32),
+    rex_close: Option<(u64, String, bool)>,
+    rex_drag: Option<(workspace::RexDivider, f64)>,
     terminal_metrics: TerminalMetrics,
     measured_font: (String, u16),
     pending_input: VecDeque<QueuedUiInput>,
@@ -1884,12 +1888,15 @@ impl RootView {
             kill_focus: cx.focus_handle(),
             diagnostic: None,
             terminal_notice: TransientNotice::default(),
-            paste_confirmation: false,
             observed_presentation_id: None,
             observed_revision: u64::MAX,
             observed_surface_generation: u64::MAX,
             observed_surface_identity: None,
             paint_cache: SurfacePaintCache::default(),
+            rex_paint: HashMap::new(),
+            rex_dimensions: (800.0, 600.0),
+            rex_close: None,
+            rex_drag: None,
             terminal_metrics,
             measured_font: (appearance.font_family().to_owned(), appearance.font_size()),
             pending_input: VecDeque::new(),
@@ -1991,6 +1998,7 @@ impl RootView {
             .or_else(|| active_session_selection(snapshot.content()))
             .as_ref()
             == Some(selection)
+            && selection.kind() != workspace::SessionKind::Rex
         {
             if matches!(snapshot.content(), WorkspaceContent::Terminal { .. }) {
                 window.focus(&self.focus);
@@ -2432,9 +2440,7 @@ impl RootView {
 
     fn cancel_ssh_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(prompt) = self.ssh_prompts.pop_front() {
-            let host_id = prompt.request.host_id().to_owned();
-            prompt.request.respond(None);
-            let _cancelled = self.workspace.cancel_host_connection(&host_id);
+            self.workspace.cancel_ssh_prompt(&prompt.request);
         }
         self.focus_after_ssh_prompt(window);
         cx.notify();
@@ -3498,7 +3504,6 @@ impl RootView {
 
     fn clear_terminal_input(&mut self) {
         clear_terminal_input_state(
-            &mut self.paste_confirmation,
             &mut self.pending_input,
             &mut self.pending_input_bytes,
             &mut self.input_refusal,
@@ -3562,7 +3567,6 @@ impl RootView {
                         );
                     }
                 }
-                WorkspaceEvent::ConfirmPaste => self.paste_confirmation = true,
                 WorkspaceEvent::SshPrompt(request) => {
                     if !self
                         .workspace
@@ -3837,8 +3841,8 @@ impl RootView {
                         apply_new_worktree_failure(dialog, operation_id, &project_path, message);
                     }
                 }
-                // Recovery status follows the snapshot and disappears when its target clears.
-                WorkspaceEvent::RemoteSessionInterrupted(_) => {}
+                // Paste and recovery notices read their current workspace state.
+                WorkspaceEvent::ConfirmPaste | WorkspaceEvent::RemoteSessionInterrupted(_) => {}
                 WorkspaceEvent::SessionRenamed {
                     operation_id,
                     result,
@@ -3867,7 +3871,7 @@ impl RootView {
         &mut self,
         presentation_id: u64,
         event: &KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !self.presentation_accepts_input(presentation_id) {
@@ -3915,6 +3919,24 @@ impl RootView {
             if event.is_held && !is_zoom {
                 cx.stop_propagation();
             }
+            return;
+        }
+        if self.workspace.snapshot().rex_window().is_some()
+            && self.application_shortcut(keystroke).is_none()
+            && let Some(action) = rex_window::shortcut(keystroke)
+        {
+            if !event.is_held {
+                self.run_rex_action(presentation_id, action, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if self.workspace.snapshot().rex_window().is_some_and(|w| {
+            w.panes
+                .iter()
+                .any(|p| p.focused && (p.connecting || p.error.is_some()))
+        }) {
+            cx.stop_propagation();
             return;
         }
         if is_copy_shortcut(keystroke) {
@@ -3974,6 +3996,12 @@ impl RootView {
             cx.stop_propagation();
             return;
         }
+        if self.workspace.snapshot().rex_window().is_some()
+            && rex_window::shortcut(&event.keystroke).is_some()
+        {
+            cx.stop_propagation();
+            return;
+        }
         if is_paste_shortcut(&event.keystroke)
             || is_copy_shortcut(&event.keystroke)
             || self.application_shortcut(&event.keystroke).is_some()
@@ -4003,6 +4031,15 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.workspace.snapshot().rex_window().is_some()
+            && self.rex_close.is_none()
+            && let Err(e) = self.workspace.focus_rex_pane(presentation_id)
+        {
+            if !e.is_stale_input() {
+                self.diagnostic = Some(e.to_string());
+            }
+            return;
+        }
         if !self.presentation_accepts_input(presentation_id) {
             return;
         }
@@ -4044,6 +4081,11 @@ impl RootView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rex_drag.is_some() {
+            self.update_rex_drag(event.position, cx);
+            self.finish_rex_drag(cx);
+            return;
+        }
         if !self.presentation_accepts_input(presentation_id) {
             return;
         }
@@ -4087,6 +4129,10 @@ impl RootView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rex_drag.is_some() {
+            self.update_rex_drag(event.position, cx);
+            return;
+        }
         if !self.presentation_accepts_input(presentation_id) {
             return;
         }
@@ -4170,11 +4216,15 @@ impl RootView {
             return None;
         };
         let size = surface.load().size();
+        let offset = snapshot
+            .rex_window()
+            .and_then(|w| w.panes.iter().find(|p| p.focused))
+            .map(|p| p.rect);
         terminal_cell_at_with_offset(
             x,
             y,
-            self.navigation_width(&snapshot),
-            APP_TITLEBAR_HEIGHT,
+            self.navigation_width(&snapshot) + offset.map_or(0.0, |r| r.x),
+            APP_TITLEBAR_HEIGHT + offset.map_or(0.0, |r| r.y + 26.0),
             self.terminal_metrics.cell_width,
             self.terminal_metrics.line_height,
             size,
@@ -4321,12 +4371,33 @@ impl RootView {
         true
     }
 
+    fn deliver_terminal_input(
+        &self,
+        queued: &QueuedUiInput,
+    ) -> Result<(), workspace::WorkspaceError> {
+        let presentation = queued.presentation_id;
+        match &queued.input {
+            PendingUiInput::Key(input) => self.workspace.send_key_to(presentation, input.clone()),
+            PendingUiInput::Mouse(input) => self.workspace.send_mouse_to(presentation, *input),
+            PendingUiInput::CopySelection => {
+                self.workspace.copy_terminal_selection_from(presentation)
+            }
+            PendingUiInput::Wheel(batch) => self.workspace.send_mouse_to(presentation, batch.input),
+            PendingUiInput::ClipboardResponse(generation, bytes) => self
+                .workspace
+                .send_clipboard_response(*generation, bytes.clone()),
+            PendingUiInput::Resize(resize) => self.workspace.resize_with_pixels(
+                resize.columns,
+                resize.rows,
+                resize.pixel_width,
+                resize.pixel_height,
+            ),
+        }
+    }
+
     fn flush_pending_input(&mut self) -> bool {
         let mut changed = self.sync_terminal_scope();
         let mut delivered_wheel_steps = 0;
-        if self.paste_confirmation {
-            return changed;
-        }
         loop {
             let Some(input) = self.pending_input.front() else {
                 if clears_when_input_queue_is_empty(self.diagnostic.as_deref()) {
@@ -4347,22 +4418,14 @@ impl RootView {
                 changed = true;
                 continue;
             }
-            let result = match &input.input {
-                PendingUiInput::Key(input) => self.workspace.send_key(input.clone()),
-                PendingUiInput::Mouse(input) => self.workspace.send_mouse(*input),
-                PendingUiInput::CopySelection => self.workspace.copy_terminal_selection(),
-                PendingUiInput::Wheel(batch) => self.workspace.send_mouse(batch.input),
-                PendingUiInput::ClipboardResponse(generation, bytes) => self
-                    .workspace
-                    .send_clipboard_response(*generation, bytes.clone()),
-                PendingUiInput::Resize(resize) => self.workspace.resize_with_pixels(
-                    resize.columns,
-                    resize.rows,
-                    resize.pixel_width,
-                    resize.pixel_height,
-                ),
-            };
-            match result {
+            if self
+                .workspace
+                .pending_paste_id(input.presentation_id)
+                .is_some()
+            {
+                return changed;
+            }
+            match self.deliver_terminal_input(input) {
                 Ok(()) => {
                     if let Some(QueuedUiInput {
                         input: PendingUiInput::Wheel(batch),
@@ -4396,9 +4459,7 @@ impl RootView {
                     changed = true;
                 }
                 Err(error) if error.is_stale_input() => {
-                    // An expected race outcome: the response outlived its
-                    // terminal. Drop just this entry — the keystrokes
-                    // queued behind it belong to the live presentation.
+                    // Input for an old presentation must never go to its replacement.
                     let dropped = self.pending_input.pop_front().expect("front input exists");
                     self.pending_input_bytes =
                         self.pending_input_bytes.saturating_sub(dropped.bytes);
@@ -4468,6 +4529,10 @@ impl RootView {
             self.terminal_metrics.cell_width,
             self.terminal_metrics.line_height,
         );
+        self.rex_dimensions = (width.max(1.0), height.max(1.0));
+        if snapshot.rex_window().is_some() {
+            return;
+        }
         let content_width = width.max(1.0);
         let content_height = height.max(1.0);
         let pixel_width = content_width.min(f32::from(u16::MAX)) as u16;
@@ -4490,24 +4555,20 @@ impl RootView {
         }
     }
 
-    fn approve_paste(&mut self, presentation_id: u64, cx: &mut Context<Self>) {
-        if !self.presentation_accepts_input(presentation_id) {
-            return;
-        }
-        if let Err(error) = self.workspace.approve_paste() {
+    fn resolve_paste(
+        &mut self,
+        presentation: u64,
+        paste_id: u64,
+        approve: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self
+            .workspace
+            .resolve_terminal_paste(presentation, paste_id, approve)
+            && !error.is_stale_input()
+        {
             self.diagnostic = Some(error.to_string());
         }
-        self.paste_confirmation = false;
-        let _changed = self.flush_pending_input();
-        cx.notify();
-    }
-
-    fn cancel_paste(&mut self, presentation_id: u64, cx: &mut Context<Self>) {
-        if !self.presentation_accepts_input(presentation_id) {
-            return;
-        }
-        self.workspace.cancel_paste();
-        self.paste_confirmation = false;
         let _changed = self.flush_pending_input();
         cx.notify();
     }
@@ -4535,7 +4596,8 @@ impl RootView {
         let rows = self.paint_cache.update(&frame, cursor_override).to_vec();
         self.observed_surface_identity = Some(identity);
         self.observed_surface_generation = frame.generation();
-        let terminal = self.terminal_surface_element(presentation_id, appearance, &frame, rows, cx);
+        let terminal =
+            self.terminal_surface_element(presentation_id, appearance, &frame, rows, true, cx);
 
         div()
             .size_full()
@@ -4552,6 +4614,7 @@ impl RootView {
         appearance: &workspace::Appearance,
         frame: &SurfaceFrame,
         rows: Vec<Arc<Vec<PaintRun>>>,
+        track_focus: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let hover = self
@@ -4562,8 +4625,8 @@ impl RootView {
             .and_then(|hover| frame.hyperlink_at(hover.cell.0, hover.cell.1))
             .map(str::to_owned);
         let mut element = div()
-            .id("terminal-surface")
-            .track_focus(&self.focus)
+            .id(("terminal-surface", presentation_id))
+            .when(track_focus, |el| el.track_focus(&self.focus))
             .flex()
             .flex_col()
             .flex_1()
@@ -4699,25 +4762,41 @@ impl RootView {
         let selected = snapshot
             .selected_host()
             .and_then(|id| hosts.iter().find(|host| host.id() == id));
-        let main = match snapshot.content() {
-            WorkspaceContent::Terminal {
-                endpoint: _,
-                session: _,
-                presentation_id,
-                surface,
-                ..
-            } => self
-                .terminal_element(*presentation_id, surface, snapshot, cx)
-                .into_any_element(),
-            WorkspaceContent::Attaching {
-                endpoint, session, ..
-            } => centered(format!("Attaching to {endpoint} · {session}…")),
-            WorkspaceContent::Loading => centered("Starting WSL and discovering sessions…"),
-            WorkspaceContent::Error { message } => centered(message.clone()),
-            WorkspaceContent::Shell | WorkspaceContent::Ready { .. } => selected.map_or_else(
-                || centered("No terminal hosts are available."),
-                |host| Self::host_landing_element(host, cx),
-            ),
+        let main = if let Some(rex) = snapshot.rex_window() {
+            if self.rex_drag.is_none()
+                && let Err(e) = self.workspace.resize_rex_window(
+                    self.rex_dimensions.0,
+                    self.rex_dimensions.1,
+                    self.terminal_metrics.cell_width,
+                    self.terminal_metrics.line_height,
+                )
+            {
+                self.diagnostic = Some(e.to_string());
+            }
+            self.rex_paint
+                .retain(|id, _| rex.panes.iter().any(|p| p.presentation_id == *id));
+            self.rex_window_element(snapshot, rex, cx)
+        } else {
+            match snapshot.content() {
+                WorkspaceContent::Terminal {
+                    endpoint: _,
+                    session: _,
+                    presentation_id,
+                    surface,
+                    ..
+                } => self
+                    .terminal_element(*presentation_id, surface, snapshot, cx)
+                    .into_any_element(),
+                WorkspaceContent::Attaching {
+                    endpoint, session, ..
+                } => centered(format!("Attaching to {endpoint} · {session}…")),
+                WorkspaceContent::Loading => centered("Starting WSL and discovering sessions…"),
+                WorkspaceContent::Error { message } => centered(message.clone()),
+                WorkspaceContent::Shell | WorkspaceContent::Ready { .. } => selected.map_or_else(
+                    || centered("No terminal hosts are available."),
+                    |host| Self::host_landing_element(host, cx),
+                ),
+            }
         };
         let mut shell = div().size_full().flex().min_w_0();
         if self.sidebar_visible {
@@ -7603,6 +7682,7 @@ impl RootView {
             ("retry-tmux", host.tmux_diagnostic()),
             ("retry-herdr", host.herdr_diagnostic()),
             ("retry-zellij", host.zellij_diagnostic()),
+            ("retry-rex", host.rex_diagnostic()),
         ] {
             if let Some(diagnostic) = diagnostic {
                 tree = tree.child(Self::capability_diagnostic_row(
@@ -8610,6 +8690,7 @@ fn active_session_selection(content: &WorkspaceContent) -> Option<SessionSelecti
             workspace::SessionKind::Tmux => SessionSelection::new(host_id, endpoint, session),
             workspace::SessionKind::Herdr => SessionSelection::herdr(host_id, endpoint, session),
             workspace::SessionKind::Zellij => SessionSelection::zellij(host_id, endpoint, session),
+            workspace::SessionKind::Rex => return None,
         }),
         WorkspaceContent::Shell
         | WorkspaceContent::Loading
@@ -8932,12 +9013,10 @@ fn coalesce_last_wheel(
 }
 
 fn clear_terminal_input_state(
-    paste_confirmation: &mut bool,
     pending_input: &mut VecDeque<QueuedUiInput>,
     pending_input_bytes: &mut usize,
     input_refusal: &mut InputRefusal,
 ) {
-    *paste_confirmation = false;
     pending_input.clear();
     *pending_input_bytes = 0;
     *input_refusal = InputRefusal::default();
@@ -8962,6 +9041,13 @@ impl Render for RootView {
         let _scope_changed = self.sync_terminal_scope();
         let _handled = self.handle_events(cx);
         let snapshot = self.workspace.snapshot();
+        if snapshot.rex_window().is_none() {
+            self.rex_paint.clear();
+            self.rex_drag = None;
+            if self.rex_close.take().is_some() {
+                window.focus(&self.focus);
+            }
+        }
         self.sync_terminal_font(window, snapshot.appearance());
         if self.restore_focus {
             window.focus(if self.palette.is_some() {
@@ -9052,8 +9138,8 @@ impl Render for RootView {
                     .child(diagnostic.clone()),
             );
         }
-        if self.paste_confirmation
-            && let Some(presentation_id) = terminal_presentation_id(snapshot.content())
+        if let Some(presentation_id) = terminal_presentation_id(snapshot.content())
+            && let Some(paste_id) = self.workspace.pending_paste_id(presentation_id)
         {
             root = root.child(
                 div()
@@ -9080,7 +9166,7 @@ impl Render for RootView {
                                     .cursor_pointer()
                                     .child("Cancel")
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.cancel_paste(presentation_id, cx);
+                                        this.resolve_paste(presentation_id, paste_id, false, cx);
                                     })),
                             )
                             .child(
@@ -9093,7 +9179,7 @@ impl Render for RootView {
                                     .bg(rgb(0x8a_62_2a))
                                     .child("Paste")
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.approve_paste(presentation_id, cx);
+                                        this.resolve_paste(presentation_id, paste_id, true, cx);
                                     })),
                             ),
                     ),
@@ -12561,7 +12647,6 @@ mod tests {
     #[test]
     fn presentation_transition_clears_all_terminal_input_state() {
         let mut observed = Some(7);
-        let mut paste_confirmation = true;
         let mut pending_input = VecDeque::from([QueuedUiInput {
             presentation_id: 7,
             input: PendingUiInput::Key(KeyInput::Named {
@@ -12577,20 +12662,13 @@ mod tests {
         refusal.refuse();
 
         assert!(transitioned_presentation(&mut observed, None));
-        clear_terminal_input_state(
-            &mut paste_confirmation,
-            &mut pending_input,
-            &mut pending_input_bytes,
-            &mut refusal,
-        );
+        clear_terminal_input_state(&mut pending_input, &mut pending_input_bytes, &mut refusal);
 
         assert_eq!(observed, None);
-        assert!(!paste_confirmation);
         assert!(pending_input.is_empty());
         assert_eq!(pending_input_bytes, 0);
         assert!(!refusal.is_pending());
 
-        paste_confirmation = true;
         pending_input.push_back(QueuedUiInput {
             presentation_id: 7,
             input: PendingUiInput::Key(KeyInput::Named {
@@ -12604,15 +12682,9 @@ mod tests {
         pending_input_bytes = 64;
         refusal.refuse();
         assert!(transitioned_presentation(&mut observed, Some(8)));
-        clear_terminal_input_state(
-            &mut paste_confirmation,
-            &mut pending_input,
-            &mut pending_input_bytes,
-            &mut refusal,
-        );
+        clear_terminal_input_state(&mut pending_input, &mut pending_input_bytes, &mut refusal);
 
         assert_eq!(observed, Some(8));
-        assert!(!paste_confirmation);
         assert!(pending_input.is_empty());
         assert_eq!(pending_input_bytes, 0);
         assert!(!refusal.is_pending());

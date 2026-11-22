@@ -664,6 +664,21 @@ rust-test-ssh-controller-live:
 	@cd "$(RUST_DIR)" && $(CARGO) test-ssh-controller-live
 
 .PHONY: rust-test-ssh-live
+REX_BINARY_PATH ?=
+XDTOOL_BINARY_PATH ?= $(shell command -v xdotool 2>/dev/null)
+.PHONY: rust-test-rex-live
+rust-test-rex-live: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
+rust-test-rex-live: export GHOSTHUB_KWT_VARIANTS_DIR ?= $(shell realpath -m -- "$(KWT_VARIANTS_DIR)")
+rust-test-rex-live: export GHOSTHUB_REX_TEST = $(shell realpath -m -- "$(REX_BINARY_PATH)")
+rust-test-rex-live: export GHOSTHUB_REX_APP_TEST ?= $(abspath $(RUST_DIR)/target/debug/ghosthub)
+rust-test-rex-live: export GHOSTHUB_XDTOOL_TEST = $(shell realpath -m -- "$(XDTOOL_BINARY_PATH)")
+rust-test-rex-live: rust-build
+	@test -n "$(REX_BINARY_PATH)" -a -x "$(REX_BINARY_PATH)" || \
+		{ echo "Set REX_BINARY_PATH to a Linux Rex server executable" >&2; exit 1; }
+	@command -v Xvfb >/dev/null && test -n "$(XDTOOL_BINARY_PATH)" -a -x "$(XDTOOL_BINARY_PATH)" || \
+		{ echo "Install Xvfb and xdotool, or set XDTOOL_BINARY_PATH" >&2; exit 1; }
+	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib native_ssh::rex:: -- --ignored --nocapture
+
 rust-test-ssh-live: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")
 rust-test-ssh-live: export GHOSTHUB_HERDR_TEST = $(shell realpath -m -- "$(HERDR_BINARY_PATH)")
 rust-test-ssh-live: export GHOSTHUB_ZELLIJ_TEST = $(shell realpath -m -- "$(ZELLIJ_BINARY_PATH)")
@@ -673,7 +688,7 @@ rust-test-ssh-live: ensure-kwt ensure-kwt-variants
 		{ echo "Set HERDR_BINARY_PATH to a Linux Herdr executable" >&2; exit 1; }
 	@test -n "$(ZELLIJ_BINARY_PATH)" -a -x "$(ZELLIJ_BINARY_PATH)" || \
 		{ echo "Set ZELLIJ_BINARY_PATH to a Linux Zellij executable" >&2; exit 1; }
-	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib native_ssh:: -- --ignored --skip imports_pull_requests_over_ssh
+	@cd "$(RUST_DIR)" && $(CARGO) test --locked -p ghosthub-app --lib native_ssh:: -- --ignored --skip imports_pull_requests_over_ssh --skip native_ssh::rex::
 
 .PHONY: rust-test-ssh-pr-live
 rust-test-ssh-pr-live: export GHOSTHUB_KWT_BUNDLE ?= $(shell realpath -m -- "$(KWT_BINARY_PATH)")

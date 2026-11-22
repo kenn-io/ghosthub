@@ -82,6 +82,7 @@ pub(crate) fn pump_once(runtime: &Runtime) -> bool {
     let mut backlog = false;
     let scenes = live_scenes(runtime);
     for scene in &scenes {
+        crate::rex::tick(scene);
         let workspace = Workspace {
             scene: Arc::clone(scene),
         };
@@ -146,6 +147,23 @@ pub(crate) fn monitor_remote_lease_liveness(runtime: &Runtime) {
 }
 
 impl Workspace {
+    /// Observe a worker prompt without consuming the worker's event.
+    #[cfg(feature = "test-support")]
+    pub fn active_worker_paste_id(&self) -> Option<u64> {
+        self.scene
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active()?
+            .pending_paste_id()
+    }
+
+    /// Run one synchronous event pass after releasing a paused pump.
+    #[cfg(feature = "test-support")]
+    pub fn pump_events_for_test(&self) {
+        let _ = pump_once(&self.scene.runtime);
+    }
+
     /// Hold terminal event consumption while an integration test completes a reconnect.
     #[cfg(feature = "test-support")]
     pub fn pause_event_pump(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -212,17 +230,36 @@ impl Workspace {
                         worker_generation: source_worker_generation,
                     }));
                 }
-                Ok(Some(TerminalEvent::ConfirmPaste(paste))) => {
+                Ok(Some(TerminalEvent::ConfirmPaste(id))) => {
                     processed += 1;
+                    let Ok(_navigation) = crate::scene::lock_live_navigation(&self.scene) else {
+                        break;
+                    };
+                    let accepts_paste = self.accepts_terminal_input(None);
                     let mut pending = self
                         .scene
                         .pending_paste
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if pending.is_none() {
+                    let worker = self
+                        .scene
+                        .worker
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let Some((active, generation)) = worker.active_with_generation() else {
+                        continue;
+                    };
+                    if generation != source_worker_generation
+                        || active.pending_paste_id() != Some(id)
+                    {
+                        continue;
+                    }
+                    if !accepts_paste {
+                        let _ = active.resolve_paste(id, false);
+                    } else if pending.is_none() {
                         *pending = Some(PendingPaste {
-                            worker_generation: source_worker_generation,
-                            input: paste,
+                            id,
+                            worker_generation: generation,
                         });
                         emitted.push(WorkspaceEvent::ConfirmPaste);
                     }
@@ -433,15 +470,35 @@ impl Workspace {
         u64,
         bool,
     )> {
-        let (event, worker_generation, confirmed) = {
+        let (event, worker_generation, confirmed, failed) = {
             let worker = self
                 .scene
                 .worker
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (worker, generation) = worker.active_with_generation()?;
-            (worker.try_event(), generation, worker.is_confirmed_live())
+            let event = worker.try_event();
+            let failure = match &event {
+                Ok(Some(TerminalEvent::Exited { code, output_tail })) => Some((
+                    "Attachment closed.".to_owned(),
+                    crate::rex::session_refused(*code, output_tail),
+                )),
+                Ok(Some(TerminalEvent::Error(error))) => Some((error.clone(), false)),
+                Err(error) => Some((error.to_string(), false)),
+                _ => None,
+            };
+            (
+                event,
+                generation,
+                worker.is_confirmed_live(),
+                failure.map(|(message, refused)| (worker.surface_handle(), message, refused)),
+            )
         };
+        if let Some((surface, message, refused)) = failed
+            && crate::rex::pane_failed(&self.scene, &surface, message, refused)
+        {
+            return Some((Ok(None), worker_generation, confirmed));
+        }
         if confirmed {
             self.mark_attachment_confirmed(worker_generation);
         }

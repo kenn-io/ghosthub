@@ -63,6 +63,7 @@ pub fn session_order_id(selection: &SessionSelection) -> String {
             super::SessionKind::Tmux => "tmux",
             super::SessionKind::Herdr => "herdr",
             super::SessionKind::Zellij => "zellij",
+            super::SessionKind::Rex => "rex",
         },
         selection.session(),
         selection.tmux_socket_name().unwrap_or(""),

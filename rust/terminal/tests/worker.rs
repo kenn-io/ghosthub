@@ -250,7 +250,11 @@ mod windows {
         thread::sleep(Duration::from_millis(200));
         assert!(!surface_text(&worker).contains("typed-later"));
 
-        worker.confirm_paste(paste).expect("approve unsafe paste");
+        assert!(
+            worker
+                .resolve_paste(paste, true)
+                .expect("approve unsafe paste")
+        );
         let output = wait_for_surface_text(&worker, "typed-later");
         assert!(
             output
@@ -312,7 +316,7 @@ mod windows {
             .expect("attach interactive ConPTY client")
     }
 
-    fn wait_for_confirmation(worker: &TerminalWorker) -> input::EncodedInput {
+    fn wait_for_confirmation(worker: &TerminalWorker) -> u64 {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match worker.try_event() {

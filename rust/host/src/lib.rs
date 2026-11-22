@@ -19,6 +19,7 @@ mod kwt;
 mod local;
 mod remote;
 mod rename;
+pub mod rex;
 mod ssh;
 #[cfg(windows)]
 mod windows_system;
@@ -43,6 +44,7 @@ pub use ssh::{
     KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshError, SshExecutionProjection,
     SshHostKeyDetails, SshLease, SshLeaseEvent, SshLeaseMode, SshLeasePrompt, SshLeaseResult,
     SshPromptDetails, SshPromptKind, SshResolvedTarget, SshRouteSnapshot, SshTarget,
+    mux_session_refused,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

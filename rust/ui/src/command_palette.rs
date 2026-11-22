@@ -9,6 +9,7 @@ enum Action {
     Worktree(WorktreeOpenTarget),
     Settings(SettingsPane),
     ToggleSidebar,
+    Rex(u64, rex_window::PaneAction),
 }
 
 #[derive(Clone)]
@@ -227,22 +228,45 @@ impl RootView {
             .active_selection()
             .cloned()
             .or_else(|| active_session_selection(snapshot.content()));
-        entries(
+        let mut rows = entries(
             snapshot.hosts(),
             active.as_ref(),
             snapshot.retained_selections(),
             &self.workspace.configured_sidebar(),
             self.sidebar_visible,
-        )
+        );
+        if let Some(rex) = snapshot.rex_window().filter(|w| w.error.is_none())
+            && let Some(pane) = rex.panes.iter().find(|p| p.focused)
+        {
+            use rex_window::PaneAction;
+            for action in [
+                PaneAction::SplitRight,
+                PaneAction::SplitDown,
+                PaneAction::Zoom,
+                PaneAction::Next,
+                PaneAction::Previous,
+                PaneAction::Close,
+            ] {
+                rows.push(Entry {
+                    title: action.title().into(),
+                    subtitle: format!("Rex · {}", rex.title),
+                    action: Action::Rex(pane.presentation_id, action),
+                });
+            }
+        }
+        rows
     }
 
     pub(super) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.new_session.is_some()
+        if self.rex_close.is_some()
+            || self.new_session.is_some()
             || self.project_dialog.is_some()
             || self.settings_dialog.is_some()
             || self.renaming_session.is_some()
             || !self.ssh_prompts.is_empty()
-            || self.paste_confirmation
+            || terminal_presentation_id(self.workspace.snapshot().content())
+                .and_then(|id| self.workspace.pending_paste_id(id))
+                .is_some()
             || self.workspace.session_kill_confirmation().is_some()
             || self.workspace.herdr_lifecycle_confirmation().is_some()
         {
@@ -290,6 +314,9 @@ impl RootView {
                 dialog.sidebar_focus = Some(*pane);
             }
             Action::ToggleSidebar => self.toggle_sidebar(window, cx),
+            Action::Rex(presentation, action) => {
+                self.run_rex_action(*presentation, *action, window, cx);
+            }
         }
     }
 

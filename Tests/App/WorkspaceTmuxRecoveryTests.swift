@@ -293,9 +293,12 @@ extension WorkspaceTmuxDiscoveryTests {
         await launchActiveTmuxSurface(model, store: surfaceStore)
 
         surfaceStore.surface.closeObservers.values.first?(false, 255)
+        // The attempt clears the recovery state before the supervisor drains
+        // its probe deadline task, so wait for the supervisor to stop as well.
         await waitUntilMainActor {
             acquisitions.withLock { $0 } == 2
                 && model.activeBorrowedTmuxRecoveryState == nil
+                && !model.anyTmuxReconnectSupervisorIsRunning
         }
 
         #expect(surfaceStore.requestCount == 1)

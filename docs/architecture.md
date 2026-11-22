@@ -28,7 +28,11 @@ reconnect is always a fresh attachment.
   tmux session name and no Git children.
 - **Session:** an ordinary tmux session, running/stopped Herdr TUI session,
   backend terminal (a live Herdr core terminal or Rex window), or active Zellij
-  session on a host. Backend terminal support is currently macOS-only.
+  session on a host. Herdr Core support is currently macOS-only. The Rust
+  Linux client also opens remote Rex windows over SSH and draws the tiled
+  layout Rex reports. Each pane has its own libghostty terminal and
+  `kwt rex attach` client. A separate `kwt rex control` channel follows the
+  window and sends pane operations.
 
 The sidebar is a host-wide session navigator. Hosts are its only grouping
 level. Under each host, one session list shows directly discovered tmux

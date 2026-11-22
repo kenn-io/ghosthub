@@ -13,7 +13,6 @@ Connected SSH hosts support tmux creation, attachment, and confirmed kills
 bound to the live session identity. Remote Herdr supports creation, attachment,
 restart, and confirmed stop/delete. Remote Zellij supports creation, attachment,
 and confirmed kills of active sessions.
-Distribution packaging remains separate parity work.
 Herdr support in the Rust port currently means the older TUI. The macOS app's
 newer `herdr-core` desktop-terminal integration remains separate parity work.
 The shipped macOS application remains SwiftUI/AppKit with libghostty. The
@@ -26,6 +25,20 @@ multiplexer fleets on Windows and Linux. It is not a rewrite of the macOS
 application, a shared runtime embedded into Swift, or a reason to change macOS
 away from SwiftUI.
 
+### Download a preview
+
+Kenn-dist publishes Rust preview archives for Linux and Windows on x86-64
+and ARM64. The [unstable download index](https://dl.kenn.sh/channels/unstable/install-index-v1)
+points to a manifest with each Ghosthub archive's URL, SHA-256, and source
+revision. Preview publication uses a reviewed source pin. A merge to Ghosthub
+can reach source builds before that pin is updated.
+
+Extract the archive and open `ghosthub` on Linux or `ghosthub.exe` on
+Windows. Keep the Windows DLLs beside the executable. On Debian and Ubuntu,
+install `libxkbcommon-x11-0` if the loader reports that
+`libxkbcommon-x11.so.0` is missing. Windows connections to remote SSH
+hosts still use the selected WSL2 distro's OpenSSH configuration.
+
 ## 1. Product and Dependency Boundary
 
 ### Platform split
@@ -36,7 +49,7 @@ away from SwiftUI.
 - Linux enables X11 and Wayland in the native Rust/GPUI shell and uses a
   native PTY for local tmux clients. X11 development acceptance does not
   establish Wayland or hardware-GPU acceptance. Linux builds embed the pinned
-  KWT helper; distribution packaging remains planned work.
+  KWT helper.
 - All platforms preserve the Host, Project, Worktree, and ordinary
   multiplexer-session mental model.
 - Kwt remains authoritative for project/worktree identity and exact session
@@ -1626,6 +1639,52 @@ The planned complete corpus covers:
 - terminal input with modes, AltGr, dead keys, and IME
 - clipboard and paste policy
 - surface resize, damage, scroll, and snapshots
+
+### Remote Rex windows
+
+On Linux, a Rex sidebar row opens one remote window through its host's reviewed
+SSH route, including hosts reached through Tailscale MagicDNS. The managed,
+revision-pinned KWT helper supplies `rex ls --json`, `rex control WINDOW_ID`,
+and each `rex attach BLOCK_ID` process. Rex itself must already be installed
+and running under the remote SSH account. Ghosthub neither starts it nor
+opens a Rex network listener.
+
+The host module decodes KWT's inventory and control messages and owns the
+bounded control process. The workspace owns the window and its clients. Its
+focused pane occupies the scene's normal terminal-worker slot, so input,
+selection, paste confirmation, and clipboard policy use the existing terminal
+path. Other panes keep their clients and surfaces, with clipboard writes
+disabled. Pane identity preserves those clients across backend layout updates.
+Only tiled terminal panes are drawn.
+
+Rex control and pane clients use separate KWT-managed SSH connections from
+tmux and inventory. Each extra connection carries up to eight Rex sessions,
+and Ghosthub opens another when those slots fill. If a server enforces a lower
+limit, Ghosthub retries a refused pane or window on another connection. A new
+connection may prompt for authentication. Failure to start one pane leaves
+its neighbors usable.
+
+Rex confirms split, resize, focus, zoom, and close requests through its control
+channel. The UI chooses directional focus from the window it displays, rather
+than Rex's globally active window. Divider movement sends one resize on
+release. Pane close requires confirmation for an exact presentation; replacing
+the view or SSH connection invalidates it. Switching away or detaching closes
+the pane clients and control channel while leaving Rex's programs running.
+Connection failures keep a visible Reconnect action. They do not recreate
+programs. Local Rex discovery remains separate work.
+
+Run `make rust-test-rex-live REX_BINARY_PATH=/absolute/path/to/rex` on Linux.
+The OpenSSH fixture confines the server, sockets, account, and data to its
+private filesystem and network. Xvfb, xdotool, and a software Vulkan driver
+are required for the desktop test.
+Set `XDTOOL_BINARY_PATH` or `VK_ICD_FILENAMES` for tools outside the system
+locations. The desktop test opens the real GPUI app and verifies keyboard
+routing after pane changes and navigation through the Command Palette.
+The workspace test drives discovery, control, input,
+split, focus, zoom, divider resize, pane close, detach, and reopen against a
+real Rex server. Linux CI downloads a fixed public server archive and verifies
+its SHA-256 checksum; updating that fixture changes both the archive URL and
+checksum in `rust-port.yml`. No Rex binary ships with Ghosthub.
 
 ## 4. First Vertical Slice and Delivery
 

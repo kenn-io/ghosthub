@@ -91,7 +91,7 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.settings_dialog.is_some() {
+        if self.settings_dialog.is_some() || self.rex_close.is_some() {
             return;
         }
         self.sync_keyboard_bindings();
@@ -337,7 +337,7 @@ impl RootView {
                     .child("Ctrl+Shift+C"),
             )
             .child(div().mt_8().text_sm().text_color(rgb(0x8f_96a3)).child(
-                "Pane, window, and split shortcuts are configured in tmux, Herdr, or Zellij.",
+                "Rex pane shortcuts are fixed. Configure other pane shortcuts in tmux, Herdr, or Zellij.",
             ))
             .into_any_element()
     }
