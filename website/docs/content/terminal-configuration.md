@@ -1,150 +1,144 @@
 ---
-description: Configure Ghosthub's libghostty terminal and tmux session themes.
+description: Configure Ghosthub's libghostty rendering, fonts, colors, clipboard, and tmux themes.
 icon: lucide/settings-2
 ---
 
 # Terminal configuration
 
-On macOS, choose fonts, colors, and shell behavior in Ghosthub's own
-configuration file. The app embeds libghostty 1.4.0, built with Zig 0.17.0.
-You do not need to install Ghostty.app or Zig to use it.
+On macOS, Ghosthub renders attached sessions with libghostty 1.4.0 (built with
+Zig 0.17.0) and reads its own configuration file for fonts, colors, and shell
+settings. You do not need Ghostty.app or Zig installed.
 
 ## Rust Linux fonts (unreleased)
 
-The native Rust Linux app bundles **Inter** for labels and controls and
-**JetBrains Mono** for its default terminal font. These fonts load with the
-application, so the default terminal keeps a fixed-width grid across Linux
-machines.
+The native Rust Linux app bundles **Inter** for UI text and **JetBrains Mono**
+for the default terminal font so the grid always uses a fixed-width font across
+Linux machines.
 
-Open **Settings → Appearance** to choose a terminal font, size, and theme.
-Existing font preferences are preserved; select **JetBrains Mono** to switch
-to the bundled face. Windows keeps its native UI font and Cascadia Mono
-terminal default. The macOS instructions below describe the Swift app.
+Open **Settings → Appearance** to pick a terminal font, size, and theme.
+Existing font choices stay intact; select **JetBrains Mono** to switch to the
+bundled font. Windows keeps its native UI font and Cascadia Mono terminal
+default. The macOS sections below cover the Swift app.
 
-For temporary font zoom in the current window, use **Ctrl+=**, **Ctrl+-**,
-and **Ctrl+0**. Zoom leaves the saved Appearance size unchanged. Customize
-these shortcuts in [Settings → Keyboard](keyboard-shortcuts.md#windows-and-linux).
+Use **Ctrl+=**, **Ctrl+-**, and **Ctrl+0** to zoom the current window's font
+size temporarily without changing the saved Appearance default. You can change
+those shortcuts in [Settings → Keyboard](keyboard-shortcuts.md#windows-and-linux).
 
 ![Rust Linux Appearance settings with the bundled terminal font](/docs/assets/guide-rust-appearance.png)
 
 ## Configuration file
 
-Ghosthub's terminal configuration lives at:
+Ghosthub's terminal config lives at:
 
 ```text
 ~/.config/ghosthub/ghostty.conf
 ```
 
-The file uses [Ghostty's configuration format](https://ghostty.org/docs/config/reference),
-but it is owned and loaded independently by Ghosthub. Global Ghostty.app
-configuration does not affect Ghosthub.
+It uses [Ghostty's config format](https://ghostty.org/docs/config/reference),
+but Ghosthub loads it separately. Your Ghostty.app configuration does not affect
+Ghosthub.
 
-Ghosthub reloads terminal configuration after the file changes. Use
-++shift+cmd+comma++ to request a reload immediately.
+Ghosthub reloads automatically when `ghostty.conf` changes, or you can press
+++shift+cmd+comma++ to reload right away.
 
 ## Terminal themes
 
-Ghostty's built-in color schemes ship with Ghosthub, so `theme` accepts any of
-their names directly:
+Ghostty's built-in color schemes are bundled with Ghosthub, so you can set
+`theme` to any of them by name:
 
 ```text
 theme = Catppuccin Macchiato
 ```
 
-Conditional light and dark themes, and paths to your own theme files, work the
-same way.
+Conditional light/dark themes and paths to custom theme files work the same way.
 
 ## Background transparency
 
-Ghosthub reads `background-opacity` and `background-blur` from `ghostty.conf`
-at startup and on every reload:
+Ghosthub reads `background-opacity` and `background-blur` from `ghostty.conf` at
+launch and on reload:
 
 ```text
 background-opacity = 0.85
 background-blur = 20
 ```
 
-When opacity is below 1, workspace windows and their chrome become
-translucent at the configured opacity, and blur is applied behind the window.
-Increased contrast (**System Settings → Accessibility → Display**) forces an
-opaque window, and native fullscreen always stays opaque. There is no
-separate Ghosthub setting. A project `terminal.conf` or a file loaded with
-`config-file` can override these values.
+When opacity is below 1, Ghosthub windows turn translucent with blur behind
+them. Enabling **Increase contrast** (**System Settings → Accessibility →
+Display**) forces opaque windows, and native macOS fullscreen is always opaque.
+There is no separate opacity toggle in Ghosthub's Settings, though a project
+`terminal.conf` or an imported `config-file` can override these values.
 
 ## Shell startup
 
-For local shells, Ghosthub preserves libghostty's normal macOS login-shell and
-shell-integration behavior. It does not force a custom shell command by
-default. Your ordinary zsh startup files and key bindings should load as they
-do in a native macOS terminal.
+For local shells, Ghosthub uses libghostty's normal macOS login-shell path and
+shell integration instead of forcing a custom shell command, so your zsh startup
+files and key bindings work just like in a normal Mac terminal.
 
-Ghosthub avoids inheriting launcher-terminal `EDITOR` and `VISUAL` values that
-can unexpectedly change zsh keymaps. It sets `TERM_PROGRAM` to `ghosthub`.
+Ghosthub clears launcher-terminal `EDITOR` and `VISUAL` variables so launching
+Ghosthub from another terminal does not flip zsh into unexpected keymaps. It
+sets `TERM_PROGRAM` to `ghosthub`.
 
 ## Session previews
 
-Use **Settings → Terminal → Session previews** to choose still or live tmux
-previews. See [Session previews](sessions.md#preview-opened-tmux-sessions)
-for the modes, minimum versions, and resource costs.
+Open **Settings → Terminal → Session previews** to turn on still or live tmux
+previews in the sidebar. See
+[Session previews](sessions.md#preview-opened-tmux-sessions) for preview modes,
+tmux version requirements, and resource costs.
 
 ## Tmux themes
 
-The **Tmux Theme** picker in Settings supplies colors for new sessions created
-by Ghosthub. When **Follow ghostty.conf** is selected, the effective foreground
-and background follow the current light or dark appearance.
+The **Tmux Theme** picker in Settings sets the colors used for new tmux sessions
+created from Ghosthub. When set to **Follow ghostty.conf**, colors track your
+current light or dark theme automatically.
 
-Existing tmux sessions keep their own appearance by default. This avoids
-silently repainting a shared session for every attached client.
+Existing tmux sessions keep their own colors by default so Ghosthub does not
+silently repaint a shared session for everyone attached to it.
 
-To change the active connected session once, choose **Session → Apply Theme to
-Current Session** or the matching Command Palette action. It updates the
-session's existing windows and tmux chrome for all attached clients.
+To apply your theme to the current session once, choose **Session → Apply Theme
+to Current Session** (or run it from the Command Palette). That updates the
+session's windows and tmux bars for all attached clients.
 
-To style future attachments to shared sessions automatically, enable **Apply
-theme to shared tmux sessions** in Settings. This is an explicit opt-in.
+To style future attachments to shared sessions automatically, turn on **Apply
+theme to shared tmux sessions** in Settings.
 
-Ghosthub also applies a modest client-local text-contrast floor so inherited
-ANSI colors remain legible on light and dark backgrounds without changing the
-shared tmux theme. An explicit `minimum-contrast` value in `ghostty.conf`
-remains authoritative.
+Ghosthub also applies a small local contrast floor so inherited ANSI colors stay
+readable on light and dark backgrounds without modifying the shared tmux theme.
+If you set `minimum-contrast` in `ghostty.conf`, Ghosthub uses your value.
 
-Theme application is not available for the Console Panel or native Windows
-sessions.
+Tmux themes do not apply to the Console Panel or native Windows sessions.
 
 ![Ghosthub Appearance settings with the tmux theme picker](/docs/assets/guide-terminal.png)
 
 ## Clipboard behavior
 
-Remote tmux copy mode can copy text to the Mac clipboard through OSC 52, a
-terminal command for clipboard access. The `clipboard-write` setting controls
-whether those writes are allowed. Remote programs cannot read your Mac
-clipboard through OSC 52. Your explicit paste shortcut still works.
+Remote tmux copy mode can copy text to your Mac clipboard using OSC 52. The
+`clipboard-write` setting controls whether Ghosthub allows those writes. Remote
+programs cannot read your Mac clipboard through OSC 52, while pasting with your
+normal shortcut keeps working.
 
-To send an image to a tool in a local or remote macOS or Linux tmux session,
-copy the image on your Mac and press ++cmd+v++. Ghosthub saves a PNG to
-`~/.ghosthub/paste-images/` on that host and pastes its absolute path into the
-active pane. If the clipboard also contains text, Ghosthub pastes the text
-instead. ++ctrl+v++ keeps its normal terminal meaning. Pasting another image
-also removes cached images older than seven days.
+To paste an image into a tool running inside a local or remote macOS or Linux
+tmux session, copy the image on your Mac and press ++cmd+v++. Ghosthub writes a
+PNG to `~/.ghosthub/paste-images/` on that host and pastes its full path into
+the active pane. If the clipboard holds both text and an image, text wins.
+++ctrl+v++ still passes straight to the terminal. Each new image paste also
+cleans up cached images older than 7 days.
 
-Image paste is not available for Herdr, Zellij, or native Windows/psmux
-sessions. See [Sessions](sessions.md#attach-and-detach) for terminal controls.
+Image paste is not supported in Herdr, Zellij, or native Windows/psmux sessions.
+See [Sessions](sessions.md#attach-and-detach) for session controls.
 
 ### Windows and Linux
 
 In the Rust app, drag across visible terminal text to select it. Double-click
-to select a word, or triple-click to select a whole line, even when it wraps
-onto another screen row. Drag after a double- or triple-click to extend by
-words or lines.
-Hold **Shift** with these gestures when tmux or another terminal application
-uses the mouse. The selection stays highlighted, and **Ctrl+Shift+C** copies it.
-Use your multiplexer's copy mode for text outside the visible screen.
+for a word, or triple-click for a full line even when it wraps across rows; drag
+afterward to extend by words or lines. Hold **Shift** when tmux or another
+terminal app captures mouse events. The highlight stays visible, and
+**Ctrl+Shift+C** copies it. Use your multiplexer's copy mode to select text
+scrolled off screen.
 
-Selections copy to the clipboard automatically by default. Open the gear
-button, choose **Terminal**, and turn off **Copy selections directly to the
-clipboard** to copy only with **Ctrl+Shift+C**. This setting saves immediately
-and applies to all windows. Your explicit copies work even when **Allow remote
-clipboard writes** is off.
+Selections copy to the clipboard automatically by default. Click the gear icon,
+open **Terminal**, and turn off **Copy selections directly to the clipboard** to
+copy only with **Ctrl+Shift+C**. Changes save right away across all windows, and
+manual copies still work even when **Allow remote clipboard writes** is off.
 
 ![Selecting terminal text in the Rust app](/docs/assets/guide-rust-selection.png)
 
@@ -152,20 +146,18 @@ clipboard writes** is off.
 
 ### Open terminal links
 
-In the Rust app, **Ctrl-click** an underlined link to open its destination
-with your operating system's default application. Hover over it to see the
-address. A normal click or drag still selects text; hold **Shift** when the
-terminal program uses the mouse.
+In the Rust app, **Ctrl-click** an underlined link to open it in your system's
+default app, or hover to preview the URL. Plain clicks and drags still select
+text; hold **Shift** if the terminal app uses the mouse.
 
-Programs must mark these links with OSC 8. Plain text URLs are not detected.
-Tmux 3.4 or later forwards links automatically in ordinary sessions and KWT
-worktree terminals, including protected pull-request workspaces. No tmux
-configuration change is needed.
+Programs must emit OSC 8 hyperlinks; plain-text URLs are not auto-linked. tmux
+3.4 and newer forward OSC 8 links automatically in normal sessions and kwt
+worktrees, including protected PR workspaces, with no extra tmux config.
 
 ![Terminal links with a destination preview in the Rust app](/docs/assets/guide-rust-hyperlinks.png)
 
 ## Quit behavior
 
-**Confirm before quitting Ghosthub** is enabled by default under
-**Settings → Terminal**. Quitting the app or closing its windows detaches from
-tmux and leaves sessions running.
+**Confirm before quitting Ghosthub** is on by default in **Settings →
+Terminal**. Quitting Ghosthub or closing its windows only detaches and leaves
+your sessions running.

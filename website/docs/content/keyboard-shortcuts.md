@@ -1,14 +1,15 @@
 ---
-description: Keyboard navigation and configurable shortcuts in Ghosthub.
+description: Default and configurable keyboard shortcuts in Ghosthub.
 icon: lucide/keyboard
 ---
 
 # Keyboard shortcuts
 
-On macOS, move between sessions, search terminal history, and open windows
-with the shortcuts below. For the Rust app, see [Windows and Linux](#windows-and-linux). Open **Settings → Keyboard** to record, clear, or restore a
-Ghosthub shortcut. Tmux, Herdr, Zellij, and programs inside the terminal keep
-their own shortcuts.
+On macOS, use the shortcuts below to jump between sessions, search scrollback,
+split panes, and manage windows. For the Rust app, see
+[Windows and Linux](#windows-and-linux). Open **Settings → Keyboard** to record,
+clear, or reset any Ghosthub shortcut. tmux, Herdr, Zellij, and programs running
+inside them keep their own key bindings.
 
 ## Default navigation
 
@@ -18,28 +19,27 @@ their own shortcuts.
 | Previous sibling | ++ctrl+shift+tab++ |
 | Previous native window tab | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>&#91;</kbd> |
 | Next native window tab | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>&#93;</kbd> |
-| Native window tab 1–8 | <kbd>⌘</kbd><kbd>1</kbd>–<kbd>8</kbd> |
+| Native window tabs 1 to 8 | <kbd>⌘</kbd><kbd>1</kbd> to <kbd>8</kbd> |
 | Last native window tab | <kbd>⌘</kbd><kbd>9</kbd> |
 
-Sibling navigation is local to what you are currently using:
+Sibling navigation stays within the group you are currently in:
 
-- A worktree cycles through visible worktrees in the same project.
-- A directory workspace cycles through directory workspaces on the same host.
-- A standalone tmux, Zellij, Herdr, or Rex session cycles through the host's
-  whole session list, across backends. Stopped Herdr sessions are skipped.
+- Inside a worktree, it cycles through visible worktrees in the same project.
+- Inside a directory workspace, it cycles through directory workspaces on the
+  same host.
+- Inside a standalone tmux, Zellij, Herdr, or Rex session, it cycles through the
+  host's entire session list across backends, skipping stopped Herdr sessions.
 
-The order matches the sidebar, including the chosen sort, custom ordering, and
-visibility settings. At least two eligible siblings must exist. If navigation is not
-available, Ghosthub leaves the key event untouched so the active terminal can
-receive it. Stopped Herdr sessions are never started by a navigation shortcut.
+Order follows the sidebar, including your current sort, manual drag order, and
+visibility filters. If fewer than two items are available, Ghosthub passes the
+key straight through to the terminal. Navigation shortcuts never auto-start a
+stopped Herdr session.
 
-Numbered sibling actions 1–9 are available in Settings but are unbound by
-default. When those keys are otherwise unbound, <kbd>⌘</kbd><kbd>1</kbd> through
-<kbd>⌘</kbd><kbd>8</kbd> select native tabs and <kbd>⌘</kbd><kbd>9</kbd> selects
-the last native tab. If the requested tab number is beyond the end of a short
-tab group, Ghosthub selects that group's last tab. An explicit Ghosthub
-shortcut assignment takes precedence, so you can use Command-number for
-numbered sibling navigation instead.
+Numbered sibling shortcuts (1 to 9) exist in Settings and start unbound. While
+they are unbound, <kbd>⌘</kbd><kbd>1</kbd> through <kbd>⌘</kbd><kbd>8</kbd> pick
+native tabs and <kbd>⌘</kbd><kbd>9</kbd> picks the last native tab (if a number
+exceeds the tab count, Ghosthub picks the last tab). Assigning a Ghosthub
+shortcut to Command-number overrides the native tab fallback.
 
 ## Other defaults
 
@@ -57,49 +57,45 @@ numbered sibling navigation instead.
 | Reload configuration | ++shift+cmd+comma++ |
 | Open application log | ++option+cmd+l++ |
 | Find in the active terminal | ++cmd+f++ |
-| Find next, toward older history | ++cmd+g++ |
-| Find previous, toward newer history | ++shift+cmd+g++ |
+| Find next (toward older history) | ++cmd+g++ |
+| Find previous (toward newer history) | ++shift+cmd+g++ |
 | Hide the Find bar | ++shift+cmd+f++ |
 
-New tmux Session, New Herdr TUI Session, New Zellij Session, and Close Pane…
-remain available in menus or the Command Palette but are unbound by default.
-The Rex commands New Floating Pane, Float or Tile Pane, and Minimize Floating
-Window are in the Command Palette and are unbound by default too.
-The Rex focus and zoom shortcuts act only while a Rex window is shown;
-otherwise the keys go to the terminal.
+**New tmux Session**, **New Herdr TUI Session**, **New Zellij Session**, and
+**Close Pane…** are in menus and the Command Palette and start unbound. The Rex
+commands **New Floating Pane**, **Float or Tile Pane**, and **Minimize Floating
+Window** are also in the Command Palette and start unbound. Rex focus and zoom
+shortcuts apply only while viewing a Rex window; otherwise those keys pass
+through to the terminal.
 
-Herdr desktop terminals do not support Ghosthub's Split actions. See
-[Herdr desktop splits](sessions.md#herdr-desktop-splits) for how existing panes
-appear and how to switch between them.
+Herdr desktop tabs do not support Ghosthub's split shortcuts. See
+[Herdr desktop splits](sessions.md#herdr-desktop-splits) for how their panes
+work.
 
-Standard macOS commands are fixed rather than configurable in Ghosthub. These
-include Settings (++cmd+comma++), New Window (++cmd+n++), New Tab (++cmd+t++),
-Close (++cmd+w++), Close Window (++shift+cmd+w++), Quit (++cmd+q++), and the
-usual Edit shortcuts. Numbered native tabs (++cmd+1++ through ++cmd+9++) are
-fallbacks that yield to explicit Ghosthub shortcut assignments. The Keyboard
-pane lists both groups for reference.
+Standard macOS shortcuts are fixed and cannot be rebound in Ghosthub: Settings
+(++cmd+comma++), New Window (++cmd+n++), New Tab (++cmd+t++), Close (++cmd+w++),
+Close Window (++shift+cmd+w++), Quit (++cmd+q++), and standard Edit commands.
+The Keyboard settings pane lists both fixed and fallback shortcuts for reference.
 
-Closing a presentation, window, or the app detaches from tmux, Herdr, or Zellij. It does
-not end the session.
+Closing a view, a window, or Ghosthub only detaches from tmux, Herdr, or Zellij;
+it never ends your session.
 
 ## Edit a shortcut
 
-In **Settings → Keyboard**, click a shortcut value and press the new key
-combination. Press Escape to cancel recording. Use the row menu to **Clear** an
-action or **Restore Default**. Changes remain in the Settings draft and take
-effect together when Settings closes.
+In **Settings → Keyboard**, click a shortcut and press the new key combination.
+Press **Escape** to cancel. Use the row menu to **Clear** an action or **Restore
+Default**. Edits apply together when you close Settings.
 
-Every configurable binding must contain Command, Control, or Option. Bare keys
-and Shift-only combinations are rejected because they could intercept ordinary
-terminal input. Ghosthub also rejects a binding already used by another action
-or reserved by a fixed macOS command; the recorder shows the conflict inline.
+Every configurable shortcut must include Command, Control, or Option so bare
+keys and Shift-only combinations never steal normal typing from the terminal.
+Ghosthub rejects duplicates and shortcuts reserved by fixed macOS commands,
+showing the conflict inline.
 
 ![Keyboard settings with navigation shortcuts and row menus](/docs/assets/guide-keyboard.png)
 
 ## Configure `config.toml`
 
-Shortcut overrides are also stored in
-`~/.config/ghosthub/config.toml`:
+Custom shortcuts are saved in `~/.config/ghosthub/config.toml`:
 
 ```toml
 [keyboard.shortcuts]
@@ -109,24 +105,24 @@ select-sibling-1 = "cmd+opt+1"
 split-right = "none"
 ```
 
-A missing action uses its compiled default. Set an action to `"none"` to leave
-it unbound. Names are case-insensitive when read and normalized when Settings
-writes them. Supported modifiers are `cmd`, `ctrl`, `opt`, and `shift`;
-supported keys include letters, digits, punctuation, arrows, `tab`, `return`,
-`escape`, `delete`, and `f1` through `f12`.
+Omitted actions use their default binding; setting an action to `"none"` leaves
+it unbound. Names are case-insensitive when read and normalized when saved.
+Supported modifiers are `cmd`, `ctrl`, `opt`, and `shift`; supported keys
+include letters, digits, punctuation, arrow keys, `tab`, `return`, `escape`,
+`delete`, and `f1` through `f12`.
 
-Configuration validation is atomic. A malformed, duplicate, unsafe, or
-reserved known binding rejects the complete edit. During a live reload,
-Ghosthub keeps the last valid shortcut set. If the file is already invalid at
-launch, Ghosthub uses compiled defaults until it is fixed and reloaded. The
-Keyboard pane and application log report the error without rewriting the
-invalid file. Unknown action names are preserved for forward compatibility.
+Ghosthub validates the entire shortcut table at once. One malformed, duplicate,
+unsafe, or reserved binding rejects the whole edit: on a live reload, Ghosthub
+keeps your last valid shortcuts, and if the file is already invalid at launch,
+Ghosthub falls back to defaults until you fix and reload it. Errors appear in
+the Keyboard pane and the application log without overwriting your file. Unknown
+action names are left intact for forward compatibility.
 
-Choose **Ghosthub → Reload Configuration** after editing the file manually.
+After editing the file by hand, choose **Ghosthub → Reload Configuration**.
 
 ## Windows and Linux
 
-The Rust app has these configurable shortcuts:
+The Rust app supports these configurable shortcuts:
 
 | Action | Default |
 | --- | --- |
@@ -138,38 +134,36 @@ The Rust app has these configurable shortcuts:
 | Decrease Font Size | **Ctrl+-** |
 | Reset Font Size | **Ctrl+0** |
 
-Open the gear button, then **Keyboard**. Click a shortcut and press its new
-combination. **Escape** cancels recording. **Clear** disables the action, and
-**Restore Default** restores its original binding. Changes save immediately
-and apply to every open window. Recording stops if you leave the window or
-choose another Settings pane.
+Click the gear icon, then **Keyboard**. Click a shortcut and press the new key
+combination, or press **Escape** to cancel. **Clear** unbinds an action and
+**Restore Default** resets it. Changes save immediately across every open
+window. Recording cancels if you leave the window or switch Settings panes.
 
 ![Keyboard settings preserving a saved Ctrl+Shift+P sidebar shortcut](/docs/assets/guide-rust-keyboard.png)
 
-If another saved action uses **Ctrl+Shift+P**, it keeps that shortcut and the
-Command Palette starts unassigned. Choose another palette shortcut, or free
+If another saved action already uses **Ctrl+Shift+P**, it keeps that binding and
+the Command Palette starts unbound; either assign a different shortcut or free
 **Ctrl+Shift+P** to restore its default. Explicit duplicate assignments are
-still rejected.
+rejected.
 
-Include **Ctrl** or **Alt** in each binding. The recorder keeps the previous
-binding when it reports a conflict with another action, Copy, Paste, or an
-operating system shortcut. **Ctrl+Shift+V** remains reserved for Paste and
-**Ctrl+Shift+C** for Copy selection.
+Every binding must include **Ctrl** or **Alt**. If a key conflicts with another
+action, Copy, Paste, or an OS shortcut, the recorder keeps your previous
+binding. **Ctrl+Shift+V** stays reserved for Paste and **Ctrl+Shift+C** for Copy
+selection.
 
-Next and Previous Session follow the available session rows on the active
-session's host, including the chosen sort and visibility settings. Stopped
-Herdr sessions are skipped. From a project worktree hidden from those rows,
-they select the first or last available session. When there is no destination,
-the shortcut reaches the terminal.
+**Next Session** and **Previous Session** step through the visible sessions on
+the current host in sidebar order, skipping stopped Herdr sessions. From a
+worktree that is hidden from the session list, they jump to the first or last
+available session; if none exists, the key goes to the terminal.
 
-Font zoom changes every terminal opened in the current window, including
-retained sessions when you return to them. Other windows keep their own size.
-**Reset Font Size** returns to the latest saved **Appearance** size. Zoom
-does not change that saved default, and new windows start at the default.
-The shifted Plus key also increases the size while its default binding is
-active; an explicit assignment to that key takes priority.
+Font zoom affects every session opened in the current window (including retained
+sessions when you switch back) without changing other windows or your saved
+**Appearance** default. **Reset Font Size** returns to the saved Appearance
+size, and new windows start at that default. The shifted Plus key also zooms in
+while the default binding is active unless you explicitly bind that key to
+something else.
 
-Configuration tools can edit the same overrides in `config.toml`:
+You can also edit these shortcuts directly in `config.toml`:
 
 ```toml
 [keyboard.shortcuts]
@@ -182,24 +176,22 @@ decrease-font-size = "alt+down"
 reset-font-size = "ctrl+0"
 ```
 
-Remove an entry to use its default. Restart Ghosthub after editing the file
-outside Settings. Invalid or conflicting shortcuts produce a startup diagnostic;
-fix the file before opening the app. Other macOS application shortcuts remain
-parity work.
+Delete a line to fall back to its default, and restart Ghosthub after editing
+the file by hand. Invalid or conflicting entries show a startup error until
+fixed. Other macOS shortcuts are still being added to the Rust app.
 
 ## Multiplexer ownership
 
-For terminal Find controls, minimum versions, and how searching affects other
-attached clients, see [Find text in a terminal](sessions.md#find-text-in-a-terminal).
+For terminal Find shortcuts, version requirements, and how Find interacts with
+other clients, see [Find text in a terminal](sessions.md#find-text-in-a-terminal).
 
-Choose **File → Split Right** or **File → Split Down** if you prefer menus.
-Ghosthub asks the active multiplexer to split its focused pane directly, so
-custom prefixes and key bindings keep working. The shortcuts require a
-connected terminal with keyboard focus and no open sheet. Tmux requires version
-3.4 or newer; Herdr requires version 0.8.0 or newer and a confirmed running
-session. With older versions, use the multiplexer’s normal split keys. Pane
-splitting is not available on Windows psmux hosts.
+You can also split panes from the menu with **File → Split Right** or **File →
+Split Down**. Ghosthub tells the active multiplexer to split its focused pane
+directly, so custom prefixes and key bindings keep working. Splitting requires a
+connected, focused session with no sheet open, running tmux 3.4+ or a running
+Herdr 0.8.0+ session. On older versions, use your multiplexer's own split keys.
+Pane splitting is not available on Windows psmux hosts.
 
-Ghosthub does not configure or replace tmux, Herdr, shell, or terminal-program
-key bindings. Unmatched and unavailable Ghosthub shortcuts continue through to
+Ghosthub never rewrites or overrides tmux, Herdr, shell, or program key
+bindings. Any shortcut that Ghosthub does not handle passes straight through to
 the active terminal.
