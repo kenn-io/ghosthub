@@ -508,7 +508,8 @@ become restorable:
   restore and shares its outcome. An ended window attaches when discovery
   lists its session again, under the new server PID, session ID, and creation
   time the restored session has, whether discovery or the restore finishes
-  first. A failed restore shows kwt's reason with **Retry Restore** in every
+  first. A window that notices its client closed only after the session came
+  back attaches too: a new server PID shows its old session ended. A failed restore shows kwt's reason with **Retry Restore** in every
   waiting window and is not retried on its own. While the listing runs, the
   window shows **Looking for a saved copy…**; a listing that fails shows its
   error with **Retry Restore**. **Reopen**, which creates an empty session,
@@ -517,7 +518,9 @@ become restorable:
   before the kill until kwt has forgotten its saved copy. Ghosthub runs
   `forget` in the background using the socket name (since killing the last
   session stops the server) so intentionally killed sessions are not offered
-  for restore.
+  for restore. Each kill holds its own block, so a duplicate kill that fails
+  does not lift another's. If `forget` fails, the block stays until Ghosthub
+  quits and the saved copy stays listed for the person to dismiss.
 - Pull-request imports remain the one alternate-socket case: `kwt pr attach`
   validates provenance and creates or repairs the inert protected session on
   each attach and SSH reconnect via the managed kwt path (never falling back to

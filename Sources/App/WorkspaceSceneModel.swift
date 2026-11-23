@@ -6451,15 +6451,19 @@ final class WorkspaceSceneModel: ObservableObject {
                         || (identity != nil && $0.socketName == nil
                             && Self.tmuxSessionIdentity($0.summary) == identity)
                 }) {
-                if confirmedEndedTmuxSessionHandles.remove(handle.id) != nil,
+                let returned = discovered.first(where: {
+                    $0.name == selection.name && $0.socketName == selection.socketName
+                })
+                let returnedIdentity = returned.flatMap { Self.tmuxSessionIdentity($0.summary) }
+                // A new server means the window's session ended with the old
+                // one, as in a reboot, even when this window noticed only
+                // after the session was restored.
+                let serverRestarted = identity != nil && returnedIdentity != nil
+                    && returnedIdentity?.serverPID != identity?.serverPID
+                if confirmedEndedTmuxSessionHandles.remove(handle.id) != nil || serverRestarted,
                    Self.isPlainTmuxSession(selection),
-                   let returned = discovered.first(where: {
-                       $0.name == selection.name && $0.socketName == selection.socketName
-                   }) {
-                    attachToReturnedTmuxSession(
-                        presentation,
-                        identity: Self.tmuxSessionIdentity(returned.summary)
-                    )
+                   returned != nil {
+                    attachToReturnedTmuxSession(presentation, identity: returnedIdentity)
                 }
             } else if confirmedEndedTmuxSessionHandles.insert(handle.id).inserted {
                 newlyEnded = true
@@ -16776,12 +16780,16 @@ extension WorkspaceSceneModel {
             createdAt: request.sessionCreatedAt
         )
         Task { [weak self, kwtSessionClient] in
-            try? await kwtSessionClient.forget(
+            // If kwt keeps the saved copy, the fence stays, so no window
+            // restarts the killed programs. The copy stays listed for the
+            // person to dismiss.
+            if await (try? kwtSessionClient.forget(
                 socketName: socketName,
                 identity: identity,
                 on: host
-            )
-            restores.lift(session: session, hostID: hostID)
+            )) != nil {
+                restores.lift(session: session, hostID: hostID)
+            }
             self?.refreshSavedTmuxSessions(hostID: hostID)
         }
     }

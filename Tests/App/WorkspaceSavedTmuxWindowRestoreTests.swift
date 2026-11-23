@@ -14,6 +14,7 @@ private final class RebootingHost: Sendable {
     let serverRunning = LockedValue(true)
     let hasSavedCopy = LockedValue(false)
     let listingFails = LockedValue(false)
+    let forgetFails = LockedValue(false)
     /// How many times the server has been started again.
     let generation = LockedValue(0)
     let restoreOutcome: String
@@ -91,6 +92,9 @@ private final class RebootingHost: Sendable {
                 }
                 if command.contains("'forget'") {
                     forgetGate?.wait()
+                    if forgetFails.load() {
+                        return (1, "")
+                    }
                     hasSavedCopy.withLock { $0 = false }
                 }
                 return (0, marker)
@@ -99,6 +103,8 @@ private final class RebootingHost: Sendable {
         )
     }
 }
+
+private struct SessionGone: Error {}
 
 extension WorkspaceTmuxDiscoveryTests {
     /// Opens `api` in a window.
@@ -120,8 +126,12 @@ extension WorkspaceTmuxDiscoveryTests {
             tmuxSessionDiscovery: host.discovery,
             kwtSessionClient: host.client,
             savedTmuxSessionRestores: restores,
-            // Killing the server's last session stops the server.
-            tmuxSessionKiller: { _, _, _ in host.reboot() }
+            // Killing the server's last session stops the server; a second
+            // kill finds no session.
+            tmuxSessionKiller: { _, _, _ in
+                guard host.serverRunning.load() else { throw SessionGone() }
+                host.reboot()
+            }
         )
         model.startTmuxSessionDiscovery()
         model.startKwtInventory()
@@ -198,6 +208,42 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(model.activeBorrowedTmuxSavedRestore == nil)
         #expect(host.restores.count == 1)
         await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a window that notices its session ended after another window restored it attaches")
+    func windowNoticingAfterRestoreAttaches() async throws {
+        let host = RebootingHost()
+        let environment = try setupStandardEnvironment()
+        let restores = SavedTmuxSessionRestores()
+        let (first, firstStore, firstHandle) = try await windowOn(
+            host, environment: environment, restores: restores
+        )
+        let (late, lateStore, lateHandle) = try await windowOn(
+            host, environment: environment, restores: restores
+        )
+        host.reboot()
+        firstStore.surface.closeObservers[firstHandle.id]?(false, 1)
+        first.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            first.prepareActiveBorrowedTmuxSurface()
+            return first.activeBorrowedTmuxSessionIsConnected
+        }
+
+        // The restored session is listed before this window sees it drop.
+        late.refreshTmuxSessionDiscovery()
+        try await Task.sleep(for: .milliseconds(200))
+        lateStore.surface.closeObservers[lateHandle.id]?(false, 1)
+        late.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            late.prepareActiveBorrowedTmuxSurface()
+            return lateStore.launchCommands.load().last?.contains("201") == true
+                && late.activeBorrowedTmuxSessionIsConnected
+        }
+
+        #expect(host.restores.count == 1)
+        await first.shutdown()
+        await late.shutdown()
     }
 
     @MainActor
@@ -296,8 +342,43 @@ extension WorkspaceTmuxDiscoveryTests {
         try await Task.sleep(for: .milliseconds(300))
         #expect(host.restores.isEmpty)
 
+        // A second confirmation of the same kill fails, and must not let
+        // other windows restore while the first kill's forget is pending.
+        await #expect(throws: (any Error).self) { try await killer.killTmuxSession(request) }
+        watcher.refreshKwtInventory()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(host.restores.isEmpty)
+
         forgetGate.signal()
         try await kill.value
+        watcher.refreshKwtInventory()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(host.restores.isEmpty)
+        await killer.shutdown()
+        await watcher.shutdown()
+    }
+
+    @MainActor
+    @Test("a killed session whose saved copy kwt fails to forget is not restored elsewhere")
+    func failedForgetKeepsKilledSessionFromRestoring() async throws {
+        let host = RebootingHost()
+        host.forgetFails.withLock { $0 = true }
+        let environment = try setupStandardEnvironment()
+        let restores = SavedTmuxSessionRestores()
+        let (killer, _, _) = try await windowOn(host, environment: environment, restores: restores)
+        let (watcher, watcherStore, watcherHandle) = try await windowOn(
+            host, environment: environment, restores: restores
+        )
+        try await killer.killTmuxSession(TmuxSessionKillRequest(
+            session: WorkspaceTmuxSessionSelection(hostID: environment.host.id, name: "api"),
+            confirmedHost: killer.snapshot.hosts[0],
+            serverPID: "101", sessionID: "$1", sessionCreatedAt: "1000"
+        ))
+        await waitUntilMainActor { !host.forgets.isEmpty }
+
+        watcherStore.surface.closeObservers[watcherHandle.id]?(false, 1)
+        watcher.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor { watcher.activeBorrowedTmuxSessionIsConfirmedEnded }
         watcher.refreshKwtInventory()
         try await Task.sleep(for: .milliseconds(300))
         #expect(host.restores.isEmpty)

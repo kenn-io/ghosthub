@@ -20,7 +20,9 @@ final class SavedTmuxSessionRestores {
     }
 
     private var active: [Key: Task<TmuxRestoreReport, Error>] = [:]
-    private var fenced: Set<Fence> = []
+    /// Each kill in progress holds its own fence, so a duplicate kill that
+    /// fails lifts only its own.
+    private var fenced: [Fence: Int] = [:]
 
     /// Restores the entries. An entry another window is restoring is not
     /// restored again: this caller waits for that restore and shares its
@@ -70,14 +72,16 @@ final class SavedTmuxSessionRestores {
     /// Keeps windows from restoring a session someone chose to kill, from
     /// before the kill until kwt has forgotten its saved copy.
     func fence(session: String, hostID: UUID) {
-        fenced.insert(Fence(hostID: hostID, session: session))
+        fenced[Fence(hostID: hostID, session: session), default: 0] += 1
     }
 
     func lift(session: String, hostID: UUID) {
-        fenced.remove(Fence(hostID: hostID, session: session))
+        let key = Fence(hostID: hostID, session: session)
+        guard let count = fenced[key] else { return }
+        fenced[key] = count > 1 ? count - 1 : nil
     }
 
     func isFenced(session: String, hostID: UUID) -> Bool {
-        fenced.contains(Fence(hostID: hostID, session: session))
+        fenced[Fence(hostID: hostID, session: session)] != nil
     }
 }
