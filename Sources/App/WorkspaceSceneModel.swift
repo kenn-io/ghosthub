@@ -6455,12 +6455,14 @@ final class WorkspaceSceneModel: ObservableObject {
                     $0.name == selection.name && $0.socketName == selection.socketName
                 })
                 let returnedIdentity = returned.flatMap { Self.tmuxSessionIdentity($0.summary) }
-                // A new server means the window's session ended with the old
-                // one, as in a reboot, even when this window noticed only
-                // after the session was restored.
-                let serverRestarted = identity != nil && returnedIdentity != nil
-                    && returnedIdentity?.serverPID != identity?.serverPID
-                if confirmedEndedTmuxSessionHandles.remove(handle.id) != nil || serverRestarted,
+                // The window's own session is listed nowhere, so it ended, as
+                // in a reboot, even when this window noticed only after a
+                // session of the same name came back.
+                let replaced = identity != nil && returnedIdentity != nil
+                    && !discovered.contains(where: {
+                        $0.socketName == nil && Self.tmuxSessionIdentity($0.summary) == identity
+                    })
+                if confirmedEndedTmuxSessionHandles.remove(handle.id) != nil || replaced,
                    Self.isPlainTmuxSession(selection),
                    returned != nil {
                     attachToReturnedTmuxSession(presentation, identity: returnedIdentity)

@@ -18,6 +18,9 @@ private final class RebootingHost: Sendable {
     /// How many times the server has been started again.
     let generation = LockedValue(0)
     let restoreOutcome: String
+    /// The restarted server gets the old server's PID, as can happen after
+    /// a reboot.
+    let reusesServerPID: Bool
     /// When set, a restore creates the session, then waits for this before
     /// it reports, as kwt does while panes start their programs.
     let restoreGate: DispatchSemaphore?
@@ -27,10 +30,12 @@ private final class RebootingHost: Sendable {
 
     init(
         restoreOutcome: String = "restored",
+        reusesServerPID: Bool = false,
         restoreGate: DispatchSemaphore? = nil,
         forgetGate: DispatchSemaphore? = nil
     ) {
         self.restoreOutcome = restoreOutcome
+        self.reusesServerPID = reusesServerPID
         self.restoreGate = restoreGate
         self.forgetGate = forgetGate
     }
@@ -54,7 +59,7 @@ private final class RebootingHost: Sendable {
             let generation = generation.load()
             return .success([DiscoveredTmuxSession(
                 name: "api", windowCount: 1,
-                serverPID: String(101 + generation * 100),
+                serverPID: String(101 + (reusesServerPID ? 0 : generation * 100)),
                 sessionID: "$\(1 + generation)",
                 createdAt: String(1000 + generation * 1000), managed: false
             )])
@@ -211,9 +216,12 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("a window that notices its session ended after another window restored it attaches")
-    func windowNoticingAfterRestoreAttaches() async throws {
-        let host = RebootingHost()
+    @Test(
+        "a window that notices its session ended after another window restored it attaches",
+        arguments: [false, true]
+    )
+    func windowNoticingAfterRestoreAttaches(reusesServerPID: Bool) async throws {
+        let host = RebootingHost(reusesServerPID: reusesServerPID)
         let environment = try setupStandardEnvironment()
         let restores = SavedTmuxSessionRestores()
         let (first, firstStore, firstHandle) = try await windowOn(
@@ -237,7 +245,8 @@ extension WorkspaceTmuxDiscoveryTests {
         late.refreshTmuxSessionDiscovery()
         await waitUntilMainActor {
             late.prepareActiveBorrowedTmuxSurface()
-            return lateStore.launchCommands.load().last?.contains("201") == true
+            // The restored session's creation time.
+            return lateStore.launchCommands.load().last?.contains("2000") == true
                 && late.activeBorrowedTmuxSessionIsConnected
         }
 

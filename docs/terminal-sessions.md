@@ -509,7 +509,7 @@ become restorable:
   lists its session again, under the new server PID, session ID, and creation
   time the restored session has, whether discovery or the restore finishes
   first. A window that notices its client closed only after the session came
-  back attaches too: a new server PID shows its old session ended. A failed restore shows kwt's reason with **Retry Restore** in every
+  back attaches too, because discovery no longer lists its own session. A failed restore shows kwt's reason with **Retry Restore** in every
   waiting window and is not retried on its own. While the listing runs, the
   window shows **Looking for a saved copy…**; a listing that fails shows its
   error with **Retry Restore**. **Reopen**, which creates an empty session,
