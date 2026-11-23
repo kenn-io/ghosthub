@@ -1,5 +1,5 @@
 ---
-description: Manage local and remote tmux, Herdr, and Zellij sessions without juggling SSH tabs or touching a local shell.
+description: Manage local and remote tmux, Herdr, and Zellij sessions, plus experimental Rex and Herdr Core support, without juggling SSH tabs or touching a local shell.
 icon: lucide/book-open
 ---
 
@@ -10,9 +10,10 @@ of opening tabs in a general-purpose terminal like iTerm2, Ghostty, or Kitty to
 SSH into machines, list sessions, and reattach after drops, you pick a host and
 session in Ghosthub and land straight inside it.
 
-It works with tmux, Herdr, and Zellij across your Mac and SSH hosts, including
-sessions started by coding agents. Add Git worktrees when you want a separate
-checkout and session for each task.
+It works with tmux, Herdr, and Zellij across your Mac and SSH hosts, with
+experimental support for Rex and Herdr Core, including sessions started by
+coding agents. Add Git worktrees when you want a separate checkout and session
+for each task.
 
 For a quick visual tour, start with the
 [five-minute overview](https://ghosthub.ai/overview/).

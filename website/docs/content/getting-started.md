@@ -18,6 +18,7 @@ To run the Mac app, you need:
   - tmux 3.2 or newer
   - Herdr 0.8.0 or newer
   - Zellij 0.44 or newer
+  - Rex or Herdr Core (experimental)
 
 The **Cmd-D** and **Cmd-Shift-D** pane-splitting shortcuts require tmux 3.4 or
 newer or Herdr 0.8.0 or newer on the attached session. On older versions, use
