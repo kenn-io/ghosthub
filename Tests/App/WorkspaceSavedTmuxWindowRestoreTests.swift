@@ -21,6 +21,11 @@ private final class RebootingHost: Sendable {
     /// The restarted server gets the old server's PID, as can happen after
     /// a reboot.
     let reusesServerPID: Bool
+    /// The restored session ends at once, as when its programs exit.
+    let restoredSessionExits: Bool
+    /// kwt also lists an older saved copy of the session, from before an
+    /// earlier server loss.
+    let olderCopy = LockedValue(false)
     /// When set, a restore creates the session, then waits for this before
     /// it reports, as kwt does while panes start their programs.
     let restoreGate: DispatchSemaphore?
@@ -31,11 +36,13 @@ private final class RebootingHost: Sendable {
     init(
         restoreOutcome: String = "restored",
         reusesServerPID: Bool = false,
+        restoredSessionExits: Bool = false,
         restoreGate: DispatchSemaphore? = nil,
         forgetGate: DispatchSemaphore? = nil
     ) {
         self.restoreOutcome = restoreOutcome
         self.reusesServerPID = reusesServerPID
+        self.restoredSessionExits = restoredSessionExits
         self.restoreGate = restoreGate
         self.forgetGate = forgetGate
     }
@@ -75,19 +82,25 @@ private final class RebootingHost: Sendable {
                     if listingFails.load() {
                         return (1, "")
                     }
-                    guard hasSavedCopy.load() else {
-                        return (0, marker + #"{"entries": []}"#)
+                    var entries: [String] = []
+                    let socket = #""socket": {"path": "/tmp/tmux-501/default", "name": "default"}"#
+                    if olderCopy.load() {
+                        entries
+                            .append(#"{"id": "a0", "session": "api", "saved_at": 1, "# + socket +
+                                "}")
                     }
-                    return (0, marker + """
-                    {"entries": [{"id": "a1", "session": "api",
-                      "socket": {"path": "/tmp/tmux-501/default", "name": "default"}}]}
-                    """)
+                    if hasSavedCopy.load() {
+                        entries
+                            .append(#"{"id": "a1", "session": "api", "saved_at": 2, "# + socket +
+                                "}")
+                    }
+                    return (0, marker + #"{"entries": ["# + entries.joined(separator: ", ") + "]}")
                 }
                 if command.contains("'restore'") {
                     if restoreOutcome == "restored" {
                         hasSavedCopy.withLock { $0 = false }
                         generation.withLock { $0 += 1 }
-                        serverRunning.withLock { $0 = true }
+                        serverRunning.withLock { $0 = !restoredSessionExits }
                     }
                     restoreGate?.wait()
                     return (0, marker + """
@@ -253,6 +266,39 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(host.restores.count == 1)
         await first.shutdown()
         await late.shutdown()
+    }
+
+    @MainActor
+    @Test("a window restores the copy saved at the reboot, not an older cached one")
+    func restoresTheNewestCopy() async throws {
+        let host = RebootingHost()
+        host.olderCopy.withLock { $0 = true }
+        let (model, store, handle) = try await windowOn(host)
+        await waitUntilMainActor { !model.snapshot.hosts[0].savedTmuxSessions.isEmpty }
+
+        host.reboot()
+        store.surface.closeObservers[handle.id]?(false, 1)
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor { !host.restores.isEmpty }
+
+        #expect(host.restores.map { $0.hasSuffix("'a1'") } == [true])
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("a restored session that ends before the window attaches offers Reopen")
+    func restoredSessionEndsBeforeAttach() async throws {
+        let host = RebootingHost(restoredSessionExits: true)
+        let (model, _) = try await windowOnRebootedHost(host)
+
+        await waitUntilMainActor { !host.restores.isEmpty }
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConfirmedEnded
+                && model.activeBorrowedTmuxSavedRestore == nil
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(host.restores.count == 1)
+        await model.shutdown()
     }
 
     @MainActor

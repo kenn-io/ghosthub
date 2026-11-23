@@ -6469,6 +6469,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 }
             } else if confirmedEndedTmuxSessionHandles.insert(handle.id).inserted {
                 newlyEnded = true
+            } else if savedTmuxWindowRestores[handle.id] == .restoring,
+                      savedTmuxWindowRestoreTasks[handle.id] == nil {
+                // kwt restored the session, but it ended before this window
+                // attached. The window offers Reopen; it does not restore again.
+                savedTmuxWindowRestores[handle.id] = nil
             }
         }
         if newlyEnded {
@@ -16624,6 +16629,9 @@ extension WorkspaceSceneModel {
         if refreshing {
             refreshSavedTmuxSessions(hostID: hostID)
         }
+        // A listing in flight can hold a newer copy than the cached one, as
+        // after a reboot; its result runs this again.
+        guard savedTmuxSessionDiscoveryTasks[hostID] == nil else { return }
         let saved = savedTmuxSessionsByHost[hostID] ?? []
         for presentation in retainedTmuxPresentations.values {
             let handleID = presentation.handle.id

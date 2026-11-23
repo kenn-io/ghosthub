@@ -501,19 +501,22 @@ become restorable:
   notes.
 - A window whose plain tmux session ends, whether its client exits 255 and the
   reconnect probe finds the session gone or discovery confirms it, starts a
-  fresh `snapshot` listing for that host. When kwt lists a saved copy of that
-  session (same name, default socket, newest first, name not taken), the window
-  shows **Restoring…** and restores it through the same shared restore path.
-  A window that finds another window already restoring it waits for that
-  restore and shares its outcome. An ended window attaches when discovery
-  lists its session again, under the new server PID, session ID, and creation
-  time the restored session has, whether discovery or the restore finishes
-  first. A window that notices its client closed only after the session came
-  back attaches too, because discovery no longer lists its own session. A failed restore shows kwt's reason with **Retry Restore** in every
-  waiting window and is not retried on its own. While the listing runs, the
-  window shows **Looking for a saved copy…**; a listing that fails shows its
-  error with **Retry Restore**. **Reopen**, which creates an empty session,
-  appears only after a listing finds no saved copy.
+  fresh `snapshot` listing for that host and waits for it. When that listing
+  has a saved copy of that session (same name, default socket, newest first,
+  name not taken), the window shows **Restoring…** and restores it through the
+  same shared restore path. A window that finds another window already
+  restoring it waits for that restore and shares its outcome. An ended window
+  attaches when discovery lists its session again, under the new server PID,
+  session ID, and creation time the restored session has, whether discovery or
+  the restore finishes first. A window that notices its client closed only
+  after the session came back attaches too, because discovery no longer lists
+  its own session. A restored session that ends before the window attaches
+  leaves **Reopen**; the window does not restore it again on its own. A failed
+  restore shows kwt's reason with **Retry Restore** in every waiting window and
+  is not retried on its own. While the listing runs, the window shows **Looking
+  for a saved copy…**; a listing that fails shows its error with **Retry
+  Restore**. **Reopen**, which creates an empty session, appears only after a
+  listing finds no saved copy or the restored session has ended.
 - A confirmed Kill Session keeps every window from restoring that session from
   before the kill until kwt has forgotten its saved copy. Ghosthub runs
   `forget` in the background using the socket name (since killing the last
