@@ -503,15 +503,21 @@ become restorable:
   reconnect probe finds the session gone or discovery confirms it, starts a
   fresh `snapshot` listing for that host. When kwt lists a saved copy of that
   session (same name, default socket, newest first, name not taken), the window
-  shows **Restoring…**, restores it through the same shared restore path, and
-  reattaches. A window that finds another window already restoring it attaches
-  when discovery lists the session again. A failed restore shows kwt's reason
-  with **Retry Restore** and is not retried on its own. While the listing runs,
-  the window shows **Looking for a saved copy…** so **Reopen**, which creates an
-  empty session, appears only when no saved copy exists.
-- After a confirmed Kill Session, Ghosthub runs `forget` in the background
-  using the socket name (since killing the last session stops the server) so
-  intentionally killed sessions are not offered for restore.
+  shows **Restoring…** and restores it through the same shared restore path.
+  A window that finds another window already restoring it waits for that
+  restore and shares its outcome. An ended window attaches when discovery
+  lists its session again, under the new server PID, session ID, and creation
+  time the restored session has, whether discovery or the restore finishes
+  first. A failed restore shows kwt's reason with **Retry Restore** in every
+  waiting window and is not retried on its own. While the listing runs, the
+  window shows **Looking for a saved copy…**; a listing that fails shows its
+  error with **Retry Restore**. **Reopen**, which creates an empty session,
+  appears only after a listing finds no saved copy.
+- A confirmed Kill Session keeps every window from restoring that session from
+  before the kill until kwt has forgotten its saved copy. Ghosthub runs
+  `forget` in the background using the socket name (since killing the last
+  session stops the server) so intentionally killed sessions are not offered
+  for restore.
 - Pull-request imports remain the one alternate-socket case: `kwt pr attach`
   validates provenance and creates or repairs the inert protected session on
   each attach and SSH reconnect via the managed kwt path (never falling back to
