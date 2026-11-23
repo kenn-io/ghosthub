@@ -1,8 +1,8 @@
 # Troubleshooting
 
-Common bootstrap and build failures and how to fix them.
+Common local bootstrap, build, and runtime failures and how to fix them.
 
-## App fails immediately on launch with a libghostty bootstrap error
+## App exits on launch with a libghostty bootstrap error
 
 Rerun bootstrap:
 
@@ -10,14 +10,13 @@ Rerun bootstrap:
 make bootstrap-libghostty
 ```
 
-The target is idempotent; if staged artifacts already match the
-pinned Ghostty revision, it exits without rebuilding. If bootstrap
-still fails after this, check the sections below.
+It is idempotent and exits immediately if staged artifacts already match the
+pinned Ghostty revision. If it still fails, check the sections below.
 
-## Bootstrap fails because `zig` does not match the pinned Ghostty requirement
+## Bootstrap fails because `zig` does not match the pinned version
 
-Install the Zig release pinned in `mise.toml` and run the bootstrap through
-mise. A newer Zig minor version is not automatically compatible:
+Install the Zig version pinned in `mise.toml` and run bootstrap through mise (a
+newer Zig minor version is not interchangeable):
 
 ```bash
 mise install zig
@@ -26,8 +25,8 @@ mise exec -- make bootstrap-libghostty
 
 ## Bootstrap fails with `missing Metal Toolchain`
 
-Complete first-launch setup and install the toolchain component for the active
-Xcode selection:
+Run Xcode's first-launch setup and download the Metal Toolchain for the active
+Xcode:
 
 ```bash
 sudo xcodebuild -runFirstLaunch
@@ -37,8 +36,8 @@ xcrun --sdk macosx --find metal
 make bootstrap-libghostty
 ```
 
-If that still fails, make sure the active developer directory points
-at a full Xcode install rather than Command Line Tools only:
+If that still fails, point `xcode-select` at a full Xcode install rather than
+Command Line Tools alone:
 
 ```bash
 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
@@ -47,102 +46,88 @@ make bootstrap-libghostty
 
 ## Bootstrap reports that the active macOS SDK is incompatible
 
-The pinned Zig build runner needs every architecture used by the Zig
-executable and selected XCFramework target in the SDK's `libSystem.B.tbd`.
-Some newer SDKs advertise only `arm64e` instead of plain `arm64`; cross and
-universal builds may require both `arm64` and `x86_64`. Ghosthub detects this
-before building and automatically uses the newest compatible macOS SDK already
-installed with Xcode or Command Line Tools. The selected fallback is printed
-during bootstrap.
+The pinned Zig build runner needs every architecture used by Zig and the target
+XCFramework to appear in the SDK's `libSystem.B.tbd`. Some newer SDKs list only
+`arm64e` instead of plain `arm64`, and cross or universal builds can need both
+`arm64` and `x86_64`. Ghosthub checks this up front and automatically switches
+to the newest compatible SDK already installed with Xcode or Command Line
+Tools, printing the fallback path during bootstrap.
 
-If bootstrap reports that it could not find a compatible SDK, install or
-select the supported Xcode baseline named in the error and rerun:
+If no compatible SDK is found, install or select the supported Xcode baseline
+named in the error and rerun:
 
 ```bash
 make bootstrap-libghostty
 ```
 
-Do not add `--sysroot` to `LIBGHOSTTY_ZIG_BUILD_ARGS` for this failure. That
-flag reaches the Ghostty build command but not the Zig build-runner compile
+Do not work around this by adding `--sysroot` to `LIBGHOSTTY_ZIG_BUILD_ARGS`:
+that flag reaches the Ghostty build command, not the Zig build-runner compile
 that fails first.
 
-## Verify bootstrap state without rebuilding
+## Check bootstrap state without rebuilding
 
 ```bash
 make check-libghostty
 ```
 
-Reports whether staged `libghostty` artifacts match the pinned
-Ghostty revision.
+Reports whether staged `libghostty` artifacts match the pinned revision.
 
 ## Remote tmux attach fails on an SSH host
 
-Click the host's caution icon. Ghosthub checks the exact SSH destination and,
-if OpenSSH reports an unseen key, immediately presents its destination and
-fingerprint for approval, saves it through OpenSSH, and retries inventory.
-ProxyJump routes may show one review for each unseen host in the route. When a
-jump host needs a password or another interactive response, Ghosthub asks for
-it after that host's key is approved, names the exact hop controlling the
-prompt, then continues to the next route key. Enter only that hop's credentials.
-Opaque ProxyCommand routes and jump hosts with another proxy route cannot be
-reviewed safely and fail closed. If no unseen key is reported, the same
-recovery sheet checks the connection. A reachable host keeps its inventory
-diagnostic and offers **Retry**. Ghosthub shows interactive challenges in a
-native secure-entry sheet, confirms the connection before you continue, and
-shares that OpenSSH connection while windows use it; once the last owner
-releases it, kwt applies its own idle policy. The response is not saved.
-When Tailscale SSH requires a browser check, choose **Open Authentication Page**
-in Ghosthub's authentication sheet and complete the sign-in. Ghosthub keeps
-that SSH attempt open and continues automatically after approval. If the check
-expires, retry the connection to request a fresh link.
+Click the host's warning icon in the sidebar. Ghosthub checks the exact SSH
+destination and guides you through recovery:
 
-Use **Test Connection** to verify authentication and that `tmux` is on the
-remote login-shell `PATH`.
-Kwt does not need a system installation: Ghosthub automatically installs or
-updates its managed helper when it loads inventory for a configured remote
-macOS or Linux host. Passive maintenance failures do not affect terminal
-sessions or show a host warning. Ghosthub retries the repair when you request a
-project or worktree operation and reports an error there if it still cannot
-prepare the helper. If the host has never used kwt, enter an existing checkout's
-absolute path with the **+** beside the **Projects** group for that host; repeat
-for each repository Ghosthub should display.
+- **Unseen host key:** Ghosthub displays the destination and fingerprint for
+  approval, saves it through OpenSSH's `UserKnownHostsFile`, and retries
+  inventory. ProxyJump routes review each unseen hop in order. Opaque
+  `ProxyCommand` routes and jump hosts that chain into another proxy fail
+  closed because their intermediate trust boundaries cannot be shown safely.
+- **Interactive login prompts:** passwords, passphrases, and challenges appear
+  in a native secure sheet naming the exact host or jump hop asking for them.
+  Answers are passed to OpenSSH without touching CLI arguments, environment
+  variables, logs, or disk. Shared OpenSSH connections stay open while windows
+  use them; once the last owner releases the connection, kwt applies its idle
+  policy.
+- **Tailscale SSH browser checks:** click **Open Authentication Page** and
+  finish sign-in in your browser; Ghosthub keeps the SSH attempt open and
+  continues automatically after approval. If the link expires, retry to get a
+  fresh one.
 
-**Test Connection** follows your OpenSSH host-key policy. If the exact full
-destination has an unseen key, Ghosthub presents OpenSSH's fingerprint for
-explicit approval, asks OpenSSH to save that same key using its configured
-`UserKnownHostsFile`, and retries the probe. A trusted short hostname or alias
-is a separate OpenSSH identity. Ghosthub reviews effective `ask` and
-`accept-new` policies but does not override `yes`, `no`, or `off`; change that
-destination's SSH configuration deliberately if you want an in-app review.
-After host-key review, Ghosthub securely brokers interactive responses to the
-system OpenSSH client without putting them in command arguments, environment
-variables, logs, or persistent storage.
-A reachable host without tmux is reported
-separately as **tmux is not installed** rather than as an SSH failure.
+Use **Test Connection** in Host Settings to verify auth and confirm `tmux` is
+on the remote login-shell `PATH`:
+
+- **Host-key policy:** Ghosthub handles `ask` and `accept-new` policies in-app
+  and respects explicit `yes`, `no`, or `off` settings without overriding them.
+  Remember that a short alias and a full hostname are distinct OpenSSH
+  identities.
+- **Missing tmux:** a reachable host without tmux reports **tmux is not
+  installed** separately from SSH failures.
+- **Managed kwt helper:** Ghosthub installs and updates its pinned helper
+  automatically on remote macOS and Linux hosts during inventory. Background
+  update failures never interrupt standalone sessions or show a host warning;
+  Ghosthub retries repair before any explicit project or worktree action and
+  reports an error only if repair still fails. On a fresh host, register
+  repositories via the **+** beside **Projects**.
 
 ## Herdr sessions do not appear
 
-Ghosthub treats Herdr as an optional, independent host capability. A host with
-no `herdr` executable shows no Herdr group or missing-tool warning and remains
-fully usable for tmux and kwt. On the local Mac or a remote POSIX host, verify
-the account login environment reports the expected sessions:
+Herdr is optional and independent of tmux and projects. If `herdr` is not
+installed, the host stays usable with no missing-tool warning. On your Mac or a
+remote POSIX host, check what the login shell sees:
 
 ```bash
 command -v herdr
 herdr session list --json
 ```
 
-Running and stopped sessions appear in the host's session list with a
-**herdr tui** label. A stopped row is dimmed, marked **stopped**, and listed
-last; choose **Restart** to restore its saved shape
-with new processes. Malformed
-JSON, a failing Herdr command, or an SSH failure adds a host-scoped warning;
-use its **Retry** action after correcting the command or connection. Herdr is
-not supported on experimental Windows/psmux hosts.
+Running and stopped sessions appear in the host's session list with a **herdr
+tui** label. Stopped rows sit dimmed at the bottom; choose **Restart** to
+relaunch their saved layout with fresh processes. Malformed JSON, a failing
+`herdr` command, or an SSH error puts a warning with **Retry** on the host
+header. Herdr is not supported on experimental Windows/psmux hosts.
 
-Closing a Herdr presentation only detaches. **Stop Session…** is a separate,
-confirmed action that terminates every process while preserving saved shape.
-**Delete Session…** permanently removes a stopped named session and is never
-available for Herdr's default session. A normal detach offers manual reconnect;
-an SSH transport loss retries only while a fresh exact-session probe still
-confirms the target.
+Closing a Herdr view only detaches. **Stop Session…** confirms before ending
+all processes while keeping the saved layout, and **Delete Session…** removes a
+stopped named session permanently (never allowed for Herdr's default session).
+A manual detach offers **Reconnect**; SSH drops retry automatically only while
+a fresh exact-session check confirms the session is still running.

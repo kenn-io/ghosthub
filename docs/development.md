@@ -1,10 +1,10 @@
 # Development
 
-Build the app, test a change, and package it locally with the commands below.
-For initial setup, see [Quick Start](quickstart.md). Coding agents follow the
-same commands and the repository's `AGENTS.md`.
+Commands for building, formatting, testing, and packaging Ghosthub locally. For
+first-time machine setup, see [Quick start](quickstart.md). Coding agents use
+these same commands alongside `AGENTS.md`.
 
-## Swift App
+## Swift app
 
 Build the macOS app:
 
@@ -12,25 +12,23 @@ Build the macOS app:
 make build
 ```
 
-Launch the app (assembles and opens `dist/debug/Ghosthub.app`):
+Assemble and launch `dist/debug/Ghosthub.app`:
 
 ```bash
 make run-app
 ```
 
-The packaged debug app embeds kwt. By default, `make run-app` verifies and
-builds the exact revision in `KWT_REVISION` at `.build/kwt/kwt`. Point
-`KWT_BINARY_PATH` at an existing executable to test a separately prepared
-build:
+`make run-app` verifies and builds the exact `KWT_REVISION` commit at
+`.build/kwt/kwt` and embeds it into the debug bundle. To test a separately
+built kwt binary instead:
 
 ```bash
 make run-app KWT_BINARY_PATH=/absolute/path/to/kwt
 ```
 
-Such a bundle records `GhosthubKwtSourceRevision` as `unpinned` and takes
-`GhosthubKwtVersion` from what that binary reports, so it never claims the
-pinned provenance. Set `KWT_VERSION` and `KWT_SOURCE_REVISION` explicitly to
-record a helper whose origin you know.
+That bundle records `GhosthubKwtSourceRevision` as `unpinned` and reads
+`GhosthubKwtVersion` from the binary itself. Pass `KWT_VERSION` and
+`KWT_SOURCE_REVISION` explicitly if you want to record known provenance.
 
 Run the compiler warning gate:
 
@@ -38,63 +36,59 @@ Run the compiler warning gate:
 make swift-warning-check
 ```
 
-Apply or check the SwiftFormat rules in `.swiftformat`. CI runs the check, so
-a drifting file fails the build:
+Format Swift code according to `.swiftformat` (CI runs `make format-check` and
+fails on drift):
 
 ```bash
 make format         # rewrite in place
-make format-check   # report without changing anything
+make format-check   # check without modifying files
 ```
 
-The repository's Prek hooks run the formatter and basic file checks on both
-Linux and macOS. The compiler warning hook runs only on macOS; macOS CI runs
-the full `make swift-warning-check`. Linux commits need no
-hook exceptions.
+The global Prek hooks run SwiftFormat and basic file checks on Linux and macOS,
+and run the Swift compiler warning check on macOS (macOS CI also runs
+`make swift-warning-check`). Linux commits need no hook exceptions. Do not
+install a second per-repository hook.
 
-The "Install pinned SwiftFormat" CI step installs the release that `mise.toml`
-pins and checks it against `.github/swiftformat.sha256`. To change the version
-in one pull request:
-
-1. Update `swiftformat` in `mise.toml`. Use a plain release number such as
-   `0.63.1`.
-2. Replace the line in `.github/swiftformat.sha256` with the SHA-256 of
-   `swiftformat.zip` from that release, named `swiftformat-<version>.zip`.
-3. Run `mise exec -- make format` and commit the result.
-
-Install the pinned formatter through mise and make it available when committing:
+Install the pinned SwiftFormat through mise so hooks can find it:
 
 ```bash
 mise install swiftformat
 mise exec swiftformat -- git commit
 ```
 
-Use the managed global Prek hook. Do not install a second per-repository hook.
+CI verifies the `mise.toml` SwiftFormat version against
+`.github/swiftformat.sha256`. To bump SwiftFormat in one PR:
+
+1. Update `swiftformat` in `mise.toml` to the new release number (such as
+   `0.63.1`).
+2. Update `.github/swiftformat.sha256` with the SHA-256 of `swiftformat.zip`
+   from that release, named `swiftformat-<version>.zip`.
+3. Run `mise exec -- make format` and commit the diff.
 
 Run Swift tests:
 
 ```bash
 make swift-test
-swift test list   # enumerate tests without running
+swift test list   # list tests without running them
 ```
 
-The test target gives every run its own pre-created `TMUX_TMPDIR` and removes
-its tmux servers and sockets afterward. Cancelling a run forwards the signal
-and gives the test group `GHOSTHUB_TEST_STOP_GRACE` seconds (default 20, or 2
-under `tools/run_with_timeout.sh`) to unwind before it is force-killed. If a
-test runner was hard-killed, use `make purge-test-tmux` to stop only
-Ghosthub's test-prefixed tmux processes and remove their isolated and legacy
-sockets; runs whose owning wrapper is still alive are left untouched.
+`make swift-test` creates an isolated `TMUX_TMPDIR` per run and removes its
+tmux servers and sockets afterward. Canceling a run forwards the signal and
+waits `GHOSTHUB_TEST_STOP_GRACE` seconds (default 20, or 2 under
+`tools/run_with_timeout.sh`) before force-killing. If a run was hard-killed,
+run `make purge-test-tmux` to clean up only Ghosthub's test-prefixed tmux
+processes and sockets without touching any active test run.
 
 ## Python tooling
 
-The main Python tool is `tools/bootstrap_libghostty.py`. Run the test
-suite through `uv`-managed pytest:
+The main Python tool is `tools/bootstrap_libghostty.py`. Run all Python tests
+through `uv`-managed pytest:
 
 ```bash
 make python-test
 ```
 
-Focused targets:
+Run just the libghostty bootstrap tests:
 
 ```bash
 make test-libghostty-bootstrap
@@ -102,105 +96,92 @@ make test-libghostty-bootstrap
 
 ## End-to-end tests
 
-The primary native workflow suite is:
+Run the core native workflow suite:
 
 ```bash
 make test-essential-workflows
 ```
 
-This first builds the exact `KWT_REVISION` helper and exercises project
-registration, daemon-backed inventory, removal of a missing checkout, and
-inventory refresh in an isolated `KWT_HOME`. It then runs the focused kwt
-inventory, host resolution, sidebar, and ordinary tmux attachment contracts.
+This builds the pinned `KWT_REVISION` helper, exercises project registration,
+daemon-backed inventory, missing-checkout removal, and inventory refresh in an
+isolated `KWT_HOME`, and runs the kwt inventory, host resolution, sidebar, and
+tmux attachment contracts.
 
-To check Zellij attachment through a native libghostty terminal on macOS:
+Test Zellij attachment inside a native libghostty surface on macOS:
 
 ```bash
 make test-zellij-attach ZELLIJ_BINARY_PATH="$(command -v zellij)"
 ```
 
-The test creates isolated sessions, selects exact names among multiple
-sessions, types into their shells, and detaches and reattaches. Its config,
-cache, data, logs, and sockets stay in a temporary directory. It does not
-connect to your existing Zellij sessions.
+This runs in a temporary directory (isolated config, cache, data, logs, and
+sockets), creating sessions, selecting exact names among multiple sessions,
+typing into their shells, and detaching/reattaching without touching your real
+Zellij sessions.
 
-The SSH cutover suite uses two isolated Docker hosts to exercise a direct
-connection, a ProxyJump route, and an interactive ProxyJump route through the
-pinned kwt helper:
+Test direct SSH, ProxyJump, and interactive ProxyJump auth against two local
+Docker hosts using the pinned kwt helper:
 
 ```bash
 make test-ssh-authentication-docker
 ```
 
-The interactive route proves that host-key confirmation and encrypted-key
-passphrase prompts are attributed to both hops and answered through kwt's
-bounded prompt channel. The fixture creates temporary host and client keys,
-known-hosts data, SSH configuration, kwt state, and daemon endpoints. It does
-not read or modify the developer account's SSH configuration or kwt daemon.
+The interactive ProxyJump test checks that host-key confirmations and
+encrypted-key passphrase prompts attribute each prompt to the right hop over
+kwt's bounded prompt channel. All keys, known-hosts files, SSH config, kwt
+state, and sockets stay in temporary directories and never touch your account's
+SSH config or kwt daemon.
 
-## Apple Silicon macOS toolchain
+## Apple Silicon macOS CI and bootstrap
 
-Pull requests invoke the `main`-pinned `.github/workflows/ci.yml`. This workflow runs on GitHub's
-hosted `macos-26` Apple Silicon image, including `main` pushes, fork pull requests, and repository
-copies. The hosted job keeps the check name `macOS (Apple Silicon, hosted)`.
+PRs run `.github/workflows/ci.yml` on GitHub's hosted `macos-26` Apple Silicon
+image (`macOS (Apple Silicon, hosted)`).
 
-Hosted CI explicitly excludes the five terminal smoke tests that require an active key window. With
-the self-hosted macOS lane retired, these tests remain available locally through `make swift-test`;
-CI does not cover them. The remaining portable terminal and AppKit coverage, including the
-account-login-shell test, continues to run hosted. CI rejects every runtime skip among its selected
-terminal smoke tests. It selects a supported Xcode installation and the exact Zig toolchain required
-by the pinned Ghostty source, then runs the existing build and test gates.
+Hosted CI skips the five terminal smoke tests that require an active key
+window; run those locally with `make swift-test`. All other portable terminal
+and AppKit tests (including the account login-shell test) run in hosted CI,
+which rejects any unexpected runtime skip.
 
-Bootstrap downloads every Ghostty dependency with `zig build --fetch=all`
-before it builds. If that download fails, bootstrap retries it twice, after 5
-and 10 seconds, reusing the packages it already downloaded. The build itself
-runs once and needs no network access, so a compiler error stops it
-immediately. After three failed downloads, read the error in the log: rerun
-`make build` later for a connection or server error, or check the dependency
-URL for a 404 or hash mismatch.
+Bootstrap fetches Ghostty dependencies with `zig build --fetch=all` before
+compiling, retrying twice on failure (after 5s and 10s) while reusing already
+downloaded packages. Compilation itself runs once offline so compiler errors
+fail immediately. If all three downloads fail, check the log to see whether it
+was a transient network error or a broken URL/hash.
 
-Some newer Xcode SDK stubs do not advertise the plain `arm64-macos` target.
-Local bootstrap checks every architecture required by the running Zig
-executable and selected XCFramework target, then places a repository-local
-`xcrun` shim ahead of `PATH` for the Zig process when the active SDK is
-insufficient. SDK discovery points at the newest compatible installed SDK. The
-selected developer directory and the caller's environment remain unchanged.
-If no compatible SDK is installed, bootstrap stops with the searched locations
-and the supported Xcode baseline instead of failing later with linker errors.
+When a newer Xcode SDK omits plain `arm64-macos` from its stubs, local
+bootstrap checks the required architectures and puts a repo-local `xcrun` shim
+ahead of `PATH` for Zig pointing at the newest compatible installed SDK,
+leaving `xcode-select` and your environment untouched. If no compatible SDK
+exists, bootstrap fails up front with the paths it searched instead of hitting
+a late linker error.
 
-CI builds libghostty with `LIBGHOSTTY_XCFRAMEWORK_TARGET=native`, producing the arm64 slice required
-by the hosted runner. The project default remains `aarch64` for developer Macs.
+CI builds libghostty with `LIBGHOSTTY_XCFRAMEWORK_TARGET=native` (arm64 slice),
+while developer Macs default to `aarch64`.
 
-The separate macOS compatibility workflow builds the unsigned release bundle
-on GitHub's Apple Silicon `macos-15` image with Xcode 26.0.1. It verifies the
-bundle's declared minimum and every packaged Mach-O deployment target, then
-runs the libghostty runtime smoke suite on Sequoia. This lane protects the
-macOS 15 release floor independently of the primary macOS 26 validation lane.
+A separate macOS compatibility workflow builds the unsigned release bundle on
+GitHub's Apple Silicon `macos-15` image with Xcode 26.0.1, checks every
+Mach-O deployment target against the macOS 15 floor, and runs the libghostty
+runtime smoke suite on Sequoia.
 
-## Remote SSH Host Prerequisites
+## Remote SSH host prerequisites
 
-Remote hosts are bootstrapped from the app (Settings → Remote Hosts). SSH
-end-to-end coverage runs through `make test-ssh-authentication-docker`
-(local Docker fixture) and `make test-ssh-authentication-live` (opt-in,
-against `GHOSTHUB_SSH_INTEGRATION_DESTINATION`). Headless Linux
-hosts should provide:
+Configure remote hosts in **Settings → Hosts**. SSH end-to-end tests run via
+`make test-ssh-authentication-docker` (local Docker) and
+`make test-ssh-authentication-live` (opt-in against
+`GHOSTHUB_SSH_INTEGRATION_DESTINATION`).
 
-- `git` and `tmux` on the non-interactive SSH `PATH`
+Headless Linux hosts need `git` and `tmux` on their non-interactive SSH `PATH`.
+kwt does not need to be installed system-wide: Ghosthub copies and updates its
+architecture-matched pinned helper under `~/.ghosthub/` on configured macOS and
+Linux hosts during inventory. Register repositories through **Add Project**
+with each checkout's absolute path. If a background helper update fails,
+standalone tmux discovery and attachment keep working; Ghosthub retries
+helper repair before an explicit project or worktree action and reports an
+error only if repair still fails. Windows helper install stays manual until
+the executables are Authenticode-signed.
 
-Kwt does not need to be installed system-wide. Ghosthub automatically copies
-or updates its pinned architecture-matched helper in the remote user's
-`~/.ghosthub/` directory when it loads inventory for a configured macOS or
-Linux host. On a fresh host, enter each existing checkout's absolute path under
-**Add Project**. The managed helper records it through kwt's supported registry
-command and Ghosthub refreshes project/worktree inventory. Tmux discovery and
-attachment continue to work if passive helper provisioning fails. Ghosthub
-retries managed-helper repair before an explicit project or worktree operation
-and reports a failure on that operation. Windows provisioning remains explicit
-until its kwt executables are Authenticode-signed.
-
-Ghosthub uses the host's OpenSSH configuration directly and invokes an
-ordinary tmux client on the target host. Tmux owns windows, panes, layouts,
-history, and session lifetime.
+Ghosthub reads your OpenSSH config directly and opens a normal tmux client on
+the target host. tmux owns windows, panes, layouts, history, and session
+lifetime.
 
 ## Runtime state paths
 
@@ -210,43 +191,32 @@ history, and session lifetime.
 
 ## Release packaging
 
-A full local release-app build:
+Build a local release app bundle into `dist/release/`:
 
 ```bash
 make release-app
 ```
 
-The app version comes from `RELEASE_VERSION`; the build number defaults to the
-current commit count. Override them only when deliberately testing alternate
-packaging inputs. Local bundles also record their git description, which the
-About panel and anonymous usage telemetry report in place of the release
-version.
+Version comes from `RELEASE_VERSION`, and the build number defaults to the git
+commit count. Local bundles also embed `git describe`, which About and
+anonymous usage pings report in place of the release version.
 
-Ghosthub bundles kwt CLI helpers but no daemon. A clean `make release-app`
-builds the pinned local helper and the Darwin/Linux amd64/arm64 remote matrix
-automatically; `KWT_BINARY_PATH` may name an existing local executable instead.
-Outputs land in `dist/release/`.
+`make release-app` bundles kwt CLI helpers (no daemon), building the pinned
+local helper plus the Darwin/Linux amd64/arm64 remote matrix automatically
+unless `KWT_BINARY_PATH` overrides the local binary.
 
-DMG build:
+Build a DMG (and sign/notarize it if Apple credentials are in the environment):
 
 ```bash
 make release-dmg
 ```
 
-If Apple signing and notary environment variables are present, this
-target also signs and notarizes the DMG. The full tag-release
-workflow and secret setup live in [`release.md`](release.md).
+See [Release](release.md) for the full tag-release workflow and secrets setup.
 
 ## Working style
 
-When making meaningful changes:
-
-- Keep [`architecture.md`](architecture.md) in sync with feature and
-  architecture decisions.
-- Prefer adding or updating tests in the same change as logic
-  changes.
-- Do not introduce database migrations before the first production
-  release.
-- Keep [`release.md`](release.md) and
-  `.github/workflows/release.yml` in sync when changing release
-  automation.
+- Keep [architecture.md](architecture.md) updated when feature or architecture
+  assumptions change.
+- Add or update tests in the same change as logic edits.
+- Never add database migrations before the first production release.
+- Keep [release.md](release.md) and `.github/workflows/release.yml` in sync.
