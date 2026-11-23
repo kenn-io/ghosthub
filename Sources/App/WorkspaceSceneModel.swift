@@ -15673,6 +15673,11 @@ extension WorkspaceSceneModel {
         let selection = try WorkspaceBackendTerminalSelection(
             hostID: hostID, kind: .rex, address: result.get()
         )
+        // A sweep still running may have listed the host before the window
+        // existed, and would replace the listing below with one without it.
+        if backendTerminalDiscoveryTask != nil {
+            scheduleBackendTerminalDiscovery(restarting: true)
+        }
         // List the new window even if the user moved on, so its row shows.
         _ = try await validatedBackendTerminal(
             selection, title: request.label ?? selection.address, on: host

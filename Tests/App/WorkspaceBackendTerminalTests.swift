@@ -1309,6 +1309,47 @@ struct WorkspaceBackendTerminalTests {
         await model.shutdown()
     }
 
+    @Test("a sweep that started before a Rex window was created cannot hide it")
+    func rexCreationDuringSweep() async throws {
+        let environment = try environment(terminals: [Self.rexWindow])
+        let fake = FakeHost([Self.rexWindow])
+        let created = BackendTerminalSummary(kind: .rex, address: "window:02bb", title: "zsh ~")
+        // The first sweep lists the host before the window exists and
+        // answers only after the window is created.
+        let staleSweep = BlockingBackendDiscovery(listing: [.rex: .available([Self.rexWindow])])
+        let sweeps = Mutex(0)
+        let model = try makeTerminalModel(
+            environment, store: RecordingNativeSessionSurfaceStore(), fake: fake,
+            discovery: { _ in
+                let first = sweeps.withLock { count in
+                    count += 1
+                    return count == 1
+                }
+                return first
+                    ? staleSweep.discover()
+                    : [.rex: fake.listing(.rex), .herdrCore: fake.listing(.herdrCore)]
+            },
+            rexWindowCreation: { _, _, _ in
+                fake.terminals.withLock { $0.append(created) }
+                return .success(created.address)
+            },
+            startServices: true
+        )
+        await waitUntilMainActor { staleSweep.starts == 1 }
+
+        let selection = try await model.createRexWindow(
+            RexWindowRequest(), hostID: environment.host.id
+        )
+        staleSweep.release()
+        await waitUntilMainActor { model.isWorkspaceInventoryRefreshComplete }
+
+        #expect(model.snapshot.host(id: environment.host.id)?.backendTerminals
+            .contains(created) == true)
+        try await model.openBackendTerminal(selection)
+        #expect(model.activeBackendTerminalSelection == selection)
+        await model.shutdown()
+    }
+
     @Test("navigating away before a remote connection is ready sends nothing")
     func rexCreationCancelledBeforeSending() async throws {
         let environment = try environment(terminals: [Self.rexWindow], remote: true)
