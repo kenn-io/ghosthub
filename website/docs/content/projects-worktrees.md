@@ -1,357 +1,348 @@
 ---
-description: Register Git projects or plain directories and open their workspaces.
+description: Register Git projects or plain directories and manage their worktrees and sessions.
 icon: lucide/git-branch
 ---
 
 # Projects, worktrees, and directories
 
-Give each branch or pull request its own checkout and terminal session. You
-and your agents can work on separate tasks without switching branches in the
-same folder. Projects and worktrees are optional.
+Give each branch or pull request its own Git checkout and tmux session so you
+and your coding agents can work on separate tasks without switching branches in
+the same folder. Projects and worktrees are optional.
 
-Ghosthub delegates repository and worktree identity to
-[kwt](https://kwt.sh). Packaged builds use their revision-pinned bundled kwt
-locally and a matching managed helper on remote macOS or Linux hosts.
+Ghosthub uses [kwt](https://kwt.sh) to track repositories and worktrees.
+Packaged builds use a revision-pinned copy of kwt locally and keep a matching
+managed copy updated on remote macOS and Linux hosts.
 
 ## Register a project
 
-Start with an existing Git checkout on the target host.
+Start with an existing Git checkout on the host where the code lives.
 
-1. Expand the local Mac or a remote macOS or Linux host.
-2. Select the **+** beside **Projects**.
-3. Enter the checkout's absolute path on that host.
-4. Confirm the registration.
+1. Expand your Mac or a remote macOS or Linux host in the sidebar.
+2. Click the **+** beside **Projects**.
+3. Enter the checkout's full path on that host.
+4. Confirm.
 
-Ghosthub registers that one path through kwt and refreshes inventory. It does
-not scan the machine or edit kwt configuration itself.
+Ghosthub registers that single path with kwt and refreshes the sidebar. It never
+scans the machine or edits kwt's config files on its own.
 
-Repositories arranged as a `.bare/` directory with sibling worktrees are also
-supported. Enter the containing directory or any worktree's path. New worktrees
-stay beside the existing ones; the `.bare/` directory is not a worktree row.
+Bare repositories laid out as a `.bare/` folder with sibling worktrees work too.
+Enter either the parent folder or any worktree path. New worktrees are created
+beside the existing ones, and `.bare/` does not show up as a worktree row.
 
-Ghosthub automatically maintains the
-[managed kwt helper](remote-hosts.md#managed-kwt-helper) on configured remote
-macOS and Linux hosts. Before a project or worktree operation, Ghosthub repairs
-the helper if needed; if repair fails, that operation shows the error without
-affecting ordinary terminal sessions. Project registration is not yet available
-for native Windows hosts.
+Ghosthub keeps the [managed kwt helper](remote-hosts.md#managed-kwt-helper) up
+to date on configured macOS and Linux SSH hosts. Before any project or worktree
+action, Ghosthub repairs the helper if needed; if repair still fails, that
+action reports the error while your standalone sessions keep working. Adding
+projects is not supported on native Windows hosts yet.
 
-If the SSH destination changes while the Add Project sheet is open, close the
-sheet and start again so the confirmation applies to the current host.
+If you change a host's SSH destination while the Add Project sheet is open,
+close the sheet and open it again so the registration targets the updated host.
 
 ## Find a moved project
 
-When a project folder moves or is renamed, Ghosthub asks kwt to look for its
-new location among repositories it already knows about. One unambiguous match
-updates the project automatically. Ghosthub attempts this once while that
-registration remains unavailable; normal refreshes still notice when the
-original folder returns.
+If you move or rename a project folder, Ghosthub asks kwt to look for it among
+the repositories kwt already knows about. If there is one clear match, Ghosthub
+updates the project automatically. Ghosthub tries that automatic check once
+while the project is missing, while normal refreshes still catch it if the
+original folder comes back.
 
-An unresolved project shows a folder question-mark button beside its name.
-Other projects and terminal sessions remain usable. Select that button, or
-Control-click the project and choose **Locate Folder…**. On this Mac, use
-**Choose Folder…** or enter the new absolute path. For a remote host, enter the
-path on that host. Select the main checkout of the same repository, then
-select **Use Folder**.
+A missing project shows a folder question-mark button beside its name while your
+other projects and sessions stay usable. Click that button, or Control-click the
+project and choose **Locate Folder…**. On your Mac, click **Choose Folder…** or
+type the new path; on a remote host, enter the path on that host. Pick the main
+checkout of the same repository and click **Use Folder**.
 
 ![Locate Folder sheet for a moved project](/docs/assets/guide-project-recovery.png)
 
-Recovery preserves the registration until it can verify the new location.
-Automatic matching requires a repository identity; multiple matching clones
-need an explicit choice. If the project has no stable repository identity,
-remove its old registration and add its new location. **Remove Project…** is
-also available when you no longer want the project listed.
+Ghosthub keeps the old registration until it verifies the new folder. Automatic
+matching requires a repository identity, and if multiple clones match, you need
+to choose one yourself. If the project has no stable repository identity, remove
+its old registration and register the new path. You can also choose **Remove
+Project…** if you no longer want it listed.
 
 ## Remove a project
 
-Hover over a project row and select its × control, or Control-click the row
-and choose **Remove Project…**. Then confirm the project and host. Ghosthub asks
-kwt to unregister that project and refreshes inventory. You can remove the
-registration even if its checkout folder has already been deleted. This does
-not delete the repository, any worktree directory, or any tmux session. If an
-imported pull-request worktree still has a live session on its protected tmux
-server, kill that session before removing the project. Ordinary sessions that
-remain live are still available in the host's session list.
+Hover over a project row and click **×**, or Control-click the row and choose
+**Remove Project…**, then confirm the project and host. Ghosthub unregisters the
+project in kwt and refreshes the sidebar. You can unregister a project even if
+its folder has already been deleted.
+
+Removing a project never deletes your Git repository, worktree folders, or tmux
+sessions. If an imported pull-request worktree still has a running session on
+its protected tmux server, kill that session before removing the project. Any
+ordinary tmux sessions that are still running stay available in the host's
+session list.
 
 ![Ghosthub showing the Remove Project action and its non-destructive confirmation](/docs/assets/guide-project-removal.png)
 
-If the project or host connection changes while confirmation is open, Ghosthub
-stops and asks you to start the removal again. Project removal is available on
-the local Mac and configured remote macOS or Linux hosts, but not native
-Windows hosts.
+If the project or host connection changes while the confirmation sheet is open,
+Ghosthub stops and asks you to start again. Removing projects works on your Mac
+and on macOS and Linux SSH hosts, not on native Windows hosts.
 
 ## Register a plain directory
 
-A hub, notes tree, or other directory that is not a Git checkout can still use
-the same kwt layouts and Ghosthub terminal flow. Register it on the target host:
+A notes folder, monorepo hub, or any other non-Git directory can still use kwt
+layouts and Ghosthub's session flow. Register it on the host where it lives:
 
 ```sh
 kwt workspace add /absolute/path/to/directory
 ```
 
-Refresh Ghosthub. The directory appears as one flat row in **Projects**, after
-the repository rows. It has no expandable worktree children because one
-registered directory owns one workspace session.
+Refresh Ghosthub and the directory appears as a single flat row under
+**Projects**, below your Git repositories. It has no expandable worktrees
+because one registered directory maps to one workspace session.
 
-Select the row to let kwt create or repair its configured layout and attach the
-ordinary tmux client. Removing the registration with `kwt workspace remove`
-does not end a live session; after refresh, that session remains available
-in the host's session list.
+Click the row to let kwt create or repair its layout and attach tmux. Removing
+the directory later with `kwt workspace remove` leaves any live session running;
+after a refresh, that session shows up in the host's session list.
 
 ## Open a project checkout
 
-Select the project's primary checkout or any linked worktree in the sidebar.
-Kwt supplies the exact canonical tmux session name. Ghosthub creates or repairs
-that session when necessary and then attaches an ordinary tmux client. The
-native window tab and titlebar show the project and worktree names instead of
-that internal session name. New worktree sessions use kwt's short,
-hash-suffixed naming format. To list them from a shell, use the
+Click a project's main checkout or any linked worktree in the sidebar. kwt
+supplies the exact tmux session name, Ghosthub creates or repairs the session if
+needed, and then attaches tmux. The window title and native tab show the project
+and worktree names instead of the internal session name. New worktree sessions
+use kwt's short, hash-suffixed names; to list them from a shell, use the
 [kwt-server command](sessions.md#find-tmux-sessions-on-kwts-server).
-To put the whole project in one new window, right-click the project and choose
-**Open All Worktrees as Tabs**. Ghosthub opens the visible worktrees in sidebar
-order, creating or repairing each Kwt session as needed. If one scene cannot be
-created, the group stops there instead of opening the remaining worktrees as
-unrelated windows.
 
-The worktree row shows a compact window count. While Ghosthub is connected,
-the count refreshes with the existing background activity check: within about
-five seconds for a working session and twenty seconds for a quiet session.
-This also covers protected sockets. Detached ordinary sessions use the count
-from current discovery. A running or agent glyph remains the fallback when no
-trustworthy count is available, and cached sessions do not remain marked live
-while the host is unreachable.
+To open every visible worktree in a project inside one new window, right-click
+the project and choose **Open All Worktrees as Tabs**. Ghosthub opens them in
+sidebar order, creating or repairing each kwt session as needed. If one tab
+cannot be created, Ghosthub stops there instead of scattering the rest into
+separate windows.
+
+Each worktree row shows how many tmux windows are open. While Ghosthub is
+connected, that count refreshes with the background activity check: about every
+5 seconds for a working session and every 20 seconds for a quiet one, including
+protected sockets. Detached ordinary sessions use the count from discovery. When
+no reliable count is available, the row falls back to a running or agent icon,
+and cached sessions stop showing as live while a host is unreachable.
 
 ![Ghosthub showing a compact tmux window count on a worktree row](/docs/assets/guide-worktree-window-counts.png)
 
-By default, a live kwt-managed session appears only on its worktree row instead
-of being duplicated in the host's session list. To show both entries, turn off
-**Hide Worktree Sessions** in the options menu beside **Workspaces** at the top
-of the sidebar.
+By default, a live kwt-managed session shows only on its worktree row so it is
+not duplicated in the host's session list. To show both rows, turn off **Hide
+Worktree Sessions** in the options menu beside **Workspaces** at the top of the
+sidebar.
 
 ## Flag worktrees
 
-Open the **…** menu beside a worktree and choose **Flag Worktree**. Its name
-turns amber and its leading icon becomes a filled flag. Use **Unflag Worktree**
-to restore the original icon and text color. Control-clicking the row offers
-the same actions.
+Open the **…** menu beside a worktree (or Control-click the row) and choose
+**Flag Worktree**. Its name turns amber and its icon becomes a filled flag.
+Choose **Unflag Worktree** to clear it.
 
 ![Flagged primary and linked worktrees beside an unflagged checkout](/docs/assets/guide-worktree-flags.png)
 
-Flags are manual reminders saved on this Mac. They appear across open windows
-and survive relaunches, even if a terminal session stops or a host goes offline.
-You can flag several worktrees, including the primary checkout. Flagging does
-not open a session, change row order, or follow terminal activity.
+Flags are manual reminders stored on your Mac. They show up in every Ghosthub
+window and survive relaunches, even if the session stops or the host goes
+offline. You can flag multiple worktrees, including the main checkout. Flagging
+never opens a session, changes row order, or reacts to terminal activity.
 
-Flagging becomes available once inventory supplies a verified worktree identity.
-A newly created checkout at an old path starts unflagged.
+Flagging turns on once discovery confirms a worktree's identity. A fresh
+checkout created later at the same path starts unflagged.
 
 ## Inspect changed files
 
-Select the disclosure chevron beside a worktree. The panel expands beneath that
-worktree without selecting it or attaching its tmux session. More than one
-worktree can remain expanded.
+Click the disclosure arrow beside a worktree to expand its changed files without
+selecting the worktree or attaching to its tmux session. You can leave multiple
+worktrees expanded at once.
 
 ![Ghosthub showing staged, modified, and untracked files beneath a worktree](/docs/assets/guide-worktree-changes.png)
 
-Each file shows separate staged and working-tree states when both apply, and a
-renamed file includes its original path. An empty panel says **No changed
-files**. Large results show the first 200 files; select **Show more** to reveal
-the next page. Expanded panels refresh about five seconds after each successful
-read. Temporary failures retry less frequently when they continue, while a
-permanent failure waits for **Refresh**. Use **Refresh** for an immediate read
-or the disclosure chevron to hide the panel. If a later read fails, Ghosthub
-keeps the last successful rows visible and marks them stale.
+Each file shows staged and working-tree status separately when both apply, and
+renamed files include their old path. A clean checkout shows **No changed
+files**. Large lists show the first 200 files with a **Show more** button for
+the rest. Expanded panels refresh about 5 seconds after each successful read.
+Repeated temporary errors back off automatically, while permanent errors wait
+until you click **Refresh**. Click **Refresh** for an immediate check, or click
+the arrow to collapse the panel. If a refresh fails, Ghosthub keeps the last
+good list visible and marks it stale.
 
-If Kwt reports that the worktree registration changed, automatic retries stop.
-Select the panel's **Refresh** button to refresh workspace inventory. The panel
-resumes inspection when inventory supplies the current worktree identity.
+If kwt reports that the worktree registration changed, automatic refreshes stop.
+Click **Refresh** in the panel to reload workspace inventory; once the updated
+identity arrives, inspection resumes.
 
-The panel shows file status only. Use your editor or Git tools to read diffs,
-stage changes, or commit them.
+The panel lists file status only. Use your editor or Git tools to view diffs,
+stage files, or commit.
 
 ## Create a worktree from a branch
 
 1. Select the project.
 2. Press ++shift+cmd+n++ or choose the new-worktree action.
-3. Select **Branch**.
+3. Choose **Branch**.
 4. Search local and remote branches that are not already checked out, or type a
    new branch name.
-5. Confirm the worktree.
+5. Confirm.
 
-Selecting a remote source creates a local tracking branch when needed. The
-picker distinguishes same-named sources. Input that does not match an existing
-branch creates a new branch.
+Picking a remote branch creates a local tracking branch automatically, and the
+picker distinguishes branches with the same name across remotes. Typing a name
+that does not match an existing branch creates a new one.
 
 ![New worktree sheet with branch choices](/docs/assets/guide-worktree.png)
 
 ## Import a GitHub pull request
 
-Pull-request import requires the [GitHub CLI](https://cli.github.com/) and
-Git 2.42.0 or newer on the macOS or Linux host that contains the project.
-For native Windows hosts, it requires Git for Windows 2.53.0.windows.3 or newer.
-Install these tools on the project host, even when Ghosthub runs on another Mac.
+Importing a pull request requires the [GitHub CLI](https://cli.github.com/) and
+Git 2.42.0 or newer on the macOS or Linux host that holds the repository (or Git
+for Windows 2.53.0.windows.3 or newer on native Windows hosts). Install these on
+the project's host even when Ghosthub runs on another Mac.
 
-On that host:
+Sign in on that host:
 
 ```sh
 gh auth login
 ```
 
-For an HTTPS Git remote, Git authentication must also work there. GitHub CLI
-can configure itself as the credential helper:
+If the repository uses an HTTPS Git remote, let GitHub CLI act as Git's
+credential helper:
 
 ```sh
 gh auth setup-git
 ```
 
-Then select the project, press ++shift+cmd+n++, choose **Pull Request**, and
-search for an open pull request. Ghosthub asks kwt to import it and selects the
-resulting worktree session.
+Then select the project in Ghosthub, press ++shift+cmd+n++, choose **Pull
+Request**, and search for an open PR. Ghosthub asks kwt to import it and opens
+the new worktree session.
 
 ## Remove a worktree
 
-Open the **…** menu beside a non-primary worktree, or Control-click its row.
-Choose **Remove Worktree…**.
-After you confirm the exact worktree and host, Ghosthub:
+Open the **…** menu beside a linked worktree (or Control-click its row) and
+choose **Remove Worktree…**. After you confirm the worktree and host, Ghosthub:
 
-1. ends that worktree's verified live tmux session when necessary; and
-2. asks kwt to remove the checkout.
+1. kills that worktree's verified live tmux session if one is running; and
+2. asks kwt to delete the worktree checkout.
 
-The Git branch is kept. If the checkout is already absent, Ghosthub skips the
-redundant filesystem removal but still reconciles the exact live session
-covered by the confirmation. If the worktree or session changes while the
-confirmation is open, Ghosthub stops and presents the current removal details
-for fresh confirmation instead of continuing automatically.
+The Git branch stays intact. If the folder is already gone, Ghosthub skips
+removing it from disk while still stopping the exact live session you confirmed.
+If the worktree or session changes while the confirmation sheet is open,
+Ghosthub stops and asks you to confirm the updated details instead of continuing
+blindly.
 
-If a worktree has uncommitted changes, review the warning before confirming
-forced removal. This discards those changes. If there are too many changed
-files to list, Ghosthub says the inspection is incomplete and still requires
+If the worktree has uncommitted changes, review the warning before confirming a
+forced removal, which discards those changes. If there are too many changed
+files to list, Ghosthub warns that the list is incomplete and still asks for
 that explicit confirmation.
 
-After removal, the owning project remains selected. Ghosthub does not select
-another worktree or open its tmux session on your behalf.
+After removal, the parent project stays selected; Ghosthub does not jump into
+another worktree or start its session automatically.
 
 ## Rearrange worktrees
 
-Drag worktrees within a project to set their display order. The insertion line
-shows the destination. This changes Ghosthub's navigation only; it does not
-rename or reorder anything in Git, kwt, or tmux.
+Drag worktrees within a project to put them in the order you prefer. An
+insertion line shows where the row will land. This only changes Ghosthub's
+sidebar order; nothing in Git, kwt, or tmux is renamed or moved.
 
 ## Rust source builds
 
 The unreleased Rust app can also register projects on connected macOS and Linux
-SSH hosts. Select **+** beside that host's **Projects**, enter the repository's
-absolute path on the remote machine, and select **Add Project**. Ghosthub
-installs or repairs its bundled remote helper automatically. If this fails,
-the **Projects** section shows the error and a **Retry** action. Ordinary
-terminal sessions remain available. Select **Retry** after resolving the error
-to reconnect and refresh projects.
+SSH hosts. Click **+** beside that host's **Projects**, enter the repository's
+full path on the remote machine, and click **Add Project**. Ghosthub installs or
+repairs its remote helper automatically. If setup fails, the **Projects**
+section shows the error and a **Retry** button while standalone sessions keep
+working; fix the error and click **Retry** to reconnect and reload projects.
 
 ![Add a project on the Studio SSH host in the native Rust application](/docs/assets/guide-rust-remote-project.png)
 
 ![Remote project diagnostic and Retry action beside an active terminal](/docs/assets/guide-rust-project-retry.png)
 
-Select **×** beside a project and confirm **Remove** to unregister it. The
-repository, worktrees, and running sessions remain intact. Cancel leaves the
-registration unchanged.
+Click **×** beside a project and confirm **Remove** to unregister it. Your
+repository, worktrees, and running sessions stay untouched, and **Cancel** leaves
+the registration as-is.
 
 ![Confirm removing the remote project registration while its terminal stays open](/docs/assets/guide-rust-remove-project.png)
 
-Select an ordinary remote worktree to open its terminal, even when its session
-is stopped. Ghosthub asks KWT to open the exact registered worktree and checks
-the resulting client before showing it. Registered directories also open when
-their sessions are stopped. The Rust app supports direct sessions on the default tmux
-server and KWT's standard `kwt` server. Switching rows keeps already-opened
-tmux clients available for reuse. A same-name session on the other server remains separate.
+Click any remote worktree or registered directory to open its session, even if
+the session is stopped. Ghosthub asks kwt to open that exact workspace and
+verifies the client before showing it. The Rust app supports sessions on both
+the default tmux server and kwt's `kwt` server, keeping opened clients alive as
+you switch rows and treating same-named sessions on the two servers separately.
 
 ![A remote worktree attached through the standard KWT server](/docs/assets/guide-rust-kwt-socket.png)
 
-To import a pull request, select **+** beside the remote project, then
-**Pull Request**. Search the open PRs and choose one, or enter its number or URL.
-Select **Import** to create its checkout and open the terminal. GitHub access
-uses `gh auth login` or `KWT_GITHUB_TOKEN` on the remote host. If listing fails,
-the error stays in this dialog; existing projects remain available.
+To import a pull request, click **+** beside the remote project and choose
+**Pull Request**. Search open PRs or enter a PR number or URL, then click
+**Import** to create the checkout and attach. GitHub access uses `gh auth login`
+or `KWT_GITHUB_TOKEN` on the remote host; if listing PRs fails, the error stays
+inside the dialog while your other projects stay usable.
 
 ![Import a pull request into a remote Rust project](/docs/assets/guide-rust-remote-pr-import.png)
 
-Already imported pull-request worktrees also open from the remote project tree.
-KWT opens its protected terminal without running the checkout's configured layout.
-Switching away and back reuses the terminal, even if the checkout is removed
-or its project is unregistered. The open terminal remains available in the session list.
-Detaching leaves the session running; opening a new client still requires the
+Already-imported pull-request worktrees open from the remote project tree too.
+kwt opens their protected session without running the checkout's normal layout.
+Switching away and back reuses that client even if the checkout is deleted or
+the project is unregistered, and the open session stays listed in the sidebar.
+Detaching leaves the session running; opening a fresh client still requires the
 registered project and checkout.
 
 ![An imported pull-request worktree opened on the Studio SSH host](/docs/assets/guide-rust-remote-pr-worktree.png)
 
-To stop an open protected PR terminal, choose **Kill** from its row's **⋯** menu,
-then confirm **Kill Session**. You can also kill a retained terminal after switching
+To kill an open protected PR session, choose **Kill** from its **⋯** menu and
+confirm **Kill Session**. You can also kill a retained session after switching
 away, including from its fallback session row if the project was unregistered.
-Ghosthub closes matching terminals in every window and leaves the checkout
-intact. Cancel leaves the session running. If the session was replaced or the
-SSH connection changed, choose Kill again and review the new confirmation.
+Ghosthub closes matching views across every window and leaves the checkout on
+disk. If the session was replaced or the SSH connection changed, Ghosthub asks
+you to review a fresh confirmation.
 
 ![Confirm killing a protected PR session over SSH](/docs/assets/guide-rust-protected-kill.png)
 
-To create a remote worktree, select **+** beside its project. Enter a new branch
-name or search and select an existing branch. If several remotes have the same
-branch name, choose the source you want. Select **Create** to create the checkout
-and open its terminal. Cancel closes the dialog without creating a worktree.
+To create a remote worktree from a branch, click **+** beside the project, enter
+a new branch name or pick an existing one (choosing the remote if more than one
+has that name), and click **Create**.
 
 ![Create a remote worktree from a branch in the native Rust application](/docs/assets/guide-rust-create-worktree.png)
 
-Ghosthub checks the project registration and SSH connection before creation.
-If the result cannot be confirmed, refresh the host before trying again;
-the worktree may already exist. Newer navigation takes precedence over
-automatically opening a completed worktree.
+Ghosthub verifies the project registration and SSH connection first. If the
+result cannot be confirmed, refresh the host before trying again because the
+worktree may already exist. If you navigate somewhere else while creation runs,
+Ghosthub respects your newer selection instead of yanking focus back.
 
-To register a directory, run `kwt workspace add /absolute/path` on the remote
-host. Refresh that host in Ghosthub and select the row under **Directory Workspaces**.
-Ghosthub opens the registered directory and reuses its terminal when you switch
-away and return.
+To register a plain directory, run `kwt workspace add /absolute/path` on the
+remote host, refresh that host in Ghosthub, and click its row under **Directory
+Workspaces**. Ghosthub opens the session and reuses it when you switch away and
+back.
 
 ![A registered remote directory opened from its idle row](/docs/assets/guide-rust-remote-directory.png)
 
-Open an ordinary running worktree or directory row's **⋯** menu, select **Kill**,
-and confirm **Kill Session** to stop its session. Its files and registration
-remain intact.
+To stop a running worktree or directory session without deleting its files, open
+its **⋯** menu, choose **Kill**, and confirm **Kill Session**.
 
 ![Confirm killing a remote worktree session in the native Rust application](/docs/assets/guide-rust-project-kill.png)
 
-Idle worktrees also open with tmux's `destroy-unattached` option enabled.
-KWT keeps the new session alive during setup, then restores the session's
-captured policy when its first client attaches.
+Idle worktrees also work when tmux has `destroy-unattached` enabled: kwt keeps
+the new session alive during setup and restores its original policy once the
+first client attaches.
 
-To remove a remote worktree, open its **⋯** menu and choose
-**Remove Worktree**. Review the worktree and host, then select **Remove
-Worktree** to end its confirmed session and delete the checkout. The Git branch
-is kept. Cancel leaves both the checkout and session intact.
+To remove a remote worktree, open its **⋯** menu, choose **Remove Worktree**,
+review the worktree and host, and confirm. Ghosthub stops the verified session
+and deletes the checkout while keeping the Git branch.
 
 ![Confirm removal of a remote worktree in the native Rust application](/docs/assets/guide-rust-remove-worktree.png)
 
-Imported PR worktrees offer the same action, whether or not their terminal is
-open. Ghosthub checks their protected socket and captures the session identity
-for confirmation.
+Imported PR worktrees work the same way whether their session is open or not;
+Ghosthub checks their protected socket and captures the session identity for
+confirmation.
 
 ![Confirm removing an imported PR worktree over SSH](/docs/assets/guide-rust-remove-protected-worktree.png)
 
-For a worktree with uncommitted changes, Ghosthub shows a warning and an explicit
-**Force Remove Worktree** button. This permanently discards its staged, unstaged,
-and untracked changes. Cancel to keep the work, or commit or stash it before
-ordinary removal. The Git branch is kept after either action.
+If a worktree has uncommitted changes, Ghosthub warns you and shows **Force
+Remove Worktree**, which permanently discards staged, unstaged, and untracked
+files while keeping the Git branch. Cancel to keep your edits, or commit or
+stash them first for a normal removal.
 
 ![Confirm force removal of a dirty remote worktree](/docs/assets/guide-rust-force-remove-worktree.png)
 
-Local Linux and WSL worktrees use the same confirmation. Open the worktree's
-**⋯** menu and choose **Remove Worktree**. A dirty checkout requires
-**Force Remove Worktree**; Cancel leaves its checkout and session intact.
+Local Linux and WSL worktrees follow the exact same flow: open the **⋯** menu,
+choose **Remove Worktree**, and confirm **Force Remove Worktree** if the
+checkout is dirty.
 
 ![Confirm force removal of a dirty local worktree](/docs/assets/guide-rust-local-force-remove-worktree.png)
 
-If the pre-removal check finds new changes after a clean confirmation, Ghosthub
-keeps the checkout and session and offers **Review Again**. If its session, checkout,
-project registration, local host runtime, or SSH connection changes, refresh the host and review
-the removal again. KWT also refuses removal while the workspace session name
-remains on either shared tmux server. Failed change inspection blocks removal.
+If new uncommitted changes appear after you confirmed a clean removal, Ghosthub
+stops, keeps the checkout and session intact, and offers **Review Again**. If
+the session, checkout, project registration, local runtime, or SSH connection
+changes, refresh the host and review again. kwt also refuses removal while that
+workspace session name still exists on either shared tmux server, and a failed
+status check blocks removal.
 
-Registering directories through the remote Rust UI is still in development.
-Arbitrary named SSH sockets are not supported.
+Registering directories from the remote Rust UI is still in development, and
+arbitrary named SSH tmux sockets are not supported.

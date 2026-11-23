@@ -1,5 +1,5 @@
 ---
-description: Understand Ghosthub anonymous usage reporting and local state.
+description: Anonymous usage reporting, macOS permission prompts, and where Ghosthub stores local and remote files.
 icon: lucide/shield-check
 ---
 
@@ -7,55 +7,57 @@ icon: lucide/shield-check
 
 ## Anonymous usage data
 
-Packaged Ghosthub releases send at most one anonymous `application active`
-event per day. Reporting is enabled by default. The event contains:
+Packaged Ghosthub releases send at most one anonymous `application active` ping
+per day (on by default). That ping includes only:
 
 - a random installation ID
 - the Ghosthub version
 - the build number
 
-It does not contain repository, worktree, host, session, path, command, or
-terminal data. PostHog person profiles and GeoIP enrichment are disabled.
+It never includes repositories, worktrees, hosts, session names, paths,
+commands, or terminal output. PostHog person profiles and GeoIP lookups are
+turned off.
 
-Turn reporting off at any time under **Settings → Privacy → Share anonymous
-usage data**.
+To opt out at any time, turn off **Settings → Privacy → Share anonymous usage
+data**.
 
 ![Privacy settings with Share anonymous usage data enabled](/docs/assets/guide-privacy.png)
 
 ## macOS permissions
 
-Programs running in a Ghosthub terminal may ask macOS for access to Photos,
-the camera, microphone, contacts, calendars, or other resources. macOS names
-Ghosthub in those prompts because it is the terminal app running the program.
-Review what the program needs before granting access.
+Programs running inside Ghosthub can ask macOS for access to Photos, the camera,
+microphone, contacts, calendars, or files. macOS names Ghosthub in those prompts
+because Ghosthub is the app hosting the terminal. Check what the program
+actually needs before clicking Allow.
 
-## Local state
+## Local files
 
-Ghosthub's mutable application state lives under:
+Ghosthub stores its app state (database, caches, and update metadata) under:
 
 ```text
 ~/.ghosthub/
 ```
 
-Ghosthub-owned terminal configuration lives separately at:
+Ghosthub's libghostty terminal config lives separately at:
 
 ```text
 ~/.config/ghosthub/ghostty.conf
 ```
 
-Other Ghosthub preferences, including hidden standalone tmux session patterns,
-live in:
+Other app settings, including hidden standalone tmux session patterns and custom
+shortcuts, live in:
 
 ```text
 ~/.config/ghosthub/config.toml
 ```
 
-## Remote state
+## Remote files
 
-Ghosthub does not scan remote filesystems. **Add Project** delegates only the
-absolute repository path you explicitly provide. For configured remote macOS
-and Linux hosts, Ghosthub automatically stores or updates its matching
-revision-pinned managed kwt helper under the remote user's `~/.ghosthub/`
-directory. Automatic Windows helper installation remains disabled.
+Ghosthub never scans remote filesystems. **Add Project** registers only the
+exact repository path you give it. On configured macOS and Linux SSH hosts,
+Ghosthub automatically installs and updates its matching revision-pinned kwt
+helper under the remote user's `~/.ghosthub/` folder. Automatic installation is
+off for Windows hosts.
 
-Interactive SSH responses are retained only for the running app session.
+Interactive SSH prompts (passwords, passphrases, and challenge responses) stay
+in memory only for the current app run.

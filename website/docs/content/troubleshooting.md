@@ -1,5 +1,5 @@
 ---
-description: Diagnose common Ghosthub installation, SSH, multiplexer, and worktree problems.
+description: Fix common Ghosthub installation, SSH, multiplexer, and worktree issues.
 icon: lucide/life-buoy
 ---
 
@@ -7,146 +7,142 @@ icon: lucide/life-buoy
 
 ## A host does not connect
 
-Test the exact destination outside Ghosthub:
+Test the exact same destination from a plain terminal first:
 
 ```sh
 ssh devbox
 ```
 
-Resolve OpenSSH configuration, routing, agent, or server problems there first.
-Then open **Settings → Hosts**, test the connection, and address any trust or
-authentication prompt naming the failing host or ProxyJump hop.
+Fix any OpenSSH config, network, SSH agent, or server issue there first. Then
+open **Settings → Hosts**, run **Test Connection**, and complete any host-key or
+login prompt naming the host or ProxyJump hop.
 
 Ghosthub does not support opaque `ProxyCommand` routes or a jump host that
-itself uses another proxy.
+chains into another proxy.
 
 ## Ghosthub says tmux was not found
 
-Ghosthub runs commands through your account's login shell, which reads
-`~/.zprofile` but not `~/.zshrc`. It also checks the usual Homebrew, MacPorts,
-Linuxbrew, and Nix folders. If tmux lives somewhere else, see what Ghosthub
-sees from your Mac:
+Ghosthub runs remote commands through your login shell, which reads
+`~/.zprofile` but not `~/.zshrc`. It also checks standard Homebrew, MacPorts,
+Linuxbrew, and Nix paths. If tmux is installed somewhere else, check what your
+login shell sees from your Mac:
 
 ```sh
 ssh devbox 'zsh -lc "command -v tmux"'
 ```
 
-If that prints nothing, add tmux's directory to PATH in `~/.zprofile` on that
-host, or install tmux. Then reopen the terminal; no restart is needed.
+If that prints nothing, add tmux's directory to `PATH` in `~/.zprofile` on that
+host, or install tmux, then reopen the session. No app restart is needed.
 
 ## A remote host connects but shows no sessions
 
-Confirm tmux is installed on the remote host:
+Check that tmux is installed and running on the remote host:
 
 ```sh
 tmux -V
 tmux list-sessions
 ```
 
-For worktrees and registered directories managed by kwt, inspect its separate
+For worktrees and registered directories managed by kwt, check kwt's separate
 tmux server:
 
 ```sh
 env -u TMUX_TMPDIR tmux -L kwt list-sessions
 ```
 
-Imported pull requests use separate protected sessions. Open those through
-their worktree rows in Ghosthub.
+Imported pull requests run on separate protected sessions; open them from their
+worktree rows in Ghosthub.
 
-An expanded host with no discovered tmux, Herdr, or Zellij sessions or projects reports
-that it is empty. Project inventory is separate from SSH reachability. A
-managed kwt maintenance failure stays silent until you request a project or
-worktree operation that needs the helper.
+When a reachable host has no sessions or projects, expanding it in the sidebar
+says so. Project discovery is separate from SSH reachability, and a background
+kwt helper update error stays quiet until you run a project or worktree action
+that needs the helper.
 
 ## Herdr sessions do not appear
 
-Herdr is optional and independent from tmux and projects. On the local Mac or
-a remote macOS/Linux host, run:
+Herdr is optional and independent of tmux and projects. On your Mac or the
+remote macOS/Linux host, run:
 
 ```sh
 command -v herdr
 herdr session list --json
 ```
 
-Ghosthub shows entries reported as running or stopped. A session created
-outside Ghosthub, for example with `herdr --session NAME`, appears within about
-30 seconds while Ghosthub is the active app. If `herdr` is missing, the
-host stays fully usable and Ghosthub silently omits Herdr sessions. If the
-command exists but fails or returns malformed JSON, the host header shows a
-warning with **Retry** and a shortcut to Host Settings. Herdr is not probed on
-experimental Windows hosts.
+Ghosthub shows sessions reported as running or stopped. A session started
+outside Ghosthub (for example with `herdr --session NAME`) appears within about
+30 seconds while Ghosthub is in front. If `herdr` is not installed, the host
+works normally without Herdr rows. If `herdr` exists but fails or prints invalid
+JSON, the host header shows a warning with **Retry** and a link to Host
+Settings. Herdr is not checked on experimental Windows hosts.
 
-Closing a Herdr client never stops its server. A normal detach offers manual
-**Reconnect**; automatic retry is reserved for remote SSH transport loss and
-stops if the exact session is no longer running.
+Closing a Herdr view never stops its server. A manual detach shows a
+**Reconnect** button; automatic reconnect is only for dropped SSH connections
+and stops if the session is no longer running.
 
-If a session is marked **stopped**, choose **Restart** to restore its saved
-shape with new processes. **Stop Session…** intentionally terminates all
-current processes; **Delete Session…** permanently removes saved state and is
-not available for Herdr's default session.
+On a **stopped** row, choose **Restart** to bring back its saved layout with
+fresh processes. **Stop Session…** ends all running processes; **Delete
+Session…** permanently removes the saved session and is disabled for Herdr's
+default session.
 
 ## Zellij sessions do not appear
 
-Zellij is optional and independent from tmux, Herdr, and projects. On the local
-Mac or a remote macOS/Linux host, run:
+Zellij is optional and independent of tmux, Herdr, and projects. On your Mac or
+the remote macOS/Linux host, run:
 
 ```sh
 command -v zellij
 zellij list-sessions --no-formatting
 ```
 
-Ghosthub lists active Zellij sessions only. A session created outside
-Ghosthub appears within about 30 seconds while Ghosthub is the active app. If
-`zellij` is missing, the host
-stays fully usable and Ghosthub silently omits Zellij sessions. If the
-command exists but fails unexpectedly or returns malformed output, the host
-header shows a warning with **Retry** and a shortcut to Host Settings. Zellij
-is not probed on experimental Windows hosts.
+Ghosthub lists active Zellij sessions only. Sessions started outside Ghosthub
+appear within about 30 seconds while Ghosthub is in front. If `zellij` is not
+installed, the host works normally without Zellij rows. If `zellij` exists but
+fails or prints unexpected output, the host header shows a warning with
+**Retry** and a link to Host Settings. Zellij is not checked on experimental
+Windows hosts.
 
-Closing a Zellij client never kills its server. A normal detach offers manual
-**Reconnect**; automatic retry is reserved for remote SSH transport loss and
-stops if the exact session is no longer active. Ghosthub does not expose
-Zellij resurrection or exited-session deletion. To end an active session,
-choose its confirmed **Kill Session…** action.
+Closing a Zellij view never kills its server. A manual detach shows a
+**Reconnect** button; automatic reconnect is only for dropped SSH connections
+and stops if the session is no longer active. Ghosthub does not resurrect or
+delete exited Zellij sessions. To end an active session, choose **Kill
+Session…** and confirm.
 
 ## Reconnect needs attention
 
-Automatic retry pauses for action when SSH requires a credential or host-key
-decision. Choose **Review Connection**, complete the native prompt, and let the
-existing presentation resume. **Reconnect Now** performs an immediate retry
-when no review is pending.
+Automatic reconnect pauses whenever SSH needs a password, challenge response, or
+host-key check. Click **Review Connection**, finish the prompt, and the view
+resumes. Click **Reconnect Now** to retry immediately when no review is waiting.
 
 ## A tmux session preview is unavailable
 
-With **Efficient** or **Live**, preview controls appear only after you open a
-tmux session in that workspace. **Always Live** connects and expands freshly
-discovered tmux sessions on POSIX hosts automatically. Choose the mode under
-**Settings → Terminal → Session previews**. Previews are not available for
-Herdr, Zellij, or native Windows/psmux attachments.
+Under **Efficient** or **Live**, preview toggles appear only after you open a
+tmux session in that window. **Always Live** connects and expands newly
+discovered tmux sessions on macOS and Linux hosts automatically. Change the mode
+in **Settings → Terminal → Session previews**. Previews are not available for
+Herdr, Zellij, or native Windows/psmux sessions.
 
-On a POSIX host, run `tmux -V`. Verified previews require tmux 3.4 or newer so
-Ghosthub can bind captured pixels to the exact attached client. An older tmux
-session stays fully usable but shows **Preview unavailable** instead of a
-potentially stale or misidentified frame.
+On a macOS or Linux host, run `tmux -V`. Previews require tmux 3.4 or newer so
+Ghosthub can verify that the captured frame belongs to the exact attached
+client. Older tmux sessions still open and work normally, but show **Preview
+unavailable** instead of risking a stale or mismatched image.
 
 ## A project does not appear
 
-Ghosthub automatically retries a project or directory inventory read when kwt
-reports that the failure is retryable. The retries wait progressively longer
-and keep successful inventory from the other reads. A warning that remains
-after those retries needs manual attention.
+Ghosthub automatically retries project and directory discovery when kwt reports
+a retryable error, backing off between attempts while keeping other results
+intact. If a warning stays after those retries, check the host manually.
 
-For a remote macOS or Linux host, Ghosthub installs its managed kwt helper
-automatically. Select the **+** beside that host's **Projects** group and provide
-the absolute path to an existing checkout on that host. Ghosthub repairs the
-helper before registration and reports an error on that action if repair fails.
-It does not discover repositories by scanning.
+On a remote macOS or Linux host, Ghosthub installs its managed kwt helper
+automatically. Click **+** beside that host's **Projects** group and enter the
+full path to an existing checkout on that host. Ghosthub repairs the helper
+before registering and shows an error if repair fails; it never scans the host
+for repositories.
 
-Project registration is not yet supported for native Windows hosts.
+Adding projects is not supported on native Windows hosts yet.
 
 ## Pull-request import fails
 
-Run these checks on the machine that contains the project:
+Run these checks on the machine where the repository lives:
 
 ```sh
 gh auth status
@@ -154,25 +150,25 @@ git remote -v
 git fetch --dry-run
 ```
 
-For HTTPS GitHub remotes, `gh auth setup-git` can configure GitHub CLI as the
-Git credential helper. Installing or authenticating `gh` only on the local Mac
-does not help a project stored on a remote host.
+For HTTPS GitHub remotes, run `gh auth setup-git` so Git can use GitHub CLI for
+credentials. Installing or signing in to `gh` on your Mac alone does not help a
+project hosted on a remote machine.
 
 ## A shell key binding behaves differently
 
 Check `~/.config/ghosthub/ghostty.conf` and your normal shell startup files.
-Ghosthub uses libghostty's macOS login-shell path and shell integration. Do not
-disable shell integration as a key-binding workaround.
+Ghosthub uses libghostty's standard macOS login-shell startup and shell
+integration; do not disable shell integration to work around key-binding issues.
 
-If Ghosthub was launched from another terminal, quit and reopen it from
-**Applications** to eliminate unusual launcher environment as a diagnostic
-step.
+If you launched Ghosthub from another terminal, quit it and reopen it from
+**Applications** to rule out inherited environment variables from that launcher.
 
 ## Find the application log
 
-Press ++option+cmd+l++ to open the application log. Include the relevant
-diagnostic text, Ghosthub version, macOS version, and reproducible steps when
-filing a [GitHub issue](https://github.com/kenn-io/ghosthub/issues).
+Press ++option+cmd+l++ to open the application log. When filing a
+[GitHub issue](https://github.com/kenn-io/ghosthub/issues), include the relevant
+log lines, your Ghosthub version, your macOS version, and steps to reproduce the
+problem.
 
-Do not publish passwords, private keys, session output, repository secrets, or
-private hostnames in a public issue.
+Do not paste passwords, private keys, session output, repository secrets, or
+private hostnames into a public issue.
