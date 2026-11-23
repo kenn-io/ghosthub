@@ -1102,6 +1102,7 @@ enum HostInventoryOverlay {
         herdrAvailabilityByHost: [UUID: Bool] = [:],
         zellijAvailabilityByHost: [UUID: Bool] = [:],
         savedTmuxSessionsByHost: [UUID: [SavedTmuxSession]] = [:],
+        rexAvailabilityByHost: [UUID: Bool] = [:],
         tmuxReachabilityByHost: [UUID: Bool] = [:],
         tmuxLastSeenByHost: [UUID: Date] = [:],
         tmuxAuthoritativeHostIDs: Set<UUID> = [],
@@ -1123,6 +1124,7 @@ enum HostInventoryOverlay {
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
             savedTmuxSessionsByHost: savedTmuxSessionsByHost,
+            rexAvailabilityByHost: rexAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
             tmuxAuthoritativeHostIDs: tmuxAuthoritativeHostIDs,
@@ -1138,6 +1140,7 @@ enum HostInventoryOverlay {
         herdrAvailabilityByHost: [UUID: Bool] = [:],
         zellijAvailabilityByHost: [UUID: Bool] = [:],
         savedTmuxSessionsByHost: [UUID: [SavedTmuxSession]] = [:],
+        rexAvailabilityByHost: [UUID: Bool] = [:],
         tmuxReachabilityByHost: [UUID: Bool] = [:],
         tmuxLastSeenByHost: [UUID: Date] = [:],
         tmuxAuthoritativeHostIDs: Set<UUID> = [],
@@ -1152,6 +1155,7 @@ enum HostInventoryOverlay {
             herdrAvailabilityByHost: herdrAvailabilityByHost,
             zellijAvailabilityByHost: zellijAvailabilityByHost,
             savedTmuxSessionsByHost: savedTmuxSessionsByHost,
+            rexAvailabilityByHost: rexAvailabilityByHost,
             tmuxReachabilityByHost: tmuxReachabilityByHost,
             tmuxLastSeenByHost: tmuxLastSeenByHost,
             tmuxAuthoritativeHostIDs: tmuxAuthoritativeHostIDs,
@@ -1168,6 +1172,7 @@ enum HostInventoryOverlay {
         herdrAvailabilityByHost: [UUID: Bool],
         zellijAvailabilityByHost: [UUID: Bool],
         savedTmuxSessionsByHost: [UUID: [SavedTmuxSession]],
+        rexAvailabilityByHost: [UUID: Bool],
         tmuxReachabilityByHost: [UUID: Bool],
         tmuxLastSeenByHost: [UUID: Date],
         tmuxAuthoritativeHostIDs: Set<UUID>,
@@ -1215,6 +1220,12 @@ enum HostInventoryOverlay {
                 $0.id == hostID
             }) else { continue }
             updated.hosts[index].savedTmuxSessions = sessions
+        }
+        for (hostID, isAvailable) in rexAvailabilityByHost {
+            guard let index = updated.hosts.firstIndex(where: {
+                $0.id == hostID
+            }) else { continue }
+            updated.hosts[index].rexAvailable = isAvailable
         }
         for (hostID, isAvailable) in kwtAvailabilityByHost {
             guard let index = updated.hosts.firstIndex(where: {

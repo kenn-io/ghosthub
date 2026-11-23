@@ -487,6 +487,9 @@ func makeModel(
     WorkspaceSceneModel.BackendTerminalValidationDiscovery = { _, _, _ in
         .unavailable
     },
+    rexWindowCreation: @escaping WorkspaceSceneModel.RexWindowCreation = { _, _, _ in
+        .failure(.unavailable(.rex))
+    },
     zellijSessionDiscovery: @escaping
     WorkspaceSceneModel.ZellijSessionDiscovery = { _ in .unavailable },
     // Tests never reach the account's kwt state.
@@ -681,6 +684,7 @@ func makeModel(
         herdrSessionDiscovery: herdrSessionDiscovery,
         backendTerminalDiscovery: backendTerminalDiscovery,
         backendTerminalValidationDiscovery: backendTerminalValidationDiscovery,
+        rexWindowCreation: rexWindowCreation,
         zellijSessionDiscovery: zellijSessionDiscovery,
         kwtSessionClient: kwtSessionClient,
         savedTmuxSessionRestores: savedTmuxSessionRestores ?? SavedTmuxSessionRestores(),

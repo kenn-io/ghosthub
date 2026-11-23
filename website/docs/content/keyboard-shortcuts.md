@@ -61,12 +61,12 @@ shortcut to Command-number overrides the native tab fallback.
 | Find previous (toward newer history) | ++shift+cmd+g++ |
 | Hide the Find bar | ++shift+cmd+f++ |
 
-**New tmux Session**, **New Herdr TUI Session**, **New Zellij Session**, and
-**Close Pane…** are in menus and the Command Palette and start unbound. The Rex
-commands **New Floating Pane**, **Float or Tile Pane**, and **Minimize Floating
-Window** are also in the Command Palette and start unbound. Rex focus and zoom
-shortcuts apply only while viewing a Rex window; otherwise those keys pass
-through to the terminal.
+**New tmux Session**, **New Herdr TUI Session**, **New Zellij Session**,
+**New Rex Window**, and **Close Pane…** are in menus and the Command Palette
+and start unbound. The Rex commands **New Floating Pane**, **Float or Tile
+Pane**, and **Minimize Floating Window** are also in the Command Palette and
+start unbound. Rex focus and zoom shortcuts apply only while viewing a Rex
+window; otherwise those keys pass through to the terminal.
 
 Herdr desktop tabs do not support Ghosthub's split shortcuts. See
 [Herdr desktop splits](sessions.md#herdr-desktop-splits) for how their panes

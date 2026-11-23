@@ -35,6 +35,7 @@ public enum ApplicationShortcutAction: String, CaseIterable, Sendable {
     case newFloatingPane = "new-floating-pane"
     case toggleFloatingPane = "toggle-floating-pane"
     case minimizeFloatingWindow = "minimize-floating-window"
+    case newRexWindow = "new-rex-window"
     case reloadConfiguration = "reload-configuration"
     case openApplicationLog = "open-application-log"
 
@@ -445,6 +446,7 @@ public enum ApplicationShortcutCatalog {
         definition(.newFloatingPane, "New Floating Pane", .multiplexer, nil),
         definition(.toggleFloatingPane, "Float or Tile Pane", .multiplexer, nil),
         definition(.minimizeFloatingWindow, "Minimize Floating Window", .multiplexer, nil),
+        definition(.newRexWindow, "New Rex Window", .multiplexer, nil),
         definition(.reloadConfiguration, "Reload Configuration", .application, "cmd+shift+,"),
         definition(.openApplicationLog, "Open Application Log", .application, "cmd+opt+l"),
     ]

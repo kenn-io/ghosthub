@@ -214,10 +214,17 @@ SSH hosts, never `PATH`). kwt checks `REX_SERVER` or
     `session.new_layer`, `session.float_block`, `session.move_block` (Tile),
     `session.resize_layer`, `session.raise_layer`, and `session.set_layer_state`
     (Minimize, disabled if no other pane would remain visible).
+- **Creating sessions and windows:** **New Rex Session…** (host **+** menu or
+  palette, optional name) and **New Rex Window** (palette, while a Rex window is
+  shown) run `kwt rex new` once, without the listing retry, because a retry
+  after a lost reply could open a second window. A new window joins the shown
+  window's session with its shell in the focused pane's directory. Ghosthub
+  then re-lists and opens the new window like a listed row. Hosts offer New Rex
+  Session only while their last listing found a running server.
 - **Detach and reconnect:** ++cmd+w++ detaches while leaving panes running.
   Closing the window in Rex closes Ghosthub's view. Control-channel drops retry
   with backoff on SSH (or wait for **Retry** locally); single-pane drops follow
-  backend-terminal reconnect rules. Verify with
+  backend-terminal reconnect rules. Verify (including `kwt rex new`) with
   `make test-rex REX_BINARY=/absolute/path/to/rex` (on macOS,
   `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).
 

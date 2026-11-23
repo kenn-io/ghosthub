@@ -246,6 +246,7 @@ struct WorkspaceSidebarView: View {
     let onNewTmuxSession: (HostSummary) -> Void
     let onNewHerdrSession: (HostSummary) -> Void
     let onNewZellijSession: (HostSummary) -> Void
+    let onNewRexSession: (HostSummary) -> Void
     let onAddProject: (HostSummary) -> Void
     let onRestoreSavedTmuxSessions: (HostSummary) -> Void
     let onRestoreSavedTmuxSession: (WorkspaceSavedTmuxSessionSelection) -> Void
@@ -364,6 +365,7 @@ struct WorkspaceSidebarView: View {
         onNewTmuxSession: @escaping (HostSummary) -> Void = { _ in },
         onNewHerdrSession: @escaping (HostSummary) -> Void = { _ in },
         onNewZellijSession: @escaping (HostSummary) -> Void = { _ in },
+        onNewRexSession: @escaping (HostSummary) -> Void = { _ in },
         onAddProject: @escaping (HostSummary) -> Void = { _ in },
         onRestoreSavedTmuxSessions: @escaping (HostSummary) -> Void = { _ in },
         onRestoreSavedTmuxSession: @escaping (WorkspaceSavedTmuxSessionSelection) -> Void = { _ in
@@ -433,6 +435,7 @@ struct WorkspaceSidebarView: View {
         self.onNewTmuxSession = onNewTmuxSession
         self.onNewHerdrSession = onNewHerdrSession
         self.onNewZellijSession = onNewZellijSession
+        self.onNewRexSession = onNewRexSession
         self.onAddProject = onAddProject
         self.onRestoreSavedTmuxSessions = onRestoreSavedTmuxSessions
         self.onRestoreSavedTmuxSession = onRestoreSavedTmuxSession
@@ -709,6 +712,7 @@ struct WorkspaceSidebarView: View {
         switch item {
         case .newTmuxSession: onNewTmuxSession(host)
         case .newZellijSession: onNewZellijSession(host)
+        case .newRexSession: onNewRexSession(host)
         case .newHerdrSession: onNewHerdrSession(host)
         case .restoreSavedTmuxSessions: onRestoreSavedTmuxSessions(host)
         case .addProject: onAddProject(host)

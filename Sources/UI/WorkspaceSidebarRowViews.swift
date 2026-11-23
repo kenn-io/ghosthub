@@ -260,6 +260,7 @@ enum WorkspaceSidebarHostMenuItem: Equatable {
     case newZellijSession
     case newHerdrSession
     case restoreSavedTmuxSessions
+    case newRexSession
     case addProject
 }
 
@@ -297,6 +298,13 @@ enum WorkspaceSidebarHostMenuModel {
                 help: host.herdrAvailable
                     ? "Creates a Herdr TUI session."
                     : "Herdr isn't available on \(host.sidebarTitle)."
+            ),
+            WorkspaceSidebarHostMenuEntry(
+                item: .newRexSession,
+                title: "New Rex Session…",
+                isEnabled: host.rexAvailable,
+                help: host.rexAvailable
+                    ? nil : "No Rex server is running on \(host.sidebarTitle)."
             ),
         ]]
         if !host.savedTmuxSessions.isEmpty {

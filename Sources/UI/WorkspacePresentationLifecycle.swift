@@ -425,6 +425,7 @@ enum WorkspaceAlert: Identifiable {
     case zellijKillConfirmation(ZellijSessionKillRequest)
     case zellijKillFailure(session: String, message: String)
     case zellijCreationFailure(session: String, message: String)
+    case rexCreationFailure(message: String)
     case herdrLifecycleConfirmation(HerdrSessionLifecycleRequest)
     case herdrLifecycleFailure(
         session: String,
@@ -456,6 +457,8 @@ enum WorkspaceAlert: Identifiable {
             return "zellij:failure:\(session):\(message)"
         case let .zellijCreationFailure(session, message):
             return "zellij:create:failure:\(session):\(message)"
+        case let .rexCreationFailure(message):
+            return "rex:create:failure:\(message)"
         case let .herdrLifecycleConfirmation(request):
             return "herdr:confirm:\(request.session.id):\(request.action)"
         case let .herdrLifecycleFailure(session, action, message):

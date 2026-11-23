@@ -98,6 +98,7 @@ enum ConfiguredHostOverlay {
                 host.savedTmuxSessions = []
                 host.herdrAvailable = false
                 host.zellijAvailable = false
+                host.rexAvailable = false
             }
             if host.platform == .windows {
                 host.herdrSessions = []
@@ -106,6 +107,7 @@ enum ConfiguredHostOverlay {
                 host.savedTmuxSessions = []
                 host.herdrAvailable = false
                 host.zellijAvailable = false
+                host.rexAvailable = false
             }
             hosts.append(host)
         }
