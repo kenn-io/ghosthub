@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import GhosthubBackendTerminal
 import GhosthubSettings
 import GhosthubTerminal
 import GhosthubTerminalSupport
@@ -1082,6 +1083,19 @@ struct WorkspaceWindow: View {
                 },
                 closeBackendTerminal: { [sceneModel] selection in
                     sceneModel.closeBackendTerminal(selection)
+                },
+                createRexSession: { [sceneModel] hostID, label in
+                    try await sceneModel.createRexWindow(
+                        RexWindowRequest(label: label), hostID: hostID
+                    )
+                },
+                createRexWindow: { [sceneModel] in
+                    guard let pending = sceneModel.newRexWindowRequest else {
+                        throw BackendTerminalCommandError.unavailable(.rex)
+                    }
+                    return try await sceneModel.createRexWindow(
+                        pending.request, hostID: pending.hostID
+                    )
                 },
                 cancelPendingSessionOpens: { [sceneModel] in
                     sceneModel.cancelPendingSessionOpens()

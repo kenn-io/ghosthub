@@ -463,6 +463,12 @@ public struct InteractionHandlers {
     public let cancelPendingZellijPresentation: (() -> Void)?
     public let openBackendTerminal: ((WorkspaceBackendTerminalSelection) async throws -> Void)?
     public let closeBackendTerminal: ((WorkspaceBackendTerminalSelection) -> Void)?
+    /// Opens a shell in a new Rex session on the host, optionally named,
+    /// and returns its window for the sidebar to open.
+    public let createRexSession:
+        ((UUID, String?) async throws -> WorkspaceBackendTerminalSelection)?
+    /// Opens a shell in a new window of the shown Rex window's session.
+    public let createRexWindow: (() async throws -> WorkspaceBackendTerminalSelection)?
     /// Cancels every session open that is still checking its target.
     public let cancelPendingSessionOpens: (() -> Void)?
     public let prepareZellijSessionKill:
@@ -572,6 +578,9 @@ public struct InteractionHandlers {
         cancelPendingZellijPresentation: (() -> Void)? = nil,
         openBackendTerminal: ((WorkspaceBackendTerminalSelection) async throws -> Void)? = nil,
         closeBackendTerminal: ((WorkspaceBackendTerminalSelection) -> Void)? = nil,
+        createRexSession:
+        ((UUID, String?) async throws -> WorkspaceBackendTerminalSelection)? = nil,
+        createRexWindow: (() async throws -> WorkspaceBackendTerminalSelection)? = nil,
         cancelPendingSessionOpens: (() -> Void)? = nil,
         prepareZellijSessionKill:
         ((WorkspaceZellijSessionSelection) async throws
@@ -669,6 +678,8 @@ public struct InteractionHandlers {
         self.cancelPendingZellijPresentation = cancelPendingZellijPresentation
         self.openBackendTerminal = openBackendTerminal
         self.closeBackendTerminal = closeBackendTerminal
+        self.createRexSession = createRexSession
+        self.createRexWindow = createRexWindow
         self.cancelPendingSessionOpens = cancelPendingSessionOpens
         self.prepareZellijSessionKill = prepareZellijSessionKill
         self.killZellijSession = killZellijSession

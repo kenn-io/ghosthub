@@ -29,6 +29,49 @@ public enum RexInventory {
             + "exec \"$ghosthub_kwt_path\" rex ls --json"
     }
 
+    /// Opens a shell in a new Rex window, in a new session unless
+    /// `sessionID` names one. `label` names the new session, or the window
+    /// in `sessionID`.
+    public static func newWindowCommand(
+        kwtPrelude: String,
+        label: String?,
+        sessionID: String?,
+        cwd: String?
+    ) -> String {
+        let options = [("--label", label), ("--session", sessionID), ("--cwd", cwd)]
+            .compactMap { flag, value in
+                value.map { " \(flag) \(shellQuotedCommandArgument($0))" }
+            }
+            .joined()
+        return kwtPrelude
+            + "[ -x \"$ghosthub_kwt_path\" ] || exit 127; "
+            + "printf '%s\\n' '\(marker)'; "
+            + "exec \"$ghosthub_kwt_path\" rex new\(options)"
+    }
+
+    /// The new window's ID from `kwt rex new`.
+    public static func parseNewWindow(
+        status: Int32,
+        stdout: String,
+        stderr: String
+    ) -> Result<String, BackendTerminalCommandError> {
+        if status == 127 {
+            return .failure(.unavailable(.rex))
+        }
+        guard status == 0 else {
+            return .failure(.commandFailed(.rex, status: status, stderr: stderr))
+        }
+        guard let payload = MarkedJSON.payload(stdout, after: marker) else {
+            return .failure(.missingMarker(.rex))
+        }
+        guard let created = try? JSONDecoder().decode(Created.self, from: payload),
+              isWindowID(created.windowID)
+        else {
+            return .failure(.malformedJSON(.rex))
+        }
+        return .success(created.windowID)
+    }
+
     public static func parse(
         status: Int32,
         stdout: String,
@@ -137,6 +180,14 @@ public enum RexInventory {
     /// Rex window IDs look like `window:01a1c874-d309-72f9-b5e6-8ef31add4481`.
     public static func isWindowID(_ value: String) -> Bool {
         value.range(of: "^window:[0-9A-Za-z-]+$", options: .regularExpression) != nil
+    }
+
+    private struct Created: Decodable {
+        var windowID: String
+
+        enum CodingKeys: String, CodingKey {
+            case windowID = "window_id"
+        }
     }
 
     private struct Listing: Decodable {

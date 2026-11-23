@@ -126,6 +126,58 @@ struct RexInventoryTests {
         #expect(result.status == 127)
     }
 
+    @Test("a new window runs kwt rex new with each option quoted")
+    func newWindowCommand() throws {
+        // A stand-in kwt prints each argument it gets on its own line.
+        let recorder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kwt-args-\(UUID().uuidString)")
+        try "#!/bin/sh\nprintf '[%s]\\n' \"$@\"\n".write(
+            to: recorder, atomically: true, encoding: .utf8
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: recorder.path
+        )
+        defer { try? FileManager.default.removeItem(at: recorder) }
+        let prelude = "ghosthub_kwt_path=\(shellQuotedCommandArgument(recorder.path)); "
+
+        let result = try runShell(RexInventory.newWindowCommand(
+            kwtPrelude: prelude,
+            label: "it's work",
+            sessionID: "session:01a1-aa",
+            cwd: "/home/user-a/my src"
+        ))
+        #expect(result.status == 0)
+        #expect(result.stdout.components(separatedBy: "\n") == [
+            "GHOSTHUB_REX_JSON", "[rex]", "[new]", "[--label]", "[it's work]",
+            "[--session]", "[session:01a1-aa]", "[--cwd]", "[/home/user-a/my src]", "",
+        ])
+        let bare = try runShell(RexInventory.newWindowCommand(
+            kwtPrelude: prelude, label: nil, sessionID: nil, cwd: nil
+        ))
+        #expect(bare.stdout.components(separatedBy: "\n") == [
+            "GHOSTHUB_REX_JSON", "[rex]", "[new]", "",
+        ])
+    }
+
+    @Test("kwt rex new reports the new window, or why Rex refused")
+    func newWindowResult() {
+        let created = #"{"session_id":"session:01a1-aa","window_id":"window:01a1-bb"}"#
+        #expect(RexInventory.parseNewWindow(
+            status: 0, stdout: "motd\nGHOSTHUB_REX_JSON\n\(created)\n", stderr: ""
+        ) == .success("window:01a1-bb"))
+        #expect(RexInventory.parseNewWindow(status: 127, stdout: "", stderr: "")
+            == .failure(.unavailable(.rex)))
+        #expect(RexInventory.parseNewWindow(
+            status: 1, stdout: "GHOSTHUB_REX_JSON\n",
+            stderr: "Error: the Rex server is not running"
+        ) == .failure(.commandFailed(
+            .rex, status: 1, stderr: "Error: the Rex server is not running"
+        )))
+        #expect(RexInventory.parseNewWindow(
+            status: 0, stdout: #"GHOSTHUB_REX_JSON\#n{"window_id":"--help"}"#, stderr: ""
+        ) == .failure(.malformedJSON(.rex)))
+    }
+
     private func runShell(_ command: String) throws -> (status: Int32, stdout: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

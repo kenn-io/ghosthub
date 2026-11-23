@@ -134,6 +134,30 @@ struct BackendTerminalInventoryClient: Sendable {
             }
     }
 
+    /// Opens a shell in a new Rex window and returns the window's ID. It
+    /// runs once: a retry after a lost reply could open a second window.
+    func createRexWindow(
+        on host: CommandHost,
+        label: String?,
+        sessionID: String?,
+        cwd: String?,
+        sshConnectionArguments: [String]?
+    ) -> Result<String, BackendTerminalCommandError> {
+        guard Self.supports(host) else { return .failure(.unsupportedPlatform(.rex)) }
+        let output = run(
+            RexInventory.newWindowCommand(
+                kwtPrelude: kwtPrelude(for: host),
+                label: label, sessionID: sessionID, cwd: cwd
+            ),
+            on: host,
+            sshConnectionArguments: sshConnectionArguments,
+            retryPolicy: .never
+        )
+        return RexInventory.parseNewWindow(
+            status: output.status, stdout: output.stdout, stderr: output.stderr
+        )
+    }
+
     /// The absolute path of the program that attaches to `kind`'s terminals.
     func resolveExecutable(
         _ kind: BackendTerminalKind,
@@ -180,7 +204,8 @@ struct BackendTerminalInventoryClient: Sendable {
     private func run(
         _ command: String,
         on host: CommandHost,
-        sshConnectionArguments: [String]?
+        sshConnectionArguments: [String]?,
+        retryPolicy: AccountCommandRunner.RemoteRetryPolicy = .idempotent
     ) -> AccountCommandOutput {
         switch host {
         case .local:
@@ -197,7 +222,7 @@ struct BackendTerminalInventoryClient: Sendable {
                 connectionArguments: sshConnectionArguments,
                 command: command,
                 timeout: processTimeout,
-                retryPolicy: .idempotent
+                retryPolicy: retryPolicy
             )
         }
     }

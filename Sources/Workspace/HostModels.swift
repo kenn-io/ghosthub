@@ -422,6 +422,8 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
     /// Sessions kwt saved from a stopped tmux server that Ghosthub can
     /// restore; see `SavedTmuxSession`.
     public var savedTmuxSessions: [SavedTmuxSession]
+    /// A Rex server answers on the host, so windows can be created.
+    public var rexAvailable: Bool
     public var decodedConnectionState: HostConnectionState?
     public var transientOverride: HostConnectionState?
     public var operationAvailability:
@@ -453,6 +455,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         zellijSessions: [ZellijSessionSummary] = [],
         zellijAvailable: Bool = false,
         savedTmuxSessions: [SavedTmuxSession] = [],
+        rexAvailable: Bool = false,
         decodedConnectionState: HostConnectionState? = nil,
         transientOverride: HostConnectionState? = nil,
         operationAvailability:
@@ -483,6 +486,7 @@ public struct HostSummary: Identifiable, Equatable, Sendable {
         self.zellijSessions = zellijSessions
         self.zellijAvailable = zellijAvailable
         self.savedTmuxSessions = savedTmuxSessions
+        self.rexAvailable = rexAvailable
         self.decodedConnectionState = decodedConnectionState
         self.transientOverride = transientOverride
         self.operationAvailability = operationAvailability
