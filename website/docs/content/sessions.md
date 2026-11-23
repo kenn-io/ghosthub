@@ -104,8 +104,8 @@ only lists active Zellij sessions and does not resurrect exited ones.
 
 ## Herdr desktop terminals
 
-Ghosthub on macOS can open live terminals from the newer
-[Herdr desktop app](https://github.com/herdrdev/herdr-app). This connects
+Ghosthub on macOS has experimental support for opening live terminals from the
+newer [Herdr desktop app](https://github.com/herdrdev/herdr-app). This connects
 through [herdr-core](https://github.com/herdrdev/herdr-core), which tracks
 terminals separately from older Herdr TUI sessions. Windows and Linux builds do
 not support Herdr desktop yet.
@@ -170,7 +170,7 @@ splits inside them.
 
 ### macOS
 
-Ghosthub on macOS opens windows from a running
+Ghosthub on macOS has experimental support for opening windows from a running
 [Rex](https://www.superlogical.com/rex/docs) server on your Mac or an SSH host,
 complete with their split panes.
 

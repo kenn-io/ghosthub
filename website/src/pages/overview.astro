@@ -17,7 +17,8 @@ import { RELEASES_URL } from '../config';
 const title = 'Ghosthub overview';
 const description =
   'How Ghosthub manages local and remote tmux, Herdr, and Zellij sessions, '
-  + 'SSH reconnects, and Git worktrees without touching a local shell.';
+  + 'experimental Rex and Herdr Core terminals, SSH reconnects, and Git '
+  + 'worktrees without touching a local shell.';
 
 const imageWidths = [640, 960, 1280, 1600];
 const imageSizes = '(max-width: 900px) calc(100vw - 3rem), 900px';
@@ -49,7 +50,8 @@ const imageAlt = {
       <p class="lead">
         Ghosthub is a dedicated Mac app for managing local and remote terminal
         multiplexers. It is an alternative to juggling tmux, Herdr, and Zellij
-        sessions inside a general-purpose terminal like iTerm2, Ghostty, or Kitty.
+        sessions inside a general-purpose terminal like iTerm2, Ghostty, or
+        Kitty, with experimental support for Rex and Herdr Core.
       </p>
       <p>
         Instead of opening a local shell, typing <code>ssh</code>, listing
@@ -74,6 +76,7 @@ const imageAlt = {
         <span>Apple Silicon</span>
         <span>macOS 15+</span>
         <span>tmux 3.2+, Herdr 0.8+, or Zellij 0.44+</span>
+        <span>Experimental: Rex &amp; Herdr Core</span>
       </div>
       <InstallCommand />
     </div>
@@ -97,7 +100,8 @@ const imageAlt = {
           <h2>Every host and session in one sidebar</h2>
           <p>
             Ghosthub connects to your Mac and remote hosts and lists every tmux,
-            Herdr, and Zellij session in one sidebar, alongside any registered
+            Herdr, and Zellij session in one sidebar, along with experimental
+            support for Rex windows and Herdr Core terminals and any registered
             Git projects and worktrees. Click a session to attach straight to
             it, or click the plus button next to a host to create one, with no
             local shell needed.
@@ -334,9 +338,10 @@ const imageAlt = {
       <p class="eyebrow">No lock-in</p>
       <h2>Ordinary multiplexers underneath</h2>
       <p>
-        Ghosthub manages access to your tmux, Herdr, and Zellij sessions without
-        taking them over. They keep running when Ghosthub is closed and stay
-        reachable from their own CLI clients.
+        Ghosthub manages access to your tmux, Herdr, and Zellij sessions, plus
+        experimental Rex windows and Herdr Core terminals, without taking them
+        over. They keep running when Ghosthub is closed and stay reachable from
+        their own CLI clients.
       </p>
       <a data-download href={RELEASES_URL}>Download Ghosthub <span aria-hidden="true">&rarr;</span></a>
     </div>
