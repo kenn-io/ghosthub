@@ -79,30 +79,36 @@ pub(crate) fn run(workspace: &Workspace, request: &RemoteZellijAttachRequest) {
             )
             .map_err(|error| WorkspaceError::new(error.to_string()))
     })();
-    let succeeded = result.is_ok();
-    if succeeded {
-        finish(workspace, request);
-        remove_inventory(workspace, request);
-    }
-    release_zellij_kill(&workspace.scene.runtime, &key(request), succeeded);
-    let refreshed = refresh(workspace, request, &cancellation);
-    let fresh_running = matches!(refreshed, Ok(Some(true)));
-    if matches!(refreshed, Ok(Some(false))) {
-        finish(workspace, request);
-    }
-    if !succeeded {
-        remote_recovery::schedule(
-            workspace,
-            remote_recovery::Target::Zellij(request.clone()),
-            suppressed,
-            fresh_running,
-        );
-    }
-    if let Err(error) = result {
-        workspace.push_operation_error(error.to_string());
-    }
-    if let Err(error) = refreshed {
-        workspace.push_operation_error(format!("Zellij inventory refresh failed: {error}"));
+    match result {
+        Ok(()) => {
+            finish(workspace, request);
+            remove_inventory(workspace, request);
+            release_zellij_kill(&workspace.scene.runtime, &key(request), true);
+            // On Unix, `zellij kill-session` returns as soon as it signals the
+            // server, which can keep answering `list-sessions` while tearing
+            // down plugins. Keep the immediate removal instead of racing a
+            // post-kill refresh against server shutdown.
+        }
+        Err(error) => {
+            release_zellij_kill(&workspace.scene.runtime, &key(request), false);
+            let refreshed = refresh(workspace, request, &cancellation);
+            let fresh_running = matches!(refreshed, Ok(Some(true)));
+            if matches!(refreshed, Ok(Some(false))) {
+                finish(workspace, request);
+            }
+            remote_recovery::schedule(
+                workspace,
+                remote_recovery::Target::Zellij(request.clone()),
+                suppressed,
+                fresh_running,
+            );
+            workspace.push_operation_error(error.to_string());
+            if let Err(refresh_error) = refreshed {
+                workspace.push_operation_error(format!(
+                    "Zellij inventory refresh failed: {refresh_error}"
+                ));
+            }
+        }
     }
 }
 

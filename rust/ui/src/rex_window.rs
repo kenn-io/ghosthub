@@ -56,6 +56,13 @@ pub(super) fn shortcut(key: &gpui::Keystroke) -> Option<PaneAction> {
     }
 }
 
+fn focused_rex_presentation(snapshot: &workspace::WorkspaceSnapshot) -> Option<u64> {
+    snapshot.rex_window()?.panes.iter().find_map(|pane| {
+        (pane.focused && pane.rect.width > 0.0 && pane.rect.height > 0.0)
+            .then_some(pane.presentation_id)
+    })
+}
+
 impl RootView {
     pub(super) fn run_rex_action(
         &mut self,
@@ -107,20 +114,16 @@ impl RootView {
         rex: &workspace::RexWindowSnapshot,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let focused = rex.panes.iter().find_map(|pane| {
-            (pane.focused && pane.rect.width > 0.0 && pane.rect.height > 0.0)
-                .then_some(pane.presentation_id)
-        });
         let mut body = div()
             .relative()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(move |this, event, window, cx| {
-                if let Some(id) = focused {
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                if let Some(id) = focused_rex_presentation(&this.workspace.snapshot()) {
                     this.on_key_down(id, event, window, cx);
                 }
             }))
-            .on_key_up(cx.listener(move |this, event, window, cx| {
-                if let Some(id) = focused {
+            .on_key_up(cx.listener(|this, event, window, cx| {
+                if let Some(id) = focused_rex_presentation(&this.workspace.snapshot()) {
                     this.on_key_up(id, event, window, cx);
                 }
             }))
