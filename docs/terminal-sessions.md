@@ -1,1211 +1,485 @@
-# Terminal Sessions
+# Terminal sessions
 
-Terminal behavior is the highest-risk part of Ghosthub. The app must behave
-like a normal macOS terminal while remaining isolated from Ghostty.app
-configuration and launcher-terminal environment.
+Terminal behavior is the highest-risk part of Ghosthub. Attached sessions must
+behave like a normal macOS terminal while staying isolated from Ghostty.app
+config and launcher-terminal environment variables.
 
-## Product Boundary
+## Product boundary
 
-Ghosthub is a native session switcher for tmux, Herdr, and Zellij fleets across the
-local Mac and configured SSH hosts. There are four independent inventory
-sources:
+Ghosthub is a native hub for local and remote terminal multiplexers across the
+local Mac and configured SSH hosts. Discovery reads five independent sources:
 
-- **kwt workspaces:** projects, worktrees, and registered plain directories
-  read from kwt's supported JSON commands, including each workspace's exact
-  `session_name`.
-- **unbound sessions:** every other session returned by direct `tmux
-  list-sessions` discovery on the host's default server or named `kwt` server.
-  Discovery preserves the socket, so equal names on those servers remain
-  separate targets.
-- **Herdr sessions:** running and stopped sessions returned by `herdr session list --json`
-  on the local Mac and remote POSIX hosts.
-- **Backend terminals (macOS app):** live terminals returned by
-  `herdr-core ls --json` and Rex windows returned by Ghosthub's pinned
-  `kwt rex ls --json` on each of those hosts. See
+- **kwt workspaces:** Git projects, worktrees, and registered plain directories
+  from kwt's JSON commands, with each workspace's exact `session_name`.
+- **Standalone tmux sessions:** every other session from `tmux list-sessions`
+  on the default tmux server or kwt's `kwt` server (socket is part of identity,
+  so equal names on the two servers stay separate).
+- **Herdr TUI sessions:** running and stopped sessions from
+  `herdr session list --json` on the local Mac and remote POSIX hosts.
+- **Backend terminals (macOS app):** live terminals from `herdr-core ls --json`
+  and Rex windows from Ghosthub's pinned `kwt rex ls --json`; see
   [Backend terminals](#backend-terminals).
-- **Zellij sessions:** active sessions returned by `zellij list-sessions
-  --no-formatting` on the local Mac and remote POSIX hosts. Exited,
-  resurrectable sessions are filtered out.
+- **Zellij sessions:** active sessions from
+  `zellij list-sessions --no-formatting` on the local Mac and remote POSIX
+  hosts (exited/resurrectable sessions are filtered out).
 
-The two tmux-backed sources open through the same ordinary tmux client in one
-libghostty surface. Herdr and Zellij open through their ordinary whole-session clients. A
-session created by Middleman is visible when it exists on the host tmux server,
-but Ghosthub does not consult Middleman to identify, create, attach, mutate, or
-destroy it.
+Both tmux sources attach through the normal tmux client inside a libghostty
+surface; Herdr TUI and Zellij attach through their normal whole-session clients.
+Middleman-created sessions appear only because they are ordinary tmux sessions;
+Ghosthub never calls Middleman. **New Tmux Session** creates an ordinary tmux
+session that immediately joins regular discovery with the same detach-only view
+lifecycle.
 
-Ghosthub may also create one ordinary session when the user explicitly chooses
-New Tmux Session for a host. This is not a separate managed-session type: the
-result immediately joins the same direct tmux inventory and has the same
-detach-only presentation lifecycle as every other session.
+Herdr and Zellij are optional. Exit 127 during capability or inventory probes
+is silent; malformed output or other errors produce only a host-scoped warning
+without affecting tmux, kwt, or workspace availability.
 
-Herdr and Zellij are optional. Exit 127 during either capability or inventory
-probe is silent and does not affect host usability. Invalid output and real command failures
-produce only a host-scoped warning; they never change tmux reachability, kwt
-availability, cached project inventory, or the workspace's blocking state.
+The Rust Windows and Linux apps keep this same boundary (see
+[Windows and Linux Rust Port](rust-port.md)); this document remains the source
+of truth for ownership, reconnect, detach, and restart behavior on every
+platform.
 
-The planned Rust/GPUI Windows and Linux applications preserve this boundary.
-Their detailed backend, worker, surface, capability, and delivery design is in
-[Windows and Linux Rust Port](rust-port.md). This page remains authoritative
-for ownership, reconnect, detach, and restart semantics on every platform.
+## Native tmux attachment
 
-## Native Tmux Attachment
+Ghosthub runs `tmux attach-session -E -t =<name>` locally, through OpenSSH on
+remote POSIX hosts, and through encoded PowerShell + psmux's `tmux.exe` on
+experimental Windows hosts. Ghosthub never uses `tmux -CC`, pane capture,
+history replay, silent rendering children, or a Swift split-tree projection.
+tmux owns windows, panes, layout, focus, status line, history, alternate
+screen, processes, session lifetime, key bindings, and mouse bindings.
 
-Ghosthub invokes `tmux attach-session -E -t =<name>` for a local session. A
-remote POSIX session uses the same tmux command through OpenSSH. An
-experimental native Windows host invokes psmux's `tmux.exe` compatibility
-alias through an encoded Windows PowerShell command and the same exact session
-target. There is no
-`tmux -CC`, pane capture, history replay, silent rendering child, Swift pane
-map, split-tree projection, or Ghosthub tab bar. Tmux owns:
+Ghosthub owns inventory, client surfaces, and connection state:
 
-- windows, panes, layout, focus, and status-line presentation
-- terminal history and alternate-screen state
-- pane processes and session lifetime
-- tmux-native key bindings and mouse behavior after Ghosthub enables the
-  session-scoped `mouse` option
-
-Ghosthub owns inventory presentation, terminal clients, and connection state.
-Before each POSIX tmux presentation, Ghosthub best-effort enables the exact
-session's `mouse` option. This makes wheel scrolling enter and navigate tmux
-copy mode even when the server started from tmux's vanilla mouse-off default.
-The option is session-scoped, so every attached client sees it; Ghosthub does
-not add or replace mouse bindings. Native Windows/psmux attachment retains its
-documented mouse-reporting limitation and does not receive this setup.
-Command-click remains a macOS terminal action: Ghosthub supplies libghostty's
-Shift mouse-capture override internally for Command-modified pointer movement,
-modifier changes, and the left click. Modifier changes reuse the last tracked
-in-window pointer position because keyboard events do not carry a reliable
-mouse location. Libghostty removes the override before matching its Command
-link binding. Tmux therefore does not capture link highlighting or activation,
-and users do not need to hold Shift.
+- **Mouse mode and Command-click links:** before attaching on POSIX hosts,
+  Ghosthub best-effort enables the session's shared `mouse` option so wheel
+  scrolling enters tmux copy mode even with a default tmux config (leaving tmux
+  mouse bindings intact; psmux skips this). For Command-modified pointer
+  movement, modifier changes (reusing the last tracked in-window pointer
+  location), and left clicks, Ghosthub injects libghostty's Shift mouse-capture
+  override internally so Command-click links bypass tmux without holding Shift.
+- **SSH leases and session budgeting:** remote POSIX views acquire one
+  multiplexed kwt SSH lease before their first probe and hold it through exit
+  (reusing the same frozen route for tmux discovery, attach, splits, and
+  identity checks; reconnect re-resolves from scratch). OpenSSH exit 255 marks
+  a shared lease unusable; masterless leases fail closed. Each view claims a
+  terminal slot on its master (moving to another kwt master when full; see
+  [Architecture](architecture.md)). Read-only inventory and probe commands
+  retry up to 5 times on `session open refused by peer` without marking the
+  master unusable; mutating commands never retry automatically. Lease failures
+  open a modal only when OpenSSH needs host-key review, auth, or config
+  recovery; transport drops return to the background reconnect supervisor.
+  Tailscale browser checks show a link in the recovery sheet and keep the
+  attempt open until approved or timed out.
 
 ### Active-pane Find
 
-Command-F searches the complete history of the active terminal pane without
-copying that history into Ghosthub. Standalone shells delegate search,
-highlighting, selection, and viewport movement to libghostty. POSIX tmux 3.4
-and newer delegates the same work to tmux copy mode after fencing the command
-to the attached server, session, client, and pane. Tmux 3.5 and newer can also
-return an exact total when `search_count_partial` is zero; tmux 3.4 reports
-only whether a match exists. Tmux 3.6 and newer receives the copy-mode `--`
-option terminator, while 3.4 through releases older than 3.6 use the legacy
-command shape.
+**Cmd-F** searches full scrollback of the active pane without copying history
+into Ghosthub:
 
-Tmux owns wrapping and the first step after a search direction changes. Copy
-mode and its viewport are pane-wide, so another client attached to the same
-pane can observe or cancel the search. Parking a preview, replacing an
-attachment, disconnecting, or closing the surface ends Ghosthub's Find
-session. Herdr, Zellij, Windows psmux, and tmux older than 3.4 do not expose
-Find because their command surfaces cannot accept a literal query with the
-same backend-owned history contract. Queries stay in memory, are not logged,
-and never appear in operation diagnostics.
-Each remote POSIX presentation obtains one multiplexed lease from kwt before
-its first probe and holds it through terminal exit. Tmux path discovery,
-attach, pane splitting, and identity revalidation use that same frozen route
-identity and generation. Reconnect resolves and acquires again; it never
-reuses stored control-socket arguments. A presentation whose OpenSSH client
-itself exits with status 255 marks a shared lease unusable so no other caller
-joins the dead master. A masterless lease is unsupported and fails before a
-terminal surface launches. Each presentation also claims a place on its
-master, moving to another kwt master for the route when the first already
-holds its share of terminals, and takes its SSH session just before the
-terminal launches. The counting rules are in
-[Architecture](architecture.md). Read-only
-inventory and probe commands are queued again, up to five attempts, when
-OpenSSH reports `session open refused by peer`. Mutating commands never repeat
-because remote command diagnostics share OpenSSH's standard-error stream. A
-refusal does not mark the master unusable. Other command failures are never
-retried, and a persistent refusal is reported as the SSH connection refusing
-another session rather than as a tool failure.
-Presentation lease failures open a modal only when OpenSSH needs host review,
-authentication, or explicit configuration recovery. Ordinary transport
-failures return to the session reconnect supervisor, which keeps retrying in
-the background and exposes its immediate Reconnect Now action without taking
-window focus. Tailscale browser authentication shows a link in the recovery
-sheet and keeps the current reconnect attempt alive while approval is pending.
-Completing the browser check resumes that attempt automatically; an expired
-check reports an authentication timeout.
-Each workspace window retains every presentation it explicitly opens, keyed by
-the exact host, tmux socket, attachment mode, and session name. Navigating to
-another host,
-worktree, or session removes the previous surface from the visible hierarchy
-and marks it occluded without freeing the surface or terminating its tmux/SSH
-client. Returning to it reuses the same handle and surface. Cmd-W or a
-pane-originated close request detaches only the active presentation; closing a
-workspace window or quitting Ghosthub detaches every presentation owned by
-that window and never destroys server-side state. The separate Kill Session
-action is the only destructive lifecycle operation.
-It is offered only when direct discovery or a currently connected active
-attachment establishes that the session is running. Before displaying
-confirmation, Ghosthub captures tmux's server PID, `session_id`, and
-`session_created` values together with the exact local or SSH endpoint, socket,
-and session name. Termination uses one tmux conditional command that compares
-all three live identity values and invokes `kill-session` against that exact
-session only on a match. Swift targets the exact name. Rust local and SSH clients
-capture authority from a fresh length-framed all-session listing, match the
-decoded name in Rust, and target only the captured stable session ID; the name
-never re-enters a tmux target or nested command parser. The server PID
-distinguishes tmux server generations, while the
-monotonically assigned session ID distinguishes same-named replacements within
-one server even when their second-resolution creation timestamps match. A
-replacement session is therefore never killed under stale cached inventory or
-a disconnected attachment. Ghosthub detaches an active client only after that
-command succeeds, so a failed lookup, SSH connection, identity check, or kill
-leaves the presentation open. After success it rechecks the active attachment,
-closing that exact current selection and navigating away only if it is the
-killed target.
+- Standalone shells use libghostty's native search.
+- POSIX tmux 3.4+ delegates to tmux copy mode fenced to the exact server,
+  session, client, and pane. tmux 3.5+ reports exact totals when
+  `search_count_partial` is 0; 3.4 reports match presence only. tmux 3.6+ gets
+  the `--` option terminator; 3.4 to <3.6 uses the legacy command form.
+- tmux controls wrapping and direction-change steps; copy mode is pane-wide so
+  other clients on the same pane can see or cancel the search.
+- Parking a preview, replacing an attachment, disconnecting, or closing the
+  surface ends Find. Herdr, Zellij, Windows/psmux, and tmux <3.4 disable Find.
+  Queries stay in memory only and never enter logs or diagnostics.
 
-Rename Session is offered only for standalone sessions on the default tmux
-server of a macOS or Linux host. Kwt derives worktree and directory session
-names from the branch and path instead of storing them, so a session that a
-kwt worktree or directory workspace owns is never renamable, including when
-kwt-managed sessions are shown as plain rows. For the same reason a rename
-cannot take a name that starts with `kwt-wt-` or `kwt-workspace-`, or that a
-kwt worktree or directory workspace on that host uses. The rename sheet
-captures the identity discovery recorded for the row when it opens. Submitting
-refuses a session that no longer has that identity, including one that took
-the name while the sheet was open, and one tmux conditional runs
-`rename-session` only when the server PID, `session_id`, and `session_created`
-still match.
+### Retained views, Kill Session, Rename Session, and themes
 
-The tmux client stays attached across the rename, because tmux keeps the
-`session_id` and a client stays on its session. Presentations are keyed by
-session name, so every window that shows a session with the same identity moves
-its presentation to the new name and keeps the running terminal. A rename never
-detaches a client, because detaching the last one can end the session. The
-window that requests the rename refuses it while its own presentation of that
-session is still connecting, reconnecting, or resizing.
+Each workspace window retains every tmux view it opens, keyed by host, socket,
+attachment mode, and session name. Switching rows hides and marks the previous
+surface occluded without closing its client; returning reuses it. **Cmd-W** or
+a pane-close request detaches only the active view; closing the window or
+quitting detaches all views without killing sessions.
 
-Renames go into an in-memory log that keeps the latest name of each session
-identity. A window that cannot move a presentation when the rename lands, because
-it is still connecting or resizing, keeps it under the old name and applies the
-log entry once the presentation connects or the next discovery runs, in every
-preview mode. A presentation whose SSH client is reconnecting keeps its name
-and reserves the new one, so neither Always Live nor another presentation's
-move takes or discards it. When its reconnect probe lists the session's
-identity under another name, it reattaches by `session_id` instead of
-reporting the session as ended, and then moves like any connected client. A rename
-fences in-flight discovery, so an entry newer than a window's last listing wins
-and a later listing is current. Each discovery also moves any presentation
-whose session identity is now listed under another name, including when the
-kwt pass of that discovery failed, after a rename made in tmux itself, or when
-a new session reuses the old name. Always Live leaves both names of a waiting presentation alone until
-it moves. When sessions swap names, each presentation waits for the other's
-name. If every presentation in that cycle can move, one is rekeyed to a name
-tmux never gives a session, which frees its name for the rest of the cycle.
+- **Kill Session (confirmed):** offered only for sessions confirmed live.
+  Captures host, socket, name, tmux server PID, `session_id`, and
+  `session_created`, then executes one tmux conditional checking all three live
+  values before running `kill-session` (Swift targets the exact name; Rust
+  matches decoded names from a length-framed listing and targets only the
+  captured stable session ID). Active clients detach only after the kill
+  succeeds, and the window navigates away only if that killed session is still
+  the active selection.
+- **Rename Session:** offered only for standalone sessions on the default
+  server of macOS/Linux hosts (never kwt-owned worktrees or directories; names
+  starting with `kwt-wt-` or `kwt-workspace-` or colliding with a kwt workspace
+  are rejected). Validates the captured server PID, `session_id`, and
+  `session_created` inside one tmux conditional before running
+  `rename-session`. Clients stay attached across renames (never detaching the
+  last client). The requesting window rejects rename while its own view of that
+  session is connecting, reconnecting, or resizing.
+- **Cross-window rename tracking:** renames enter an in-memory log keyed by
+  session identity, fencing older in-flight discovery listings. Windows that
+  cannot rekey immediately apply the log once connected or on the next listing.
+  Reconnecting SSH views reserve the new name and reattach by `session_id` when
+  a rename is discovered. Name-swap cycles rekey one view to a synthetic
+  temporary key to break the cycle. Standalone attaches also target
+  `session_id` behind the same identity check. Cleanly detached views rekey and
+  stay detached; if a window ends up holding two views of the same session, it
+  keeps the active one and detaches the duplicate only inside a tmux queue
+  confirming both clients are still on the kept session (never detaching a
+  session's last client). Saved sidebar order moves to the new name.
+- **Tmux themes:** applied on new bare session creation (`Follow ghostty.conf`
+  reads libghostty's resolved light/dark colors). Existing sessions keep their
+  own styles by default. The opt-in shared-session override (and one-shot
+  **Session → Apply Theme to Current Session**) resets `status-style`,
+  `message-style`, and `message-command-style` to terminal defaults and sets
+  existing window foreground/background for all clients (never on Console Panel
+  or Windows/psmux, where psmux applies `reverse` across the client).
 
-A standalone session attaches by its discovered `session_id` behind the same
-identity condition that rename uses. A launch that is still provisioning when
-its session is renamed therefore reaches the renamed session, and refuses a
-replacement session that took the old name.
+## Backend terminals
 
-A presentation whose client detached cleanly also moves to its session's new
-name and stays detached, so Always Live does not open a second client and
-discovery does not mark the session ended. A presentation under the
-destination name stays while its own session is still listed, because that
-session moves on its own. It is discarded once its attachment closed, unless
-it is still reconnecting. When its session is gone from a fresh listing but its client
-is still running, tmux has moved that client to another session. The client is
-detached only while the session it is on now has another client, and the
-presentation closes only after that detach. If a window
-holds two presentations of the same session, it keeps the active one and closes
-the other only after tmux has reported the kept client as attached to that
-session. Either client may have switched sessions since, so one tmux command
-queue checks that both are still on the kept client's session and only then
-detaches the other client. The presentation closes only after that detach, and
-not if its attachment was relaunched in the meantime. If the closed
-presentation was selected while tmux detached it, the window shows the kept one
-instead. If tmux refuses, both stay open, so no session loses its last client.
-The saved sidebar position moves to the new name.
+Herdr Core and Rex expose individual backend terminals or multi-pane windows.
+Ghosthub lists Herdr desktop tabs, standalone Herdr Core terminals, and Rex
+windows in each host's unified session list (**herdr** and **rex** labels,
+distinct from **herdr tui**), with address or Rex details shown after the
+title. Sibling navigation walks the entire list in sidebar order and skips
+stopped Herdr sessions.
 
-Ghosthub applies the selected Tmux Theme when it creates a new bare tmux
-session. A built-in palette supplies its configured colors. Follow ghostty.conf
-instead uses the effective foreground and background resolved by libghostty for
-the current macOS appearance, including conditional light and dark themes.
-Existing sessions retain their own appearance by default: Ghosthub neither
-places a client-local palette over them nor changes their tmux options.
-
-Users may enable the persistent shared-session override. On each future
-attachment, that override resets the exact session's `status-style`,
-`message-style`, and `message-command-style` to terminal-default colors and
-sets each existing window's default foreground and background. A built-in
-palette is applied within the attach command itself; kwt-backed workspaces
-style after kwt's own client attaches. Follow ghostty.conf colors only exist
-once the new surface publishes its resolved state, so Ghosthub applies them
-one-shot and best-effort shortly after the attachment connects, verifying the
-session's identity first. **Session -> Apply Theme to Current Session** and the
-matching command-palette action apply the selected effective style immediately
-to the connected active workspace tmux attachment without changing the
-persistent preference or reconnecting. Console Panel terminals are not tmux
-session targets. Both paths change shared tmux options, so every attached client
-sees the result. Apart from enabling the session mouse option during attachment,
-these best-effort style commands do not change tmux interaction: prefix and key
-tables, mouse bindings, windows, panes, history, and layout remain untouched.
-Native Windows attachment leaves psmux's status and message styles user-owned;
-psmux does not preserve tmux's session-scoped rendering for these style resets
-and may apply `reverse` across the client rather than only its status line. The
-persistent override and one-shot action are therefore unavailable for native
-Windows sessions.
-
-## Backend Terminals
-
-Herdr Core and Rex offer one terminal at a time to attach to. Ghosthub lists
-Herdr desktop tabs, Herdr Core terminals in no tab, and Rex windows per host. A
-Herdr Core terminal attaches in its own libghostty surface; a desktop tab or a
-Rex window shows all of its panes, each in its own surface (see
-[Herdr Core terminals](#herdr-core-terminals) and [Rex windows](#rex-windows)). The backend owns creation,
-program lifetime, and layout; closing the view only detaches.
-
-A backend terminal's identity is its host, kind (`core` or `rex`), and address:
-a Herdr Core address such as `t7`, a desktop tab's `tab:` address, or a Rex
-window ID. Titles and details are
-display text. A Herdr TUI session with the same name is a separate target.
-Selection, reconnect, sibling navigation, and restoration use that identity.
-
-Discovery runs every backend on a host through one SSH lease, independently of
-Herdr TUI discovery. A missing program is silent. A failed backend keeps its
-last listing and supplies a host warning; the other backends still update.
-A scheduled sweep lets a slow discovery finish; an explicit refresh or a
-change of hosts replaces it. Saved sidebar positions are pruned only after
-every host's backends have reported.
-
-Opening a terminal lists its backend again over a frozen SSH connection. The
-current view stays until the terminal is confirmed, so a failed open leaves it
-in place and shows the error. While that check runs, the current terminal
-takes no keystrokes and its reconnect waits. The same holds when a Herdr
-session or a Zellij session is checked, whatever the current view is: tmux,
-Zellij, Herdr, or a backend terminal. Every held view gets input back when
-the last pending check ends, so an open that replaces another cannot leave a
-view blocked. Navigating elsewhere ends every pending check at once, since
-none of them can open after it. If the open fails and the held view is still
-shown, it takes keyboard focus again unless the user navigated or focused
-something else.
-Returning to the shown tmux or Zellij session gives it input back at once.
-Cmd-W cancels every
-shortcut still checking its target, so nothing opens after the close. The attach then requires that connection's route,
-so a changed SSH alias cannot reach a same-addressed terminal on another
-machine. Reconnect checks the route before it reads the listing. A changed route
-stops with a prompt to reopen, whatever the other machine lists. On the
-original route, a terminal that is still listed reattaches with a new client,
-and one that is gone closes its presentation. A dropped SSH connection (status 255), an SSH transport failure, or a
-surface that could not be created yet reconnects automatically with backoff.
-When the attach client exits otherwise, Ghosthub lists the host once on the
-original route, because the client exits the same way when its program ends
-and when it detaches. A terminal that is gone closes its presentation. A
-terminal still listed, a failed launch, or a failed listing waits for
-**Retry**. A
-reconnect that needs authentication or host-key approval stops and offers
-**Review Connection**, then resumes after approval. Closing the terminal
-withdraws that request.
-
-Restoration stays pending until the terminal is confirmed. A transient failure
-lists the host again and retries; a terminal that ended is not restored.
-
-Ghosthub 0.13 saved a Herdr desktop terminal as a Herdr session. Restoration
-drops such an entry rather than attach a TUI session with the same name.
-Herdr Core terminals have no Ghosthub create, stop, or split controls.
-
-Backend terminals join the host's one session list. Herdr desktop terminals
-carry a **herdr** label, Rex windows a **rex** label, and Herdr TUI sessions
-a **herdr tui** label. Each backend terminal row shows its address or Rex
-detail as quiet text after the title. Sibling navigation walks the host's
-whole session list in sidebar order and skips stopped Herdr sessions.
+- **Identity:** host, kind (`core` or `rex`), and address (`t7`, `tab:<id>`, or
+  `window:<id>`). Display names are never identity.
+- **Discovery:** runs all backends on a host over one SSH lease, independent of
+  Herdr TUI discovery. Missing binaries are silent; failed backends keep their
+  last listing with a host warning. Scheduled sweeps let slow runs finish;
+  manual refresh or host changes replace them. Saved sidebar order prunes only
+  after every backend on the host reports.
+- **Opening and input gating:** opening a backend terminal (or a Herdr/Zellij
+  session) re-lists its backend over a frozen SSH route while keeping the
+  current view visible, pausing keystrokes and reconnects on that held view
+  until the last pending check ends. Navigating away or pressing **Cmd-W**
+  cancels pending checks immediately; a failed open restores focus to the held
+  view unless the user moved focus elsewhere.
+- **Reconnect and exit:** attach binds to the verified SSH route (a changed
+  route stops and prompts to reopen). OpenSSH status 255, transport errors, or
+  unready surfaces retry with backoff. Other client exits trigger one listing
+  on the original route: if the terminal is gone, the view closes; if still
+  listed (or the check fails), it waits for **Retry**. Auth/host-key errors
+  offer **Review Connection**. Restoration waits until confirmed; Ghosthub 0.13
+  entries that saved a Herdr desktop terminal as a Herdr session are dropped
+  rather than attaching a same-named TUI session.
 
 ### Herdr Core terminals
 
-The macOS app resolves `herdr-core` separately from the older `herdr` TUI in
-each host account's login environment. It uses `herdr-core ls --json` for
-inventory and `herdr-core attach <address>` for presentation. The optional
-`hc` alias is not used because other programs may own that command. This
-contract is verified with upstream core 0.1.21.
+Resolved via `herdr-core` in the host login shell (`hc` is never used). Uses
+`herdr-core ls --json` and `herdr-core attach <address>` (verified with core
+0.1.21). Lists only `state: live` local `t…` terminals (excluding finished and
+`machine/t…` entries), displaying name, `where`, or agent label with the
+address below.
 
-Only `state: live` terminals with host-local `t…` addresses are listed.
-Finished terminals and `machine/t…` addresses are excluded; Ghosthub's own
-host routes determine where discovery and attachment run. The terminal's
-optional name, desktop location (`where`, the space and tab), or agent label is
-display text, in that order; the address appears beneath it.
+Discovery also reads Herdr desktop's `herdr-app` layout document via `doc.get`
+over `herdr-core connect` (read-only). Each desktop tab containing a live local
+terminal becomes one `tab:<id>` row (suppressing individual rows for its
+terminals); without a readable document, each terminal gets its own row. Tab
+rows render in the same split container as Rex windows (nested binary splits
+from row/column weights; active child for stacks; non-terminal panels and edge
+floats omitted) and stay live via a `herdr-core connect` change subscription
+(re-listing on document, terminal-set, label, title, or missed events). Focus
+and zoom stay local to Ghosthub; split, close, resize, and float are disabled
+(see the [user guide](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits)).
 
-Discovery also reads the Herdr desktop app's layout, the `herdr-app` document
-the app keeps in the core, with `doc.get` through `herdr-core connect`. Each
-desktop tab that shows a live local terminal becomes one row addressed
-`tab:<tab id>`; its terminals get no rows of their own. A core without the
-document, or a document Ghosthub cannot read, leaves every terminal its own
-row. The document belongs to Herdr desktop, so Ghosthub reads it and never
-writes it.
-
-Opening a tab row shows the tab in the split view Rex windows use. Each row and
-column of the document becomes nested binary splits sized by its children's
-weights; a stack shows its active child; hidden nodes, blocks without a
-terminal, and edge floats are left out. Each pane attaches with
-`herdr-core attach`. A `herdr-core connect` subscription to every change keeps
-the tab current: a document, terminal-set, label, or title event, or a missed
-event, lists the host again, and changes during a listing cost one more listing.
-Focus and zoom are kept in Ghosthub; split, close, resize, and float are
-unavailable. See the [user guide](https://ghosthub.ai/docs/sessions/#herdr-desktop-splits).
-
-Before discovery and attachment, Ghosthub clears inherited TUI routing variables
-and `HC_SESSION`, `HC_SOCKET`, `HC_TERMINAL_ID`, and `HC_TERMINAL_SOCKET`.
-Discovery selects the account's default core, not the caller's named instance.
-The upstream `ls` command can start that core when it is absent; Ghosthub adds
-no core server controls or installation management.
-
-Run `make test-herdr-core HERDR_CORE_BINARY=/absolute/path/to/herdr-core` to
-verify discovery, keyboard input, detach, and reattachment through libghostty.
-The test confines core state, configuration, and sockets to a temporary fixture
-and stops that fixture's core during teardown.
+Before discovery and attach, Ghosthub clears inherited Herdr TUI variables plus
+`HC_SESSION`, `HC_SOCKET`, `HC_TERMINAL_ID`, and `HC_TERMINAL_SOCKET` so the
+account's default core is always targeted (upstream `ls` can start it if not
+running). Verify locally with
+`make test-herdr-core HERDR_CORE_BINARY=/absolute/path/to/herdr-core`.
 
 ### Rex windows
 
-[Rex](https://www.superlogical.com/rex/docs) has no terminal client of its own,
-so Ghosthub reaches it through kwt. The local Mac uses the kwt bundled with
-Ghosthub; SSH hosts use the managed kwt for the bundled revision
-(`$HOME/.ghosthub/helpers/kwt/<revision>/kwt`). Neither falls back to a `kwt`
-on `PATH`. kwt finds the server through `REX_SERVER` or
-`rex whoami --autostart=false`, so Ghosthub never starts a Rex server. A host
-with Rex stopped or absent lists no Rex windows.
+Ghosthub accesses [Rex](https://www.superlogical.com/rex/docs) strictly through
+its pinned kwt (bundled locally; `$HOME/.ghosthub/helpers/kwt/<revision>/kwt` on
+SSH hosts, never `PATH`). kwt checks `REX_SERVER` or
+`rex whoami --autostart=false` so Ghosthub never starts a stopped Rex server.
 
-`kwt rex ls --json` lists the account's windows, one sidebar row each. The
-title is the window's label. Rex's automatic `Window <id>` labels are replaced
-by the name of the window's focused pane: its program's title, or else its
-foreground program and directory, such as `zsh ~`. The detail is the session
-and pane count. While a window is open, its row follows the window's live
-view instead of waiting for the next listing. Only window IDs of the form
-`window:<id>` reach kwt.
+- **Listing:** `kwt rex ls --json` returns one row per `window:<id>` (auto
+  `Window <id>` labels are replaced by the focused pane's title or foreground
+  program/directory such as `zsh ~`; open windows update their row live).
+- **Control and panes:** opening a window runs `kwt rex control <window-id>`
+  (without a TTY over SSH) for streaming JSON layout views and RPC requests,
+  drawing the tiled split tree plus floating layers back-to-front and attaching
+  each pane with `kwt rex attach <block-id>`. Divider drags defer terminal
+  resizes until release.
+- **RPC operations (shown once Rex reports the updated view):**
+  - Split Right / Split Down (++cmd+d++, ++shift+cmd+d++, header buttons):
+    `session.new_split` in the focused pane's foreground directory.
+  - Divider release: `session.resize_pane` (snaps back if Rex refuses).
+  - Pane focus / focus shortcuts: `session.focus_block` (Ghosthub picks
+    neighbors from its drawn layout and lets local focus lead lagging views;
+    only the focused pane auto-claims keyboard focus).
+  - Zoom: `session.zoom_block`.
+  - Close Pane (confirmed): `block.close`.
+  - Floating panes (Command Palette, unbound by default):
+    `session.new_layer`, `session.float_block`, `session.move_block` (Tile),
+    `session.resize_layer`, `session.raise_layer`, and `session.set_layer_state`
+    (Minimize, disabled if no other pane would remain visible).
+- **Detach and reconnect:** ++cmd+w++ detaches while leaving panes running.
+  Closing the window in Rex closes Ghosthub's view. Control-channel drops retry
+  with backoff on SSH (or wait for **Retry** locally); single-pane drops follow
+  backend-terminal reconnect rules. Verify with
+  `make test-rex REX_BINARY=/absolute/path/to/rex` (on macOS,
+  `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).
 
-Opening a window starts one `kwt rex control <window-id>`, which writes the
-session view as a JSON line at the start and after each change, and carries
-Ghosthub's layout requests and Rex's replies. Over SSH it runs without a TTY.
-Ghosthub shows the window's tiled layer as a split tree of pane cards, its
-floating layers as windows over it, back to front, and attaches each pane with `kwt rex attach <block-id>` in its own surface. A pane
-that stays in the layout keeps its attachment. Rex keeps each block's size in
-step with its surface; a divider drag holds terminal resizes until release.
-
-Rex owns the layout, and a change shows once Rex reports it:
-
-- Split Right and Split Down (++cmd+d++, ++shift+cmd+d++, or the focused pane's
-  header) send `session.new_split` beside the focused pane, with a new shell
-  that takes focus. The shell starts in the directory of the pane's
-  foreground program, as kwt reports it.
-- Releasing a divider sends one `session.resize_pane`. If Rex refuses, the
-  divider returns to Rex's ratio.
-- Clicking a pane or the focus shortcuts send `session.focus_block`. Rex's own
-  directional focus acts on the session's active window, which may be another
-  one, so Ghosthub picks the neighbor from the layout it draws.
-- Zoom sends `session.zoom_block`; the zoomed pane fills the window.
-- Close Pane asks first, then sends `block.close`, which ends the pane's
-  program.
-- New Floating Pane sends `session.new_layer` with a shell in the focused
-  pane's directory. Float Pane sends `session.float_block`; on a floating
-  pane it becomes Tile Pane, which sends `session.move_block` beside the
-  tiled pane under the floating window's middle.
-- Dragging a floating pane's header moves its window, and dragging the
-  window's edge resizes it. Release sends one `session.resize_layer`; if Rex
-  refuses, the window returns to Rex's bounds.
-- Clicking a pane in a floating window behind another sends
-  `session.raise_layer`, since Rex does not raise a layer on focus.
-- Minimize Floating Window sends `session.set_layer_state`. A minimized
-  window shows as a capsule in the lower-right corner, and clicking it shows
-  the window again. Rex refuses to minimize the last panes on screen, so
-  Ghosthub offers Minimize only while another pane stays shown.
-
-The palette lists New Floating Pane, Float or Tile Pane, and Minimize Floating
-Window. They have no default shortcut; Settings → **Keyboard** can assign one.
-
-++cmd+w++ closes the view and leaves every pane running. Closing the window
-or ending its session in Rex closes the view. If `kwt rex control` stops
-otherwise, the view shows the error; an SSH host reconnects with backoff, and
-the local Mac waits for **Retry**. A single pane whose attachment is lost
-follows the same rule as a backend terminal: a dropped connection attaches
-again with backoff, and any other ending shows **Reconnect** on the pane.
-
-Ghosthub's pane focus can run ahead of Rex's view. A click or focus shortcut
-takes effect at once and is kept until Rex reports it, so a view that lags
-behind several quick choices does not pull keyboard focus back. Only the
-focused pane may take keyboard focus by itself as it appears or its window
-becomes key.
-
-Run `make test-rex REX_BINARY=/absolute/path/to/rex` to verify listing, the
-control channel, pane attachment and keyboard input, and splitting, resizing,
-moving and swapping panes, focus, zoom, floating windows, and closing through
-libghostty. The test starts a
-private Rex server with its own socket and state directory, and stops it during
-teardown. `REX_BINARY` is the `rex` command inside Rex Server (on macOS,
-`~/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex`).
-
-## Native Herdr Attachment
+## Native Herdr attachment
 
 ### TUI sessions
 
-Ghosthub resolves `herdr` in the host account's login environment and attaches
-the complete session with `herdr session attach <exact-name>`. Local sessions
-use libghostty's normal macOS login-shell path. Remote sessions use an ordinary
-OpenSSH PTY, the same kwt-owned lease contract as tmux, and the remote account
-login environment. The lease spans executable discovery, attachment, pane
-actions, and terminal exit. Ghosthub does not use Herdr's own
-remote-client mode.
-
-Herdr owns workspaces, tabs, panes, layout, history, key bindings, terminal
-state, and the processes inside each session. Ghosthub owns discovery,
-whole-session lifecycle requests, and the disposable client presentation. Each
-scene has at most one active interactive tmux, Herdr, or Zellij presentation.
-Already-opened tmux clients may remain retained and noninteractive for
-explicitly enabled previews. On POSIX hosts, Always Live may connect one
-ordinary retained client for each freshly discovered tmux session without
-activating it. Preview
-rendering never creates a second client for the same session. These hidden
-clients ignore tmux window sizing and render at the dimensions discovery
-reported for the session's active window; selecting one promotes that retained
-client in place by clearing `ignore-size` before interaction. Windows/psmux
-sessions are not attached automatically because psmux has no non-sizing client
-mode. A POSIX tmux version without safe exact-client targeting remains usable
-interactively, but Ghosthub detaches it instead of retaining it while hidden.
-Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
-client. Ghosthub never reconstructs or otherwise controls Herdr themes,
-workspaces, tabs, panes, agents, plugins, installation, updates, configuration,
-or server-wide state. The sole pane-level exception is an explicit Split Right
-or Split Down request against the active attachment, described below.
+Ghosthub resolves `herdr` in the login environment and attaches whole sessions
+via `herdr session attach <exact-name>` (normal macOS login shell locally;
+OpenSSH PTY + kwt lease remotely; never Herdr's own remote-client mode). Herdr
+owns workspaces, tabs, panes, layout, history, key bindings, and processes.
+Closing a view, tab, window, or app detaches only.
 
 ### Herdr pane splitting
 
-Cmd-D and Cmd-Shift-D, plus the matching File menu actions, request
+**Cmd-D**, **Cmd-Shift-D**, and the File menu call
 `herdr pane split --direction right|down --focus` when the active Herdr client
-reports version 0.8.0 or newer and its exact session is running. Capability is
-probed independently for each attachment and refreshed after Create or Restart.
-Older or malformed versions leave these app shortcuts unavailable and preserve
-ordinary terminal input.
-
-Each split uses the Herdr executable, SSH arguments, and session socket frozen
-on that attachment. Ghosthub first removes every inherited Herdr control
-variable, then sets only `HERDR_SOCKET_PATH` to that socket. It deliberately
-omits `pane_id`: Herdr 0.8.0 uses one session-global focused pane, so the server
-selects the pane the attached clients see. Ghosthub does not synthesize Herdr
-key bindings or reconstruct the resulting pane tree.
-
-Requests serialize per attachment. Detaching prevents queued requests from
-being dispatched; results from an abandoned in-flight request are discarded,
-although a command already delivered to Herdr may still take effect. Split
-failures are not retried and appear over the active terminal. Herdr exposes no
-stable session-generation or client identifier, and its socket path is derived
-from the session name, so this constructive operation cannot receive tmux's
-replacement-identity guarantee. The session-global-focus premise was verified
-against Herdr 0.8.0; later supported versions are trusted to retain that API
-contract.
+is 0.8.0+ and running (probed per attachment and refreshed after Create or
+Restart). Uses the attachment's frozen executable, SSH args, and socket with
+inherited Herdr variables scrubbed and only `HERDR_SOCKET_PATH` set, letting
+Herdr pick its session-global focused pane (verified on Herdr 0.8.0). Requests
+serialize per attachment without retry and cancel on detach. Because Herdr has
+no stable generation or client ID, same-name/same-socket replacement is an
+accepted limit.
 
 ### Herdr session lifecycle
 
-Ordinary open and restoration use `herdr session attach <exact-name>` only for
-inventory reported as running. Create and Restart are explicitly different:
-they use plain `herdr` for the default session or `herdr --session <name>` for a
-named session, which launches a missing server and attaches immediately.
+- **Open / restore:** `herdr session attach <exact-name>` on running entries.
+- **Create / Restart:** `herdr` (default) or `herdr --session <name>` (launches
+  a missing server and attaches).
+- **Stop / Delete (confirmed):** reacquires the reviewed SSH route, reruns
+  `herdr session list --json`, and checks expected state and config paths
+  before running. Stop ends all processes while preserving saved layout (and
+  suppresses reconnects across all scenes until finished); Delete removes a
+  stopped non-default session permanently (default session can never be
+  deleted). Because Herdr lacks a stable generation ID, create collisions,
+  same-socket replacement after revalidation, and `session attach` resurrecting
+  a just-stopped server remain documented races.
+- **Environment scrub:** discovery, probes, and attach clear `HERDR_ENV`,
+  `HERDR_SESSION`, `HERDR_SOCKET_PATH`, `HERDR_CLIENT_SOCKET_PATH`,
+  `HERDR_PANE_ID`, `HERDR_TAB_ID`, `HERDR_WORKSPACE_ID`, `HERDR_BIN_PATH`,
+  `HERDR_ACTIVE_WORKSPACE_ID`, `HERDR_ACTIVE_TAB_ID`, `HERDR_ACTIVE_PANE_ID`,
+  and `HERDR_ACTIVE_PANE_CWD`. Automated fixtures must isolate Herdr with
+  `XDG_CONFIG_HOME` (`HERDR_CONFIG_PATH` alone is insufficient).
 
-Stop and Delete are separate confirmed operations. Immediately before either
-command, Ghosthub reacquires the reviewed SSH route rather than retaining the
-pre-confirmation lease, reruns `herdr session list --json` through the current
-endpoint, and checks the expected running/stopped state and configuration
-paths. A changed route invalidates the confirmation. Stop terminates every
-process while retaining Herdr's saved shape;
-Restart recreates processes within that shape. Delete requires a stopped,
-non-default session and permanently removes its saved state. The default
-session may be stopped and restarted but never deleted.
+## Native Zellij attachment
 
-Herdr provides no stable generation ID. The socket path is derived from the
-name, so path revalidation catches a relocated configuration root but cannot
-prove that a same-name replacement is the original session. Three accepted
-races remain: a create collision after the final absence check, same-socket
-replacement after revalidation, and `session attach` resurrecting a server
-that stops after running discovery. A failed client launch may therefore leave
-a newly started server behind. Discovery reconciles the resulting state.
+Ghosthub resolves `zellij` in the login environment (important on macOS so
+Dock/Finder launches do not pass launchd's minimal `PATH` to a new Zellij
+server) and attaches active sessions via `zellij attach <exact-name>` or
+creates new ones via `zellij --session <exact-name>` (remote uses OpenSSH PTY +
+kwt lease). Never place `--` before the session name (Zellij 0.45 treats args
+after `--` as an initial command). Names starting with `-` (other than `-`
+alone), `help`, and `options` cannot be created or attached; existing sessions
+with those names remain listed and killable.
 
-An intentional stop suppresses reconnect in every scene presenting that exact
-host/name before the command runs. Success detaches all matching clients;
-failure performs a fresh probe before recovery can resume. A scene never
-blindly reconnects and resurrects a session another scene deliberately stopped.
+Zellij owns tabs, panes, layout, history, key bindings, config, plugins, and
+processes. Ghosthub lists active sessions only, never resurrects or deletes
+exited sessions, and never passes `--force-run-commands` (accepting Zellij's
+narrow probe-to-attach resurrection race). Inherited `ZELLIJ`,
+`ZELLIJ_PANE_ID`, and `ZELLIJ_SESSION_NAME` are cleared before discovery and
+attach.
 
-Discovery, reconnect probes, and attachment remove inherited Herdr routing
-identity before resolving or starting the client. The scrubbed variables are
-`HERDR_ENV`, `HERDR_SESSION`, `HERDR_SOCKET_PATH`,
-`HERDR_CLIENT_SOCKET_PATH`, `HERDR_PANE_ID`, `HERDR_TAB_ID`,
-`HERDR_WORKSPACE_ID`, `HERDR_BIN_PATH`, `HERDR_ACTIVE_WORKSPACE_ID`,
-`HERDR_ACTIVE_TAB_ID`, `HERDR_ACTIVE_PANE_ID`, and
-`HERDR_ACTIVE_PANE_CWD`. This is the Herdr equivalent of removing `TMUX` and
-`TMUX_PANE`: launching Ghosthub from inside a multiplexer must not redirect a
-new client into the enclosing session.
+Closing a view detaches only; clean detaches stay detached. Remote SSH drops
+probe the exact active session before reattaching. **Kill Session** confirms
+host, name, and route key (without retaining the pre-confirmation lease),
+reacquires the route, raises a cross-scene kill fence (detaching matching
+clients, pausing reconnects, bumping a per-session kill revision), re-checks
+active discovery, and runs `zellij kill-session <exact-name>` (accepting the
+check-to-kill same-name race since Zellij has no generation ID).
 
-Live validation and automated fixtures must isolate Herdr with
-`XDG_CONFIG_HOME`. `HERDR_CONFIG_PATH` alone is insufficient because it does
-not relocate all session state.
+## Rust client lifetime and application death
 
-## Native Zellij Attachment
+The Rust apps enforce the same disposable-client boundary. On Windows, the GPUI
+client attaches to tmux, Herdr, and Zellij inside WSL2 (plus configured POSIX
+SSH hosts via pinned kwt + `/usr/bin/ssh` inside WSL); closing or force-killing
+Ghosthub must reap only the `wsl.exe` relay and Linux client while leaving the
+tmux server alive. (Terminating the WSL distro ends the local relay/lease, not
+remote SSH sessions.)
 
-Ghosthub resolves `zellij` in the host account's login environment and opens an
-active session with `zellij attach <exact-name>`. **New Zellij Session** uses
-`zellij --session <exact-name>`, which creates and presents a new session while
-refusing both active and resurrectable name collisions. Local and remote
-clients start from the account login shell. The first client starts the
-session's server, and every pane inherits the server's environment, so a
-Ghosthub opened from the Dock or Finder must not pass on launchd's bare PATH.
-A session that is already running keeps the environment it started with.
-Remote sessions use an ordinary OpenSSH PTY through one kwt-owned lease with
-keepalives. Reconnect retains only the host and session intent, then
-resolves and acquires a fresh lease; it never stores the prior lease arguments.
+- **Structural launch authority:** attach plans are cloneable and cannot
+  create; `CreateOnce` is non-cloneable/non-serializable and consumed into an
+  attach plan; kwt repair/open is cloneable because probe/repair is safe to
+  rerun. Local exits never reconnect; only remote OpenSSH exit 255 enters
+  transport recovery.
+- **WSL creation and admission:** local WSL creation runs
+  `tmux new-session -A -E -s <name>` and writes server PID, session ID, and
+  creation time via `/bin/sh -c` to a nonce-scoped private receipt (never
+  printing framing into ConPTY). Tmux admission runs real ConPTY probes (second
+  `new-session -A`, `-E` positive/preservation controls) inside a random
+  mode-0700 `TMUX_TMPDIR` with a 2-second settle cleanup loop and inherited
+  `TMUX`/`TMUX_PANE` scrubbed, never touching the user's default server. psmux
+  3.3.7's failed `kill-session -t =name` proof keeps WSL2 tmux as the Windows
+  MVP substrate.
+- **Process containment and identity-checked attach:** `wsl.exe` is resolved
+  through `GetSystemDirectoryW` and placed in a client-only
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job Object (verified with
+  `IsProcessInJob`; on failure, Ghosthub tears down the client and releases
+  state). Runtime identity combines kernel boot ID with PID 1 start time to
+  detect distro-only restarts. Every attach runs a tmux `if-shell -F` checking
+  server PID, session ID, and creation time, running `attach-session -E` only
+  on a match and otherwise printing a framed mismatch marker and exiting cleanly.
 
-The exact name is a shell-quoted positional argument. Do not insert `--`
-before it: Zellij 0.45 interprets arguments after `--` as an initial command,
-leaving the session name unset. Names beginning with `-` (except `-` alone),
-`help`, and `options` cannot be passed as session names to this command.
-Ghosthub rejects creating or attaching to those names; existing sessions
-remain discoverable and killable.
+## Relaunch restoration
 
-Zellij owns tabs, panes, layout, history, key bindings, terminal state,
-configuration, plugins, and every process inside the session. Ghosthub owns
-active-session discovery and the disposable client presentation. It does not
-offer pane actions, an explicit resurrection workflow, or deletion of
-resurrection data. Zellij does not expose an atomic active-only attachment:
-Ghosthub validates the exact name as active first, but if the session exits
-before `zellij attach` resolves it, Zellij may resurrect its saved layout.
-Ghosthub never passes `--force-run-commands`; this narrow upstream race is
-accepted rather than represented as a false attach-only guarantee. Discovery
-and attachment remove inherited `ZELLIJ`, `ZELLIJ_PANE_ID`, and
-`ZELLIJ_SESSION_NAME` values so launching Ghosthub from inside Zellij cannot
-redirect the new client into the enclosing session.
+Quitting or updating drops only disposable clients. On relaunch, Ghosthub
+resolves each scene's logical descriptor against fresh inventory and uses
+attach-only restoration (never creating missing sessions or switching
+hosts/sockets):
 
-Navigating away, pressing Cmd-W, closing a window, or quitting closes only the
-client. A clean detach stays detached until the user reconnects. A remote SSH
-transport failure probes the exact active session before launching a
-replacement client and stops recovery if the session disappears, Zellij is no
-longer available, or the failure requires connection review.
+- Worktrees match by durable kwt generation (missing generation stops at the
+  project; observed generation cannot be cleared by partial inventory and
+  treats generation changes as replacements). Directory workspaces match by
+  registered path on the same host.
+- **Sparkle Install and Relaunch:** writes a one-shot ordered window manifest
+  under `~/.ghosthub/` before exit. On relaunch, Ghosthub waits for AppKit
+  native restoration and binding quiescence, assigns unclaimed descriptors
+  provisionally, opens fresh-token replay scenes for missing descriptors, lets
+  late native descriptors reclaim their slots, applies saved window frames, and
+  removes the manifest once every saved descriptor has begun restoring.
+- **Per-backend rules:** tmux checks direct discovery; Herdr requires a fresh
+  running probe; Zellij requires a fresh active probe plus frozen SSH route
+  check; protected PR worktrees probe their exact socket before invoking
+  `kwt pr attach` (never falling back to the default server). Offline targets
+  stay pending until refreshed or canceled by user navigation. Empty scenes
+  restore navigation without starting worktree sessions. Console Panel stays
+  outside scene restoration (shared-window behavior tracked by kata `s75s`).
+- **Rust cold-start Reconciler:** reads only published inventory generations
+  (never probes hosts or kills sessions) and expires pending restores after 3
+  failed refreshes, 10 minutes, or user navigation.
 
-**Kill Session** is the only destructive Zellij lifecycle action. Ghosthub
-confirms the host, name, and reviewed route key without retaining the
-pre-confirmation SSH lease. Execution reacquires that route, establishes a
-shared same-session kill fence, then repeats active-session discovery against
-the current endpoint immediately before `zellij kill-session <exact-name>`.
-The fence cancels matching reconnect
-attempts and detaches matching presentations in every scene before the command,
-so neither a reconnect nor an already-launched client can immediately resurrect
-a deliberately killed session. Successful kills invalidate in-flight Zellij
-discovery, remove the row from every scene, and begin a fresh inventory probe.
-A per-session kill revision also rejects attachment validation that began
-before the kill. A failed kill releases the fence and revalidates an eligible
-detached presentation or matching pending open or restoration before resuming
-it, while preserving its navigation and route checks. Zellij does not expose a
-stable session-generation identifier, so a same-name replacement between that
-final check and the kill command cannot receive tmux's replacement-identity
-guarantee. Closing or disconnecting never implies a kill.
+### Session creation, worktree open, and pane splits
 
-## Rust Client Lifetime and Application Death
+- **Bare tmux creation:** local uses atomic `new-session -A` (closing the
+  `destroy-unattached` race); remote runs one-shot `has-session` + detached
+  `new-session` then attaches, permanently demoting reconnects to attach-only.
+  Native Windows creation forwards the SSH account's `PATH` via `new-session -e`.
+  Optimistic rows stay visible during launch and reconcile via bounded retries.
+- **Worktree and directory open:** executes `kwt open <exact-path>` (with all
+  four `--expected-*` guards for Git worktrees; omitted for plain directories)
+  so kwt creates or repairs the layout without an intermediate detached session.
+  If the managed helper is unavailable, cached live sessions still attach via
+  `tmux attach-session`. On POSIX hosts, every tmux phase runs through the
+  login shell and clears `TMUX_TMPDIR` on the `kwt` socket (retaining it on
+  default/other sockets).
+- **Protected worktree Kill and fallback row:** Kill queries fresh identity on
+  the exact protected socket (never matching the default server). If an active
+  or retained protected view loses its owning worktree row, Ghosthub keeps a
+  fallback session row so the client stays reachable.
+- **tmux binary resolution:** POSIX requires tmux 3.2+ (login shell hands probe
+  to `/bin/sh` so fish never parses it); Windows resolves `tmux.exe` via
+  PowerShell `Get-Command` (psmux 3.2 compat). Cached per frozen host route.
 
-The Rust applications use the same ordinary-client boundary. The native
-Windows GPUI client attaches to tmux, Herdr, and Zellij inside WSL2;
-Linux remains a compile-and-contract target until its native product slice is
-authorized. A terminal worker and PTY own only the disposable client. The WSL
-tmux server owns session lifetime and must survive client close, graceful
-application exit, and forced Ghosthub termination.
+## SSH keepalive and reconnect
 
-The first Rust SSH slice preserves the same boundary for configured POSIX
-hosts: KWT owns route resolution, host-key/authentication prompting, and the
-runtime OpenSSH lease; Host builds an attach-only command for a freshly
-discovered exact tmux identity; Terminal owns only the disposable ConPTY-backed
-client. On Windows, both pinned KWT and OpenSSH run inside the selected WSL
-distro, and Terminal launches an absolute `wsl.exe` relay with fully resolved
-argv. Closing or crashing Ghosthub releases that relay, client, and lease but
-never kills the remote tmux server. Terminating the selected WSL distro ends
-the local lease and presentation, not the remote session. This slice ends the
-presentation on client exit and does not yet implement the reconnect
-supervisor described below.
+Remote clients use OpenSSH with server keepalives under bundled kwt's
+`kwt.openssh.projection.v2` policy:
 
-Launch authority is structural:
+- **Compression:** on by default for saved hosts (toggleable in **Settings →
+  Hosts**; off for dynamic exe.dev accounts/VMs; jump hosts keep their own SSH
+  config). Contributes to route identity; changing it detaches open views on
+  that host.
+- **Scoped daemon and prompts:** route resolution, leases, and `kwt ssh exec`
+  use `~/.ghosthub/ssh/kwt` (isolated from the user's normal kwt daemon).
+  Prompts stream in order to one eligible window at a time; background
+  inventory and short commands are noninteractive and fail closed if a prompt
+  is needed.
+- **Exit-status capture and backoff:** remote commands are one-shot and write
+  their exit status to a per-launch temp file (since libghostty's outer macOS
+  login wrapper can mask nested exit 255). Status 0 is clean detach, 255 is
+  transport loss, and other nonzero codes are non-transport client errors. On
+  255, the per-view supervisor probes at 1, 2, 4, 8, 16, and 30s attempt-start
+  intervals (15s probe timeout, non-overlapping; **Reconnect Now** wakes it
+  immediately). Default-server probes share host `list-sessions`; named sockets
+  run headless `tmux -L <socket> has-session -t =<name>`; Herdr runs its own
+  exact probe. Confirmed absence ends established sessions (unconfirmed kwt
+  opens may retry once); auth/host-key errors pause and show **Connection needs
+  attention** / **Review Connection** (never silently accepting a changed host
+  key). Host Settings probes emit a leading marker so remote command failures
+  are separated from exit-255 offline failures.
+- **Windows ConPTY note:** experimental psmux requires Windows 11 build 22523+
+  so standard OpenSSH PTYs preserve mouse reporting without `ssh -T`.
+- **Clipboard and image paste:** remote panes may write the Mac clipboard via
+  OSC 52 when `clipboard-write` permits; remote OSC 52 and Kitty clipboard
+  reads are always blocked (only explicit `paste_from_clipboard` reads text;
+  bracketed paste and unsafe-paste confirmation stay active). On local or
+  remote POSIX tmux surfaces, **Cmd-V** with an image-only clipboard encodes a
+  PNG, stages it into `~/.ghosthub/paste-images/` on the session host (pruning
+  images older than 7 days), and pastes its path; text wins when both are
+  present, and **Ctrl-V** passes through to the terminal.
 
-- an attach plan is cloneable and cannot create
-- one-shot creation is neither cloneable nor serializable and is consumed into
-  an attach plan
-- kwt repair/open authority is cloneable only because its documented
-  probe/repair operation is intentionally safe to rerun
+## Inventory and startup
 
-Local client exit always detaches and never reconnects. Only remote OpenSSH
-status 255 enters transport reconnect. Bare remote creation becomes
-attach-only before that loop; ordinary and protected kwt paths retain only
-their explicitly documented repair/open behavior.
+Startup runs kwt, tmux, and optional Herdr/Zellij discovery in parallel (Herdr
+and Zellij skipped on Windows) and keeps a loading state until kwt returns so
+empty onboarding never flashes prematurely. Failures degrade per host with
+cached rows and a retry warning (exit 255 reported as SSH failure).
 
-Rust local WSL creation follows the same one-shot rule as shipped local
-creation. After validating the normalized name, Ghosthub performs a fresh
-admitted-host read and consumes one CreateOnce by launching the ordinary
-ConPTY client with `tmux new-session -A -E -s <name>`. The same tmux command
-queue writes server PID, session ID, and creation time to a nonce-scoped
-private WSL receipt; identity framing never enters ConPTY or the terminal
-screen. The receipt writer invokes `/bin/sh -c` explicitly, so tmux's
-configurable `default-shell` cannot change its atomic POSIX semantics. Host
-reads and removes that opaque receipt, rechecks the runtime, and
-only then publishes the presentation. Every later activation is attach-only.
-If creation and identity capture race another creator, `-A` attaches to the
-exact same-named session.
-If any step after launch fails, Ghosthub detaches the client and reports the
-failure but neither reruns creation nor destroys the possibly created session.
-
-Psmux 3.3.7 failed the required exact-kill proof and never established genuine
-ConPTY `attach-session -E` behavior. Its probe remains rejection evidence, but
-it is not the Rust Windows substrate. The Windows MVP uses real POSIX tmux in
-WSL2 and never degrades to psmux or an app-lifetime session.
-
-Tmux admission itself uses ordinary ConPTY clients supplied by the workspace
-through the same terminal worker as product attachments. In an isolated
-namespace, a second atomic `new-session -A`, an environment positive control
-without `-E`, and the preservation probe with `-E` all run on real PTYs;
-captured pipes and tmux control mode are not capability evidence. The verified
-binary is cached only after those clients attach, their effects are observed,
-and they detach. Any failure cleans the isolated server and leaves admission
-retryable.
-
-The WSL admission server is isolated before any session creation: Ghosthub
-chooses a random private `TMUX_TMPDIR`, installs its cleanup guard before the
-cancellable mode-0700 directory creation, applies the path to every probe
-command and ordinary client, and removes it when admission ends. `-L`
-capability proof is therefore not trusted to protect the user's default
-server. If the creation command times out or loses its relay, cleanup repeatedly
-removes the path through a two-second monotonic settle deadline because the
-Linux command may finish late, then performs a final removal and verifies
-absence. Discovery, admission, and attachment also unset inherited `TMUX` and
-`TMUX_PANE` before setting the selected socket environment.
-
-That failed proof exercises `kill-session -t =name`. The experimental Swift
-remote-Windows path instead resolves the exact target and fresh identity before
-killing by session ID. Its complete conditional-kill flow remains subject to
-isolated end-to-end psmux verification; the Rust rejection does not by itself
-establish false success in the shipped path or make that path dead code.
-
-The tmux server lives inside WSL2 and cannot inherit a Windows Job Object.
-Ghosthub resolves `wsl.exe` through `GetSystemDirectoryW` and carries its
-absolute system-directory path through discovery and attachment; it never
-uses current-directory or launcher-`PATH` executable search. Ghosthub
-intentionally puts only the disposable `wsl.exe` ConPTY relay in an
-application-owned `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job and verifies its
-membership with `IsProcessInJob`. This is client containment, not server
-breakaway. If job creation, assignment, or verification fails after spawn,
-Ghosthub closes the PTY master, waits a bounded interval, applies the
-client-only termination fallback if required, releases the presentation
-reservation, and only then reports failure.
-
-Live integration tests supervise a child presentation/application, terminate
-it gracefully and forcibly, then launch a fresh child and reattach to the same
-WSL runtime, server, and session identity. Windows uses an isolated WSL tmux
-socket namespace, TerminateProcess, and a client-only kill-on-close Job Object.
-The test also proves that the Linux-side tmux client is reaped and that the
-user's default server was never queried or mutated.
-
-The guarantee covers Ghosthub termination, not `wsl --shutdown`, distro
-termination, or a Windows lifecycle event that restarts WSL. Runtime identity
-combines the kernel boot ID with PID 1 start time so a distro-only restart is
-classified even while another distro keeps the shared kernel alive.
-
-After fresh WSL discovery, the ordinary client enters through one tmux
-`if-shell -F` command targeted at the exact session. Its condition compares
-the captured server PID, session ID, and creation time; only the matching
-branch executes `attach-session -E`. The mismatch branch prints a classified
-framed marker and exits without attaching. Ghosthub recognizes it only on a
-clean exit whose normalized pre-attachment output exactly equals that marker,
-so ordinary session output cannot impersonate the result. A server restart and
-reused session ID therefore cannot redirect the client between discovery and
-process launch.
-
-## Relaunch Restoration
-
-Quitting Ghosthub or installing an update only drops disposable clients. When
-macOS restores workspace scenes, Ghosthub resolves each scene's stable logical
-descriptor against current inventory and uses attach-only restoration; it
-never creates a missing session or falls back to a same-named target on a
-different host or socket. Worktree identity is the durable generation reported
-by kwt, so removing and recreating a worktree at the same path cannot inherit a
-saved presentation; a missing generation restores only as far as the project.
-A directory workspace instead restores by its registered path on the same
-stable host, because the kwt registry has no separate generation for it.
-Once a worktree presentation has observed a generation, incomplete inventory
-cannot erase it and a different non-nil generation is treated as a replacement;
-explicitly reselecting the worktree invalidates the observed presentation and
-attaches the replacement session.
-For **Install and Relaunch**, Ghosthub also writes a one-shot ordered window
-manifest under `~/.ghosthub/` before Sparkle terminates the app. On the next
-launch, Ghosthub collects initial and late native scene values until AppKit
-reports that native window restoration has finished and every restored workspace
-window has registered its SwiftUI scene. Ghosthub waits for binding quiescence
-before unresolved scenes receive provisional unclaimed descriptors, then opens
-every saved window still missing. Later native descriptors correct provisional
-assignments, including by moving a displaced session to a provisionally opened
-replay scene. Replay requests use distinct scene tokens so SwiftUI cannot satisfy
-them with a late native saved window, and displaced requests are explicitly
-reissued. This covers absent or partial macOS restoration without swapping
-sessions between restored geometry or tab groups. The manifest is removed only
-after every saved window has begun attach-only restoration in one live assigned
-scene; native scene restoration still supplies geometry and tab grouping when
-available. Once assigned, the scene model's complete logical descriptor replaces
-any delayed same-ID native payload with stale navigation or presentation data.
-An ordinary local session must be present in direct discovery before Ghosthub
-runs the exact `attach-session` path. Remote sessions use that same rule and,
-after a confirmed attachment, Ghosthub's native reconnect supervisor owns any
-transport recovery.
-An ordinary Herdr session restores only after a completed fresh Herdr probe on
-the descriptor's exact host reports that exact name as running. A missing or
-stopped session remains pending and never substitutes another name. Because
-Herdr's attach command can restart a server that stops after the final probe,
-Ghosthub accepts only that narrow probe-to-launch race.
-An ordinary Zellij session restores only after a completed fresh Zellij probe
-on the exact host reports the exact name as active. Remote restoration then
-validates that session against one SSH connection snapshot, rechecks the route,
-and reuses the snapshot for attachment; route drift cancels restoration. It
-never creates a missing session intentionally, but the same unavoidable Zellij
-probe-to-attach resurrection race applies.
-Offline or otherwise unavailable targets remain pending and retry when normal
-inventory refreshes publish new state. Navigating the window elsewhere cancels
-the pending target. If a scene was captured without an active native
-presentation, Ghosthub restores its host and selected project, worktree, or
-directory navigation but does not open or create the workspace session until
-the user explicitly selects it.
-
-The Rust cold-start Reconciler consumes only inventory generations already
-published by host read lanes. It cannot probe a host, invoke kwt, run
-tmux/psmux, or derive liveness independently. It may forget or mark Ghosthub
-records stale and remove presentation metadata; it can never destroy a server
-session. Pending automatic restoration also expires after three completed
-failed refreshes, ten minutes, or user navigation, whichever comes first.
-
-A protected worktree is distinct from a same-named session on the default tmux
-server. Kwt identifies that policy with `tmux_attach_mode: "protected"`; a
-named socket alone does not imply it. Restoration first probes the descriptor's
-exact host, protected socket, and session name. Only a successful probe may
-delegate attachment to `kwt pr
-attach`, which remains authoritative for validating and repairing that
-workspace before executing the ordinary tmux client. The session can still
-disappear between Ghosthub's probe and kwt's command; eliminating that benign
-race requires a future atomic kwt attach-only contract. Ghosthub does not use
-the default server as a fallback when the probe is absent or fails.
-
-The host-scoped console surface is outside workspace scene restoration and is
-reopened by the user. Restoring one session into multiple windows preserves
-the same tmux-native shared-presentation behavior that existed before quit;
-the broader collision and console policy remains tracked by kata `s75s`.
-
-Explicit local creation uses one atomic `new-session -A` create-or-attach
-client invocation. This closes the detached-session race when the user's tmux
-server has `destroy-unattached` enabled. Explicit remote creation performs a
-one-shot `has-session`/detached `new-session` phase before ordinary attachment.
-The remote process then performs one ordinary attachment. If that client later
-loses its transport, the native reconnect supervisor can only launch another
-attach-only client; it can never rerun creation. The session name is validated
-before launch and passed as one shell-quoted argument. If the exact name
-already exists, it is attached without creating or structurally changing panes
-or windows.
-
-Kwt inventory includes every worktree and registered directory, whether or not
-its canonical tmux session is live. When the managed helper is available,
-Ghosthub therefore
-executes `kwt open <exact-path>` as the initial attached tmux client. Git
-worktrees include all four `--expected-*` identity flags. Directory workspaces
-omit those flags because the pinned helper accepts guarded open only for Git
-worktrees. Before showing a POSIX workspace terminal, Ghosthub compares its
-attached client's identity with the selected endpoint on both default and
-named sockets. Kwt
-idempotently repairs an existing session or creates the configured layout when
-it is absent, without an intermediate detached session that
-`destroy-unattached` could remove. Ghosthub uses this path even when cached
-discovery contains the canonical name, because the session may have exited
-since the sample. If the managed helper is explicitly unavailable, a cached
-discovered session remains usable through ordinary `tmux attach-session`. On a
-remote host, only an SSH transport loss can hand a kwt-opened session to
-Ghosthub's native recovery supervisor. Ghosthub first probes the exact session:
-confirmed presence advances to ordinary attachment, while confirmed absence
-reruns `kwt open` only if the interrupted establishment was never confirmed.
-Once attachment is confirmed, every later recovery remains attach-only. On
-POSIX hosts, every remote tmux phase (creation,
-attachment, open, and probe, styled or not) runs through the account login
-shell. Discovery, attachment, probing, styling, pane actions, and kills clear
-`TMUX_TMPDIR` for the canonical `kwt` socket, matching the pinned helper;
-default and other named sockets retain the account's override. On Windows,
-those phases use encoded
-PowerShell commands within the same OpenSSH account environment. Unbound
-discovered sessions remain attach-only.
-Ghosthub does not expose window rename, resize, or other tmux window
-operations. On an attached
-tmux or capable Herdr terminal, Cmd-D and Cmd-Shift-D request Ghostty-style
-split-right and split-down operations; the File menu exposes the same actions
-and shortcuts. The Herdr routing contract is documented above. For tmux,
-these actions require tmux 3.4 or newer; Ghosthub checks the binary on each
-local or remote attachment and leaves normal tmux key bindings available on
-older versions. On supported POSIX hosts, Ghosthub runs `split-window -h` or
-`split-window -v` against the active pane of that attachment's exact host and
-socket using its frozen SSH route. Once the client attaches, it publishes its
-TTY and stable tmux server and session identity under that attachment's unique
-token. Each split atomically finds and validates that exact client, then
-targets the session's active pane.
-Other clients attaching
-at the same time cannot be mistaken for the Ghosthub surface. Renaming the
-attached session therefore keeps splits working, while a same-named replacement
-or a client switched to another session is rejected. Failed client discovery is
-not cached, and each queued request receives its own attempt. Ghosthub
-serializes requests for the attachment. The keyboard
-shortcuts apply only while the terminal has effective keyboard focus and no
-sheet is attached; choosing either File menu item remains an explicit request.
-The action works regardless of the user's tmux prefix or key-table bindings
-while tmux remains authoritative for pane creation and layout. If tmux rejects
-a split, Ghosthub displays its diagnostic over the attachment. Native Windows
-psmux attachments do not offer pane-split actions or intercept these shortcuts.
-Kill Session is exposed separately from presentation only for a session known
-to be running and always requires confirmation. For a protected worktree,
-Ghosthub preserves the named socket, path, and generation in navigation state,
-then queries that exact socket for fresh server and session identity before
-showing confirmation. A same-named session on the default server is unrelated
-and can never satisfy or receive the protected action. Opening also requires
-the rendered socket to match fresh KWT inventory. If no current worktree owns
-an active or retained protected presentation's complete identity, Ghosthub
-keeps a fallback session row so that live client remains reachable.
-
-Native Windows creation also supplies the SSH account's process `PATH` through
-psmux's `new-session -e` contract. Psmux otherwise starts detached panes
-without the user-level path entries visible to Windows OpenSSH, which prevents
-tools installed under locations such as `.local\bin`, WinGet links, or the npm
-prefix from resolving. This applies only while creating a session; attachment
-does not modify an existing session or running pane.
-
-The requested session appears optimistically so transient SSH or discovery
-latency cannot remove the user's only way back to it. Direct `list-sessions`
-reconciliation begins only after the terminal runtime accepts the creation
-command and uses bounded backoff. The optimistic entry remains while that
-command is alive; authoritative absence retires it only after retries are
-exhausted and the command has ended. Once confirmed, the active presentation
-and all later retries are demoted to attach-only. Pending probes are scoped to
-the resolved host endpoint and cancelled when that endpoint changes or the
-owning window shuts down.
-
-Before discovery or attachment, Ghosthub resolves an absolute tmux-compatible
-binary path. POSIX hosts require tmux 3.2 or newer; the experimental Windows
-path accepts psmux's tmux 3.2 compatibility level. On POSIX hosts the login
-shell initializes its environment, then delegates Ghosthub's probe to
-`/bin/sh`; fish and other non-POSIX account shells never interpret the POSIX
-probe itself. On Windows, Ghosthub starts noninteractive Windows PowerShell
-and resolves `tmux.exe` with `Get-Command`.
-Successful paths are cached per frozen host connection; lookup and version
-failures remain retryable and are presented to the user.
-
-## SSH Keepalive and Reconnect
-
-Remote clients use the user's OpenSSH configuration and add server keepalives.
-The bundled kwt uses execution policy `kwt.openssh.projection.v2`, including
-an explicit destination compression choice on route resolution, lease
-acquisition, and command execution. Ghosthub enables compression by default for
-configured hosts; Settings > Hosts provides a per-host **SSH compression**
-toggle that overrides the destination's OpenSSH setting without editing the
-user's configuration. An exe.dev account's discovery connection and the VMs it
-supplies both request no compression, because Settings > Hosts has no row for
-an account or for a dynamically listed host.
-Jump hosts retain their OpenSSH compression settings. Saving a changed toggle
-releases that host's attachments; subsequent connections use the new choice.
-Compression contributes to the route identity, so a connection with the other
-setting cannot be reused. An existing shared master cannot change compression
-in place.
-For native presentations, kwt owns the multiplexed connection and sends each
-OpenSSH prompt through its ordered operation stream. Ghosthub shows the exact
-challenge in a native secure-entry sheet and returns the session-only response
-to that prompt event. Route resolution, lease ownership, and `kwt ssh exec`
-share a kwt daemon rooted at `ssh/kwt` under Ghosthub's resolved state home
-(normally `~/.ghosthub/ssh/kwt`), isolated from the account's ordinary kwt
-daemon and registry. Multiple windows may share an acquisition, but only one
-eligible window presents a prompt at a time; closing it transfers the prompt
-without extending its deadline. Kwt keeps a master available only while leases
-or its configured idle policy require it, and a dead client is reaped by the
-daemon. Project/worktree inventory and other short-lived remote commands use
-kwt-owned noninteractive connections and fail closed if OpenSSH needs a
-prompt. Worktree mutations use `kwt ssh exec`, so Ghosthub does not construct
-their OpenSSH invocation. Multi-command discovery and route-conditional
-session mutations continue to borrow explicit leases until their higher-level
-kwt contracts land. Command clients never construct or reuse an app-owned
-control socket.
-Remote attachment and establishment shell commands are one-shot: they contain
-no retry timing and never print reconnect status into the terminal buffer.
-The local wrapper around each complete remote command records its final status
-in an app-owned, per-attachment temporary file before it exits. The native
-coordinator consumes that status instead of relying on libghostty's outer macOS
-login process, whose reported status may be zero even when nested OpenSSH
-exited 255.
-For both backends, status 0 is a clean detach, OpenSSH status 255 is transport
-loss, and another nonzero status is a non-transport client failure. This relies
-on the Herdr client's documented detach status; like tmux, a client-originated
-255 may briefly enter recovery, then self-correct when the exact probe reports
-the session absent.
-After a confirmed attachment exits with OpenSSH's transport/setup status 255,
-that presentation's native supervisor probes the real SSH and backend
-path at attempt-start intervals of 1, 2, 4, 8, 16, and then 30 seconds. Each
-probe has a 15-second end-to-end deadline; its runtime counts against the
-interval, and an overrun clamps the next delay to zero. Attempts never overlap.
-**Reconnect Now** wakes
-the same supervisor immediately instead of starting a parallel path.
-
-Unnamed default-server recovery shares the host's in-flight `list-sessions`
-probe with inventory discovery. Named sockets, including kwt's direct server
-and protected endpoints, use a headless
-`tmux -L <socket> has-session -t =<name>` probe so an unsuccessful attempt never
-creates or flashes a terminal surface. Confirmed presence launches one new
-attach-only client. Confirmed absence ends an unnamed- or named-socket
-presentation only when that exact session had already been established; an
-unconfirmed interrupted kwt establishment may rerun its one-shot creation path.
-A reachable non-transport client failure is presented as unable to attach
-rather than retried indefinitely. A clean tmux, Herdr, or Zellij detach does not start
-recovery. Herdr recovery shares only the supervisor policy: each attempt uses
-its own exact Herdr session probe, stops when Herdr is unavailable or the name
-is absent, and never creates a terminal surface for an unsuccessful probe.
-
-Transport failures continue retrying automatically, with no more than 30
-seconds between attempt starts, even while a retained tmux presentation is
-inactive. Authentication and host-key review failures pause the presentation's
-automatic retry and appear in the existing native recovery flow when it is
-active. Successful recovery resumes the same supervisor. If SSH is already
-reachable when that flow checks again, **Retry** resumes the supervisor as well
-as refreshing host inventory. Only the recovery flow opened for that native
-session request may resume it; authentication started from ordinary host
-inventory never reopens a session. Dismissing it leaves an honest
-**Connection needs attention** presentation with **Review Connection** when
-native review is available; reopening that review retains the active recovery
-request and can resume its supervisor after success. **Host Settings** remains
-the fallback otherwise. A changed known-host
-identity still requires the explicit known-hosts remediation described by that
-flow; Ghosthub never silently accepts it.
-
-Host Settings and recovery first acquire a kwt-owned SSH lease. The exact host
-probe then runs through that lease and emits a marker only after the remote
-command begins; the client releases its lease ownership when probing or native
-review ends. Status 255 and local wrapper failures such as an unconfirmed
-timeout leave the host offline; a nonzero login-shell or probe-command status
-is reachable and degraded only when that marker proves the remote account
-executed the probe.
-
-The initial psmux path allocates an ordinary SSH PTY and targets Windows 11
-build 22523 or newer. Older ConPTY builds preserve keyboard input but consume
-psmux mouse-reporting sequences; supporting them would require the separate
-psmux `ssh -T` wrapper and is not part of this experiment.
-
-Tmux, Herdr, and Zellij servers remain alive on the remote host while the network is
-unavailable. After connectivity returns, the client reattaches to the same
-exact session and its backend renders authoritative state. Copy-mode and
-programs on configured remote
-hosts may write the Mac clipboard through OSC 52 when allowed by the user's
-`clipboard-write` configuration, so remote tmux copy behaves like local tmux
-copy. Remote terminal surfaces cannot read the local Mac clipboard through
-OSC 52 or Kitty clipboard requests, regardless of `clipboard-read`.
-Ghosthub serves text clipboard representations; terminal requests to list
-clipboard MIME types or read binary representations are unsupported.
-libghostty exposes the semantic type
-of every clipboard request: Ghosthub supplies clipboard contents only for a
-configured `paste_from_clipboard` action, independent of which key triggers
-it. libghostty retains bracketed-paste framing and requires confirmation before
-unsafe unbracketed text can reach the PTY. On a local or remote POSIX tmux surface,
-Cmd-V with an image-only Mac clipboard is a separate explicit image-paste
-action. Ghosthub encodes TIFF clipboard images as PNG and saves the PNG in
-`~/.ghosthub/paste-images/` on the session host. Remote attachments stream it
-through their frozen SSH route; local attachments use the same staging command
-on this Mac. Ghosthub asks libghostty to paste the resulting absolute path.
-Tmux therefore retains its normal bracketed-paste
-behavior, and applications such as Codex and Claude can ingest the path on the
-machine where they run. Cached paste images older than seven days are removed
-when the next image is pasted. Cmd-V prefers ordinary text paste when the
-clipboard also contains text, and Ctrl-V always retains its terminal meaning.
-
-## Inventory and Startup
-
-At startup Ghosthub loads kwt project/worktree inventory, tmux session
-inventory, and optional Herdr and Zellij inventories for every supported
-resolvable host. Herdr and Zellij are not probed on experimental Windows
-hosts. The initial content view
-remains in an
-explicit loading state until kwt returns, so the empty onboarding state never
-flashes before existing workspaces are known. That loaded empty state is
-informational: kwt owns project registration, and Ghosthub does not expose a
-retired repository-intake path as a nonfunctional substitute.
-
-Inventory degrades per host. An unavailable remote host retains its cached
-inventory and exposes a clickable detail warning on that host without blocking
-the rest of the workspace. The detail offers a retry and a shortcut to Host
-Settings; OpenSSH status 255 is reported as an SSH connection failure instead
-of a login-shell or tmux failure. Remote hosts where Ghosthub's managed kwt is
-absent remain available for direct tmux discovery and attachment. Before kwt
-inventory runs for a configured macOS or Linux host, Ghosthub ensures its exact
-revisioned helper is installed under the remote user's `~/.ghosthub/`
-directory. A provisioning failure is reported for that host and disables its
-worktree actions without blocking tmux inventory. On macOS and Linux, a fresh
-helper has an empty project registry: the **+** beside the host's **Projects**
-group passes one user-supplied absolute checkout path to kwt's noninteractive
-registration command, then refreshes inventory. Immediately before
-registration, Ghosthub re-resolves the host ID and rejects the operation if its
-endpoint changed while Add Project was open. No filesystem scan occurs.
-The project row's confirmed **Remove Project** action similarly revalidates the
-project path and host endpoint, then asks kwt to unregister only that project
-metadata. Repository and worktree directories are untouched. Before
-unregistering, Ghosthub probes every protected-mode worktree and requires its
-tmux session to be absent; a live or unverifiable protected session blocks
-removal because it cannot be recovered through default-server discovery after
-the project disappears. Ordinary live tmux sessions remain discoverable under
-the host. The Rust Windows app exposes the same registration flow for its WSL
-host.
-Removing a registered project is separately confirmed and delegated to KWT
-with the exact registered path, expected credential-free repository identity,
-and opaque registration fingerprint. This unregisters metadata only:
-repositories, worktrees, and tmux sessions remain untouched. Reads and
-mutations stay off the UI thread, and the last usable project tree remains
-visible while either is in flight.
-
-In the macOS app, removing a generation-backed worktree is a distinct
-destructive action. The confirmation is bound to its exact project,
-generation, tmux attachment mode and socket, and a fresh live session identity
-or freshly confirmed absence. Pinned KWT
-also reports the worktree's staged, unstaged, and untracked change counts
-before Ghosthub presents the confirmation. A worktree with uncommitted changes
-names that data-loss risk and requires an explicit **Force Remove Worktree**
-action. Ghosthub checks for new changes again before it terminates a confirmed
-session. If a clean worktree became dirty, Ghosthub presents the force warning
-instead of attempting ordinary removal. KWT revalidates the identity facts
-under the project lifecycle lock, terminates only the confirmed session when
-necessary, and removes the checkout in the same guarded operation. A replaced
-session or changed socket fails closed and requires new confirmation. If KWT
-finds still newer changes after Ghosthub terminates the session, Ghosthub
-restores the session before presenting the force confirmation. Closing or
-detaching a presentation never grants this removal authority.
-
-On experimental Windows hosts, an explicit Install Bundled kwt action probes
-the process architecture, uploads the matching pinned AMD64 or ARM64 helper,
-verifies its SHA-256 and exact revision, and activates it at
-`%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`. Inventory and
-workspace operations use only that exact per-user helper and never resolve
-`kwt.exe` from `PATH`.
-Project registry mutations are not yet supported on Windows, so its Add Project
-and Remove Project actions are hidden. Inventory never installs or updates the
-unsigned Windows helper automatically.
-This restriction does not apply to the Rust app's WSL host, which executes the
-pinned Linux helper.
-
-Direct tmux discovery marks a worktree session on the default or `kwt` server as
-running when its exact kwt session name and socket are present and the host remains
-reachable. Cached
-inventory does not preserve the live indicator through a discovery failure.
-Kwt-owned session endpoints are removed from the host session list by default and
-remain rendered under their project/worktree. Settings → Sidebar can expose
-those duplicate generic session entries. Every remaining tmux session is
-eligible for the host session list. Case-sensitive `*` and `?` wildcard
-patterns in
-`hidden_session_patterns` under `[tmux]` inside
-`~/.config/ghosthub/config.toml` hide matching standalone sessions from the
-sidebar and command palette. Settings → Worktrees edits the same list, one
-pattern per line. Filtering occurs after discovery and never suppresses a kwt
-worktree, its running state, duplicate-name checks, or session identity.
-
-Tmux activity indicators do not extend inventory polling. Once an ordinary
-client has connected during the current app launch, Ghosthub samples only that
-exact session as a warm target. Active warm sessions are sampled every five
-seconds, quiet targets every twenty seconds, and unavailable targets back off
-to thirty seconds. Each probe captures at most the active pane's latest 160
-scrollback lines, excluding its visible screen, and computes a checksum on the
-local or remote host without discarding trailing blank output, so terminal
-text is not returned to Ghosthub. The fingerprint also carries the pane's
-scrollback line count so blank or repeated output records progression until
-the pane's history limit is reached. Once history is full, output that leaves
-the bounded tail byte-identical reads as quiet: tmux exposes no cumulative
-output counter, and its activity timestamps also advance on redraws, so this
-keeps the deliberate bias toward quiet false negatives over misleading
-attention signals.
-The probe verifies the expected server PID, session ID, and creation time on
-the host before any capture runs, targets the scrollback and capture reads at
-the exact pane ID from that verified read, and re-evaluates the identity
-predicate inside the same tmux server dispatch as each read, so a same-named
-replacement session is never read even when it races the probe. Identity,
-pane, and pane-dimension reads before and after the capture must also match.
-Native Windows sampling verifies at runtime that psmux supports the format
-predicate and if-shell contract, then uses the same atomic reads; when the
-capability probe fails, the sample is refused rather than taken without the
-predicate. The first sample after a pane switch, a pane resize, or a sampling gap
-longer than the activity window establishes a quiet baseline; later
-scrollback progression on that pane at unchanged dimensions marks the session
-active for thirty seconds. Sample continuity is measured from each probe's
-start, so a slow probe on a laggy host cannot stretch the gap past the window
-and demote real changes to baselines. In-place prompt,
-spinner, and status redraws do not count as activity, and neither do client
-resizes, which reflow scrollback without representing new work.
-Windows activity sampling requires psmux 3.3.4 or newer because earlier
-versions do not expose negative scrollback ranges. Older supported psmux
-versions remain available for discovery and attachment but publish no passive
-activity state.
-Closing a presentation does not remove warm state, while app termination,
-session disappearance, or identity replacement does. Every host refresh and
-every new scene reconciles warm entries against the currently configured
-endpoints, so a reconfigured or removed host stops being sampled even when the
-change happened while no window observed it. Retiring a warm entry cancels its
-in-flight probe; a probe cancelled after its host command launched drains
-within the probe's ten-second timeout and its result is discarded. This state
-is not saved to the database.
+- **Remote kwt helpers:** auto-installed under `~/.ghosthub/` on macOS/Linux
+  before kwt inventory (provisioning failures disable worktrees on that host
+  without blocking tmux). **Add Project** revalidates host ID before passing
+  one absolute path to kwt; **Remove Project** probes protected worktrees first
+  (blocking if any protected session is live) and unregisters metadata only.
+  Windows installs `%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`
+  only via explicit **Install Bundled kwt** and hides project mutations.
+- **Worktree removal (macOS):** binds project, generation, mode, socket, live
+  identity or absence, and kwt change counts. Dirty checkouts require **Force
+  Remove Worktree**; Ghosthub rechecks status right before killing the session,
+  and restores the session for force confirmation if newer dirty files appear
+  afterward.
+- **Visibility and filtering:** kwt-owned sessions hide from standalone lists
+  by default (configurable in **Settings → Sidebar**). Case-sensitive `*`/`?`
+  patterns in `[tmux].hidden_session_patterns` (`~/.config/ghosthub/config.toml`)
+  filter standalone sessions post-discovery without affecting worktrees or
+  duplicate checks.
+- **Passive activity sampling:** samples warm connected sessions every 5s while
+  active, 20s while quiet, 30s when unavailable (10s timeout), capturing at
+  most 160 scrollback lines (excluding visible screen) on the host and
+  returning only a checksum plus byte/line counts. Every read re-verifies
+  server PID, session ID, creation time, and pane ID/dimensions inside the same
+  tmux dispatch (psmux 3.3.4+ verifies format/if-shell support first). Pane
+  switches, resizes, or gaps >30s set a quiet baseline; genuine scrollback
+  progress lights the indicator for 30s. Warm state survives view close, clears
+  on quit/exit/replacement/host removal, and is never persisted.
 
 ### Agent attention
 
-A badge at the trailing edge of a tmux session's sidebar row shows what a
-coding agent in that session is doing. It replaces the recent-output dot.
+A trailing badge on a tmux session row shows coding-agent state (replacing the
+recent-output dot):
 
 | Agent state | Badge | Shown |
 | --- | --- | --- |
-| Waiting for permission approval | Amber speech bubble, **Approval** | Until the agent moves on |
-| Asking the user a question | Purple speech bubble, **Input** | Until the agent moves on |
-| Finished its turn | Small green dot, **Done** | Until the user views the session |
-| Working | Green dot, **Working** | While the agent works |
+| Waiting for permission approval | Amber speech bubble (**Approval**) | Until the agent moves on |
+| Asking the user a question | Purple speech bubble (**Input**) | Until the agent moves on |
+| Finished its turn | Small green dot (**Done**) | Until the user views the session |
+| Working | Green dot (**Working**) | While the agent works |
 
-Speech bubbles fade in and out slowly, and the working dot pulses, unless
-Reduce Motion is on. The native window tab shows the same icon beside its
-shortcut for approval, input, and finished turns of the session the window's
-tmux client shows; it never shows Working.
+Bubbles pulse slowly and the working dot pulses unless Reduce Motion is on.
+Native window tabs show the same icon for Approval, Input, and Done (never
+Working).
 
-Agent hooks installed by kwt record the state. Settings → Hosts → **Agent
-Hooks** runs the host's managed kwt (`kwt agent-hook status --json` and
-`kwt agent-hook install --json`), which edits the user settings of each
-supported agent whose configuration directory exists on that host. Codex asks
-the user to trust new hooks once through `/hooks`. For a macOS or Linux SSH
-host whose connection is saved, the section loads status when the host is
-selected, without a connection test. While the form holds unsaved connection
-edits, it waits for **Test Connection**, so Ghosthub never contacts an address
-that is still being typed. Each **Test Connection** reloads the status, since
-it can approve the host key or sign-in that an earlier load lacked. Like other
-kwt operations, loading first installs or updates the host's managed kwt; a
-failed load shows its error with **Retry**. The check never changes the saved
-host's kwt availability, which inventory tracks. A load or install that
-finishes after the person switches hosts does not change the status shown.
-**Projects** follows the same rule: **Add Project** is available for a saved
-connection or one that **Test Connection** just checked. For a saved host
-whose connection has unsaved edits, it asks the person to save first and
-contacts nothing.
-
-Each hook event writes the tmux pane option `@kwt_agent` as
-`<state> <unix-seconds> <agent>`, where state is `working`, `approval`,
-`input`, or `done`. Session start and end clear the option. Hooks outside tmux,
-and subagent events, do nothing. A failing hook never blocks the agent.
-
-POSIX discovery reads the option in the same command as `list-sessions` with
-`list-panes -a -f '#{@kwt_agent}'` and attaches each pane to its session by
-socket and session ID. Badges therefore follow tmux inventory refresh: when
-the app becomes active and every thirty seconds while it stays active. A
-failed read leaves sessions without agent state. Native
-Windows discovery does not read agent state.
-
-A session shows approval first, then input, then an unseen finished turn, then
-working. A finished turn is acknowledged when its session is the connected
-active presentation in the key window. Ghosthub asks tmux for the server PID,
-session ID, and creation time of the session the active client shows when the
-attachment, selection, or window focus changes and after each tmux discovery
-for that host, and acknowledges only after that answer. An answer that
-arrives after another of those changes is discarded and tmux is asked again,
-because it may describe the client before the change. A switch made with
-tmux's own keys, or a new session that takes a renamed session's name, is
-therefore never acknowledged in its place, and the tab follows the session
-the client shows. The acknowledgement records the newest `done` stamp under
-that identity. Acknowledgements persist in
-UserDefaults and keep the 512 most recent sessions.
+- **Hooks setup:** **Settings → Hosts → Agent Hooks** runs managed kwt
+  (`kwt agent-hook status --json` and `kwt agent-hook install --json`),
+  auto-loading for saved macOS/Linux SSH hosts on selection (waiting for **Test
+  Connection** if unsaved connection edits exist, matching **Add Project**).
+  Codex requires trusting new hooks once via `/hooks`.
+- **Pane option and refresh:** hooks write `@kwt_agent` as
+  `<state> <unix-seconds> <agent>` (`working`, `approval`, `input`, `done`),
+  cleared on session start/end (no-op outside tmux and for subagents). POSIX
+  discovery reads `list-panes -a -f '#{@kwt_agent}'` alongside `list-sessions`
+  on activation and every 30s (not read on Windows).
+- **Priority and acknowledgement:** Approval > Input > unseen Done > Working.
+  Done clears only after querying tmux for the active client's server PID,
+  session ID, and creation time when the session is active in the key window
+  (discarding stale answers if selection or focus changed mid-query). Up to 512
+  acknowledged sessions persist in `UserDefaults`.
 
 ### Saved session restore
 
-The managed kwt saves tmux sessions so they can come back after a reboot; see
-kwt's `session` commands. Its tmux hooks save each socket's layout as it
-changes, and agent hooks record each pane's Claude Code, Codex, or `agy`
-conversation.
-Once a server is gone, its saved sessions become restorable.
+Managed kwt saves tmux layouts and Claude Code, Codex, and `agy` conversations
+as they change; once a server stops (for example after a reboot), saved entries
+become restorable:
 
 | Ghosthub action | kwt command |
 | --- | --- |
@@ -1214,141 +488,76 @@ Once a server is gone, its saved sessions become restorable.
 | Dismiss Saved Session (confirmed) | `kwt session dismiss <id>` |
 | After a confirmed Kill Session | `kwt session forget --socket-name <name> --session-id <id> --server-pid <pid> --created <time>` |
 
-Ghosthub runs `snapshot` in the background for the local Mac and each POSIX
-SSH host when kwt inventory starts, when hosts change, on every manual and
-scheduled inventory refresh, and when a host's kwt inventory first loads. A
-scheduled refresh lets a listing already running finish. A failure,
-including a host whose managed kwt is not installed yet, shows no saved
-sessions until the next listing. Ghosthub keeps only entries on the default and `kwt`
-sockets, the servers it discovers and attaches, and stores them on
-`HostSummary.savedTmuxSessions`. The host **+** menu and Command Palette offer
-**Restore Saved tmux Sessions** while that list is not empty.
-
-The host session list also shows each saved entry as a dimmed **saved** row.
-Its target is the `.tmuxSession` the restore creates, on the socket it ran on,
-so it keeps its manual sort position after restore. Rows are omitted for
-worktree and directory workspace entries, which kwt restores when Ghosthub
-opens the workspace through `kwt open`, and for entries whose name is live
-again. Of several entries saved under one name, only the newest gets a row,
-because kwt restores the newest. Opening a saved row restores that entry and
-attaches if the person has not navigated elsewhere meanwhile. Sibling
-navigation skips saved rows, as it skips stopped Herdr sessions.
-
-Restore first provisions the remote managed kwt, then restores the requested
-listed entries and refreshes inventory. While kwt rebuilds an entry, Ghosthub
-marks it **restoring…** and ignores further restores of it from any window,
-because kwt treats a second restore as an interrupted one and rebuilds the
-session from scratch. A single-session restore attaches only when no
-navigation happened in that window meanwhile, and then selects the session the
-way the palette's Open command does. Kwt exits nonzero when an entry fails but still
-prints a report for each entry. Ghosthub decodes that report and shows an
-alert only for entries that were not restored and for pane notes; restored
-sessions appear through ordinary tmux discovery.
-
-Forget runs after tmux confirms a kill, keyed by the reviewed server PID,
-session ID, and creation time. It uses the socket name because killing a
-server's last session also stops the server, after which tmux cannot report
-the socket path. Without forget, kwt's next save would find the server gone
-and offer the killed session for restore. Forget runs in the background; a
-failure leaves the killed session restorable.
-
-Pull-request imports are the one alternate-socket case. Kwt returns the named
-socket reserved for the workspace-specific server, and Ghosthub carries that
-identity with the worktree selection. Import does not start tmux or execute a
-configured project layout. A successful import without a
-nonempty socket identity is rejected as malformed rather than treated as a
-default-server session. Ghosthub supplies `-L <socket>` to its best-effort
-presentation commands, but launches the client through `kwt pr attach
-<workspace-path>`. Kwt verifies provenance and creates or repairs an inert
-shell-only protected session before executing `attach-session -E`, including
-on every SSH reconnect. Remote reconnects invoke Ghosthub's exact managed kwt
-path rather than resolving `kwt` from the login-shell `PATH`. Project commands
-run only after the user explicitly invokes them in that shell. Ghosthub never
-directly creates or attaches
-through the default server for that imported workspace.
+- Ghosthub runs `snapshot` in the background on startup, host changes, and
+  refreshes for local Mac and POSIX SSH hosts, keeping default and `kwt` socket
+  entries on `HostSummary.savedTmuxSessions`.
+- Saved entries appear as dimmed **saved** rows targeting the `.tmuxSession`
+  they will recreate (preserving manual sort order; omitting worktree/directory
+  entries restored by `kwt open` and already-live names; keeping only the
+  newest entry per name; skipped by sibling navigation).
+- Clicking a row marks it **restoring…**, blocks duplicate restores from any
+  window while kwt rebuilds it, provisions remote kwt if needed, attaches if
+  the user did not navigate away, and alerts only for failed entries or pane
+  notes.
+- After a confirmed Kill Session, Ghosthub runs `forget` in the background
+  using the socket name (since killing the last session stops the server) so
+  intentionally killed sessions are not offered for restore.
+- Pull-request imports remain the one alternate-socket case: `kwt pr attach`
+  validates provenance and creates or repairs the inert protected session on
+  each attach and SSH reconnect via the managed kwt path (never falling back to
+  the default server).
 
 ## Local PTY
 
-App-owned local PTY surfaces remain only for host-scoped utility surfaces such
-as the log viewer while that auxiliary UI exists. They are not the worktree
-session model and die with the app process.
+App-owned local PTYs exist only for utility surfaces such as the log viewer;
+they die with the app process.
 
-## Shell Startup Rules
+## Shell startup rules
 
-- Let libghostty launch the user's shell through its normal macOS login-shell
-  path unless there is a strong product reason not to.
-- Keep `TERM_PROGRAM=ghosthub`.
-- Do not leak launcher-terminal `EDITOR` or `VISUAL` into embedded shells.
-- Keep Ghosthub terminal config at `~/.config/ghosthub/ghostty.conf`.
-- Keep a modest client-local minimum text contrast so inherited ANSI colors
-  remain legible on light and dark backgrounds without rewriting shared tmux
-  styles. Preserve an explicit user-configured value.
-- Ship libghostty's emitted `share` tree with every build. The bootstrap emits
-  the bundled theme corpus, shell integration, and compiled terminfo; app
-  bundles stage `ghostty/` and `terminfo/` into `Contents/Resources`, and
-  Ghosthub points `GHOSTTY_RESOURCES_DIR` at whichever layout it finds.
-  Without it `theme = <name>` resolves only against a user's own
-  `~/.config/ghostty/themes`.
-- Keep the generated base config independent of tmux themes. Built-in Tmux
-  Theme colors or libghostty's effective Follow ghostty.conf colors are applied
-  at session creation, through the explicit shared-session override, or by the
-  active-session command, never as a client-local libghostty overlay.
-- Keep mutable Ghosthub app state under `~/.ghosthub/`.
-- Before nested discovery or attachment, remove `TMUX` and `TMUX_PANE` for
-  tmux and the documented Herdr control variables for Herdr so an enclosing
-  multiplexer cannot redirect the client.
-- Do not read or depend on Ghostty.app global config.
-- Do not install Ghosthub-owned layout, zoom, or tab management. Each backend
-  owns those interactions. Explicit app shortcuts may request a semantic split
-  operation against the active tmux or Herdr attachment.
-- Do not install Herdr workspace, tab, or pane keybindings. Apart from the
-  explicit Split Right and Split Down app commands on capable attachments, the
-  whole-session Herdr client receives ordinary terminal input unchanged.
-- Do not disable libghostty shell integration to work around keybinding
-  bugs.
+- Let libghostty launch the user's normal macOS login shell unless a strong
+  product reason requires otherwise.
+- Keep `TERM_PROGRAM=ghosthub` and strip launcher-terminal `EDITOR`/`VISUAL`.
+- Keep Ghosthub config at `~/.config/ghosthub/ghostty.conf` and mutable app
+  state under `~/.ghosthub/`. Never read Ghostty.app global config.
+- Keep a small client-local minimum text contrast floor unless `ghostty.conf`
+  sets one explicitly.
+- Ship libghostty's `share` tree (`ghostty/` and `terminfo/` in
+  `Contents/Resources`) and point `GHOSTTY_RESOURCES_DIR` at it so built-in
+  themes, shell integration, and `xterm-ghostty` terminfo always resolve.
+- Keep generated base config independent of tmux themes (apply tmux themes via
+  tmux commands, never as a client-local libghostty overlay).
+- Scrub `TMUX`/`TMUX_PANE` and documented Herdr/Zellij control variables before
+  nested discovery or attach.
+- Never install Ghosthub-owned layout, zoom, tab, or Herdr workspace bindings
+  beyond explicit **Split Right** / **Split Down** requests.
+- Never disable libghostty shell integration to work around keybinding bugs.
 
-## Configuration Reloading
+## Configuration reloading
 
-Ghosthub automatically watches the complete active terminal-configuration
-graph: `~/.config/ghosthub/ghostty.conf`, the selected local project's
-`.ghosthub/terminal.conf`, the app-owned appearance overlay, and recursive
-`config-file` includes. Missing optional includes and absent project or
-appearance files remain watched so creating them triggers a reload. Filesystem
-events are debounced before rebuilding the graph.
-
-An imported pull-request workspace is contributor-authored source, so its
-`.ghosthub/terminal.conf` is never loaded. Selecting one uses the project's
-own checkout instead.
-
-Reloading is transactional. A candidate with diagnostics is rejected and the
-last valid libghostty configuration remains active. Successful automatic
-reloads are silent; automatic failures remain visible until dismissed or
-superseded. Explicit reloads present their result. **Ghosthub → Reload
-Configuration**, Quick Launch, and
-<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>,</kbd> all provide the explicit path.
-Options that libghostty cannot apply to existing surfaces retain their upstream
-restart or new-surface semantics.
+Ghosthub watches `~/.config/ghosthub/ghostty.conf`, the selected local
+project's `.ghosthub/terminal.conf` (skipped for protected PR checkouts, which
+fall back to the user's project checkout), the appearance overlay, and
+recursive `config-file` includes (including missing optional files) with
+debouncing. Reloads are transactional: invalid candidates never replace the
+last valid config. Automatic successes are silent; errors stay visible;
+explicit reloads (**Ghosthub → Reload Configuration**, Command Palette,
+<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>,</kbd>) always report their outcome.
 
 ## Relay teardown containment
 
-The Rust byte relay spawns each client as a session leader with the PTY as
-its controlling terminal. On teardown the relay reaps the child and, on
-unix, sweeps the child's process group with `SIGKILL` — after a non-reaping
-`waitid` leaves the exited child a zombie so its process-group id cannot
-recycle before the sweep. This reaches same-group descendants; interactive
-shells additionally propagate `SIGHUP` to their own jobs on exit, and the
-kernel sends `SIGHUP` to the controlling terminal's foreground group when
-the session leader dies. A descendant that moved into its own process group
-under job control and was then disowned while holding the slave open and not
-reading is the one case the group sweep does not reach; full session/tree
-containment (enumerating every group in the child's session) is future work,
-bounded meanwhile by the trusted-network deployment posture. On Windows a Job
-Object contains the whole tree.
+The Rust byte relay spawns each client as a session leader with the PTY as its
+controlling terminal. On teardown it reaps the child and, on Unix, sweeps the
+child's process group with `SIGKILL` after a non-reaping `waitid` leaves the
+exited child a zombie so its PGID cannot recycle first. A disowned descendant
+that moved into another process group while holding the slave open without
+reading is the one edge case not reached by the group sweep (full session/tree
+enumeration is future work, bounded by the trusted-network posture). On Windows
+a Job Object contains the whole process tree.
 
 ## Verification
 
-For terminal startup, environment, config layering, libghostty bootstrap, key
-handling, or remote terminal changes, run:
+For changes to terminal startup, environment, config layering, libghostty
+bootstrap, key handling, or remote terminal code, run:
 
 ```bash
 make test-libghostty-bootstrap

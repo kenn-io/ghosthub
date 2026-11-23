@@ -1,248 +1,119 @@
-# Ghosthub Release Playbook
+# Ghosthub release playbook
 
 Ghosthub releases are built from source in `kenn-io/ghosthub` and published to
-the same repository. A release contains a signed and notarized Apple Silicon
-DMG, its individual checksum, `SHA256SUMS`, and a signed Sparkle appcast.
-Packaged releases check the stable feed at
-`https://github.com/kenn-io/ghosthub/releases/latest/download/appcast.xml`.
+the same repository: a signed and notarized Apple Silicon DMG, its individual
+checksum, `SHA256SUMS`, and a signed Sparkle appcast. Packaged stable builds
+check `https://github.com/kenn-io/ghosthub/releases/latest/download/appcast.xml`.
 
 ## Release a new version
 
-1. Update `RELEASE_VERSION` and add the matching dated entry to
-   `website/docs/content/changelog.md`.
-   Lead with what users and their agents can do. Review the public guides and
-   [refresh screenshots](https://github.com/kenn-io/ghosthub/blob/main/website/README.md#product-screenshots) for accepted
-   changes that alter the views they show.
-2. Validate the changes and merge the release preparation pull request with
-   the repository owner's authorization.
+1. Update `RELEASE_VERSION` and add the matching dated section to
+   `website/docs/content/changelog.md` (plain language, leading with what users
+   and agents can do). Review the public guides and
+   [refresh screenshots](https://github.com/kenn-io/ghosthub/blob/main/website/README.md#product-screenshots)
+   only if accepted changes altered what those screenshots show.
+2. Validate the prep PR and merge it with repository-owner authorization.
 3. Run the [signed candidate](#candidate-run) from `main` and verify it on a
-   Mac that has never built Ghosthub before creating a release tag.
-4. [Publish the tag](#publishing) from that same clean `main` revision. The
-   workflow rebuilds, signs, and notarizes the app before publishing the DMG,
-   checksums, and Sparkle update feed.
-5. Confirm the release assets and updater version, then
-   [deploy the website](https://github.com/kenn-io/ghosthub/blob/main/website/README.md#deployment). Uploading screenshot
-   assets alone does not update the live site.
+   Mac that has never built Ghosthub before tagging.
+4. [Publish the tag](#publishing) from that same clean `main` commit. The
+   workflow rebuilds, signs, notarizes, and publishes the DMG, checksums, and
+   appcast.
+5. Verify the published assets and appcast version, then
+   [deploy the website](https://github.com/kenn-io/ghosthub/blob/main/website/README.md#deployment)
+   (pushing `website-assets` alone does not deploy the site).
 
-The candidate, published release, and deployed website are separate results.
-Report which are complete. A queued workflow is not a published release.
+Report the candidate, published release, and deployed website separately; a
+queued workflow is not a published release.
 
 ## What ships in the app
 
-The application bundles an ordinary `kwt` CLI helper at
-`Ghosthub.app/Contents/Helpers/kwt`. Ghosthub invokes that exact helper for
-local project inventory, worktree operations, and effective SSH route
-resolution. It does not resolve a local
-`kwt` from `PATH`, including when the bundle is damaged or incomplete: the
-local operation fails instead of drifting to another installation. Remote
-hosts use one of six pinned, CGO-disabled variants sealed under
-`Contents/Resources/KwtRemote`: Darwin, Linux, and Windows, each for amd64 and
-arm64.
-On configured remote macOS and Linux hosts, Ghosthub automatically installs
-or updates the matching helper during project inventory and before operations
-that need it. It verifies the SHA-256 remotely and invokes the exact revisioned
-path under `~/.ghosthub/helpers/kwt/`; it never replaces a system `kwt`.
-Experimental Windows installation follows the same pinning contract through
-PowerShell, placing the matching PE helper at
-`%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe`. These Windows
-payloads remain unsigned until an approved Authenticode/DigiCert signing step
-is added, so they are not enterprise-ready release artifacts.
-
-Experimental native Linux Rust builds also embed the revision from
-`KWT_REVISION`. `make rust-build` stages the helper with the shared builder;
-Cargo checks its ELF architecture and pinned revision and records its SHA-256.
-Release builds require the helper. Activation stays under the resolved Ghosthub helper root
-and never replaces an installed KWT binary. These builds are not yet published
-as Linux release packages. See [Rust port acceptance](rust-port.md).
-
-`make run-app` follows the same rule. Its `bootstrap-kwt` dependency builds and
-caches `KWT_REF` under `.build`, then stages that exact helper into the debug
-app. A developer can override the repository, revision, source directory, or
-binary path deliberately, but the default never embeds the system kwt.
-`bootstrap-kwt-variants` cross-compiles the complete remote matrix from the
-same pin. The Bash and PowerShell builders select the exact compiler in
-`KWT_GO_VERSION` through `GOTOOLCHAIN`. Local cache stamps include this
-compiler pin, so changing it rebuilds helpers even when the KWT source is
-unchanged. Release, nightly, and acceptance CI install the same compiler.
-Update this pin when Go ships relevant security fixes; rebuilding the app
-alone does not update a cached helper's Go runtime. Inspect a built helper
-with `go version -m .build/kwt/kwt` and run `make test-essential-workflows`
-before accepting a new helper. The pin is Go 1.27.4, the oldest
-release the pinned kwt accepts. It keeps the
-[eMudhra certificate verification fix](https://go.dev/doc/devel/release#go1.27.3)
-from Go 1.27.3.
-
-Each cross-compile retains its Go symbol table but omits debug
-information, then inspects that actual Mach-O, ELF, or PE artifact for the
-exact pinned version, revision, and revision timestamp before caching it.
-Before either debug or release packaging, every variant is also checked for
-its expected architecture and embedded pinned revision.
-
-Packaging also stages libghostty's own emitted resources: the bundled Ghostty
-theme corpus and shell integration at `Contents/Resources/ghostty`, and the
-compiled `xterm-ghostty` terminfo database at `Contents/Resources/terminfo`.
-libghostty locates them by climbing from the running executable and matching
-compiled terminfo, so both trees must keep those exact names and positions.
-Assembly fails rather than shipping a bundle whose themes would silently
-resolve only against a user's `~/.config/ghostty/themes`.
-
-Every packaged app also carries Ghosthub's Apache-2.0 license as
-`Ghosthub-Apache-2.0.txt` and all notices in
-the repository's `LICENSES` directory under `Contents/Resources/Licenses`.
-`LICENSES/THIRD-PARTY-NOTICES.md` is the audited inventory for GRDB, Sparkle,
-the components compiled into libghostty, and the resources the bundle
-redistributes verbatim, including the iTerm2-Color-Schemes theme corpus. Embedded libghostty is built with
-internationalization disabled, so its otherwise static GNU libintl/gettext
-dependency is not part of Ghosthub's app binary or release obligations.
-
-## Rust helper bundles
-
-The Rust Linux and Windows applications embed remote KWT helpers for macOS and
-Linux on x86_64 and arm64, all built from `KWT_REVISION` with `KWT_GO_VERSION`.
-`make rust-build` stages the matrix on Linux; `tools/build_rust_kwt.ps1` stages
-it alongside the native Windows controller and selected WSL architecture.
-Cargo validates executable architecture and revision and computes the embedded
-SHA-256 digest. Release builds reject missing helpers. Direct Cargo builds can
-use `GHOSTHUB_KWT_VARIANTS_DIR` to select a prebuilt matrix; the local helper
-bundle override does not change these remote artifacts.
-
-The remote helper is installed under
-`$HOME/.ghosthub/helpers/kwt/<revision>/kwt`. Ghosthub verifies its checksum and
-version before project commands. A missing or damaged helper is replaced from
-the bundle. A failed installation leaves terminal workflows available and
-reports a project diagnostic; correct the remote account's home or permissions,
-then refresh the host to retry. See the [Rust guide](rust-port.md#native-linux-ssh-sessions)
-for the currently supported project workflows.
+- **Local kwt helper:** bundled at `Ghosthub.app/Contents/Helpers/kwt` and
+  invoked by exact bundle path for local project inventory, worktrees, and SSH
+  route resolution. Never falls back to `kwt` on `PATH`, even if damaged.
+- **Remote kwt matrix:** six CGO-disabled variants sealed under
+  `Contents/Resources/KwtRemote` (`darwin`, `linux`, `windows` x `amd64`,
+  `arm64`). On configured macOS/Linux hosts, Ghosthub auto-installs and
+  verifies the matching helper at `~/.ghosthub/helpers/kwt/<revision>/kwt`
+  without touching system `kwt`. Windows hosts use explicit PowerShell install
+  to `%USERPROFILE%\.ghosthub\helpers\kwt\<revision>\kwt.exe` and remain
+  unsigned until Authenticode signing is added.
+- **Compiler pin (`KWT_GO_VERSION`):** `make run-app`, `bootstrap-kwt`,
+  `bootstrap-kwt-variants`, and CI all select `KWT_GO_VERSION` via
+  `GOTOOLCHAIN` (included in cache stamps). Currently pinned to **Go 1.27.4**,
+  the oldest release accepted by pinned kwt, preserving the
+  [eMudhra certificate verification fix](https://go.dev/doc/devel/release#go1.27.3)
+  from Go 1.27.3. Inspect built helpers with `go version -m .build/kwt/kwt` and
+  run `make test-essential-workflows` after bumping Go. Every cross-compiled
+  Mach-O/ELF/PE keeps Go symbols (omitting DWARF) and is verified for target
+  architecture, version, revision, and timestamp before caching and packaging.
+- **libghostty resources:** stages the theme corpus and shell integration at
+  `Contents/Resources/ghostty` and compiled `xterm-ghostty` terminfo at
+  `Contents/Resources/terminfo` (assembly fails if missing).
+- **Licenses:** stages `Ghosthub-Apache-2.0.txt` and all notices from
+  `LICENSES/` (including `THIRD-PARTY-NOTICES.md` for GRDB, Sparkle,
+  libghostty components, and iTerm2-Color-Schemes) under
+  `Contents/Resources/Licenses`. Embedded libghostty disables i18n so GNU
+  libintl/gettext is not linked.
+- **Rust helper bundles:** Linux and Windows Rust builds embed the
+  `KWT_REVISION` / `KWT_GO_VERSION` remote matrix for macOS/Linux (`x86_64`,
+  `arm64`) via `make rust-build` / `tools/build_rust_kwt.ps1` (Cargo validates
+  architecture, revision, and SHA-256; release builds reject missing helpers;
+  `GHOSTHUB_KWT_VARIANTS_DIR` overrides with a prebuilt matrix). Not yet
+  published as Linux release packages; see [Rust port](rust-port.md#native-linux-ssh-sessions).
 
 ## Reproducible inputs
 
-The root `RELEASE_VERSION`, `KWT_REVISION`, and `KWT_GO_VERSION` files plus
-`.github/workflows/release.yml` pin the
-release inputs that must move deliberately:
+Pinned release inputs live in `RELEASE_VERSION`, `KWT_REVISION`,
+`KWT_GO_VERSION`, `Vendor/ghostty.version.json`, `mise.toml`, and
+`.github/workflows/release.yml`:
 
-- the release version in `RELEASE_VERSION`
-- the full `kenn-io/kwt` source revision in `KWT_REVISION`
-- the Go compiler in `KWT_GO_VERSION` for every bundled KWT helper
-- Sparkle 2.10.0 as an exact Swift package dependency
-- Xcode 26.0.1
-- libghostty from Ghostty 1.4.0 and Zig 0.17.0 in `Vendor/ghostty.version.json`
-- the same Zig compiler in `mise.toml` and its official archive checksum in CI
-- immutable revisions for every GitHub Action
+- release version in `RELEASE_VERSION`
+- full `kenn-io/kwt` commit in `KWT_REVISION`
+- Go compiler in `KWT_GO_VERSION`
+- Sparkle `2.10.0` (exact SwiftPM dependency)
+- Xcode `26.0.1`
+- libghostty from Ghostty `1.4.0` and Zig `0.17.0` in
+  `Vendor/ghostty.version.json` (plus matching `mise.toml` and
+  `.github/zig.sha256`; PR CI reads both from the PR checkout while running
+  `main`'s `.github/workflows/ci.yml`)
+- SHA-pinned GitHub Actions
 
-Pull-request CI runs `.github/workflows/ci.yml` from `main`, but reads the Zig
-version from the checked-out `Vendor/ghostty.version.json` and its macOS arm64
-archive checksum from `.github/zig.sha256`. Update both when bumping Zig.
-Changes to the reusable workflow itself must reach `main` before a pull
-request can use them.
+### Pinned kwt provenance and contract
 
-The embedded kwt revision and release-facing version are written into
-`Info.plist` as `GhosthubKwtSourceRevision` and `GhosthubKwtVersion`. The
-remote matrix pin is recorded independently as
-`GhosthubRemoteKwtSourceRevision`, so a deliberately substituted local helper
-cannot change the managed remote path. The revision is also included in GitHub
-release notes. Release CI checks out that revision under
-`.release-inputs/kwt-source` and passes the checkout as `KWT_SOURCE_DIR` when
-building the remote variant matrix. It builds the local release helper through
-`tools/build_pinned_kwt.sh`, so the helper must pass the same explicit identity
-stamping and isolated daemon validation before signing. The repository slug
-used by `actions/checkout` is never passed to `git clone`. Release CI records the
-helper it built from the pin; a local build against a substituted
-`KWT_BINARY_PATH` is recorded as `unpinned` rather than inheriting the pin. Kwt
-is part of Ghosthub's signed code, but Ghosthub invokes only its CLI and never
-manages its service or state directly. The pinned CLI may auto-start or reuse
-kwt's same-account daemon for inventory and SSH route resolution. Route
-resolution remains local to the app host even when the destination is remote;
-it does not require kwt on the destination. The app fails closed rather than
-falling back to another kwt or a separate Swift `ssh -G` implementation. The
-pinned revision supports the
-complete automation contract consumed by the app, including the isolated tmux
-socket identity
-returned by session-free `pr import`, the inert shell-only protected session
-created or repaired by `pr attach`, and refusal to open protected imports
-through kwt's ordinary direct open paths. It also supports
-`open <exact-worktree-path>`, which establishes or repairs an ordinary
-workspace's canonical session on the selected endpoint and keeps its initial
-tmux client attached.
-Exact-path resolution operates from the supplied Git worktree before global
-pattern matching, so it does not depend on the configured global base when
-repository-local inventory reports primary or linked worktrees stored
-elsewhere. Its start-only automation mode
-must never prompt for target-config trust or fuzzy layout selection; callers
-may still select a deterministic layout explicitly.
+`Info.plist` records `GhosthubKwtSourceRevision`, `GhosthubKwtVersion`, and
+independently `GhosthubRemoteKwtSourceRevision` (so a substituted local
+`KWT_BINARY_PATH` is marked `unpinned` without altering the managed remote
+matrix). Release CI checks out `KWT_REVISION` into `.release-inputs/kwt-source`
+and builds via `tools/build_pinned_kwt.sh` (never passing a checkout slug to
+`git clone`).
 
-Because a separately installed kwt can access the same user-owned kwt state,
-kwt must preserve backward compatibility for supported on-disk state and
-machine-readable commands. Before advancing `KWT_REVISION`, test the new revision
-both through Ghosthub and as a standalone CLI against representative existing
-state. The current pin includes kwt's provider-neutral `pr list`, `pr import`,
-and `pr attach` contract. Every worktree, directory workspace, and import
-object reports the required `tmux_attach_mode`; `tmux_socket_name` may be
-absent for an unresolved protected endpoint. Clients must use the mode, not
-socket presence, to select direct or protected attachment. Changing that
-contract requires
-exercising candidate discovery, an idempotent existing-import result, creation
-of the exact returned tmux session only on protected attachment, and a
-protected attach that can re-establish an absent session without executing a
-configured project layout. First attachment on a fresh protected socket must
-initialize and inspect the tmux server without relying on platform-specific
-connection-error text. Imports originating in an unregistered repository
-must remain attachable when the recorded clone agrees with its live Git
-identity, while ambiguous or conflicting registrations must fail closed.
-It also includes `projects add <path> --json` as the supported registration
-boundary for fresh hosts. Argument, flag, configuration, and repository
-failures must retain the structured error contract, and repeated registration
-must converge across clone paths using the host-aware repository identity.
-The matching
-`projects remove <exact-path> --expected-repository <identity>
---expected-registration <fingerprint> --json` boundary unregisters metadata
-without deleting repositories, worktrees, or tmux sessions. It must accept a
-missing checkout using the exact stable path, credential-free identity, and
-opaque registration fingerprint published by project inventory. The daemon
-serializes registration and protected project operations, verifies every
-durable protected endpoint, rejects live sessions or incomplete endpoint
-authority, and compare-and-swaps the registration. Missing and concurrently
-changed registrations retain their structured error contracts.
-The pinned-helper acceptance suite exercises registration, daemon-backed
-inventory, missing-checkout removal, and another inventory request against an
-isolated `KWT_HOME`. It also verifies that a registered project whose `.git`
-directory is marked bare still lists its linked worktrees through both
-Ghosthub and standalone `kwt list --json`, without requiring a main checkout.
-The pinned implementation removes `KWT_GITHUB_TOKEN`, `KWT_FLEET_TOKEN`, and
-the configured fleet token variable from tmux subprocess and session
-environments before imported workspace panes start, while preserving
-operational state such as `KWT_HOME`. Protected attachment validates the
-workspace provenance, creates or repairs an inert shell-only isolated session,
-and uses `attach-session -E` so a mutable `update-environment` option cannot
-restore credentials. Existing sessions must carry the exact workspace marker
-before reuse. The command removes the caller's parent tmux identity so the
-isolated cross-server attachment also works when invoked from an existing tmux
-pane.
-Direct worktree and directory sessions normally use kwt's dedicated `kwt`
-server, while a verified live default-server session may be adopted. The
-pinned contract test exercises that dedicated endpoint with standalone kwt
-state. Attachment validates the recorded project clone and exact live worktree
-identity, honoring registered upstream identity for fork-origin checkouts while
-excluding prunable or missing worktrees. An unresolved protected endpoint must
-remain protected even when inventory omits its socket.
-Session-start safety and configuration failures are non-retryable. Kwt also
-resolves a session-local `default-shell` before falling back to the
-server-global value, so every pane follows the same tmux shell policy.
+Before advancing `KWT_REVISION`, test both through Ghosthub and standalone
+against representative user state. The pinned revision must preserve:
+
+- local SSH route resolution (`ssh -G`) with fail-closed behavior and no
+  fallback to `PATH` or a Swift `ssh -G` parser;
+- `pr list`, session-free `pr import` (returning required `tmux_attach_mode`
+  and isolated `tmux_socket_name`), and inert shell-only `pr attach` (stripping
+  `KWT_GITHUB_TOKEN`, `KWT_FLEET_TOKEN`, and configured fleet token variables
+  while keeping `KWT_HOME`, checking workspace markers, clearing parent tmux
+  identity, and attaching with `attach-session -E`);
+- `open <exact-worktree-path>` (exact-path resolution before global patterns,
+  non-prompting start-only mode, dedicated `kwt` server with adoption of
+  verified default-server sessions, session-local `default-shell` preference);
+- `projects add <path> --json` and guarded
+  `projects remove <exact-path> --expected-repository <identity> --expected-registration <fingerprint> --json`
+  (daemon-serialized, accepting missing checkouts, rejecting live protected
+  sessions, bare `.git` repo support).
 
 ## Protected signing environment
 
-Signing, notarization, and publishing jobs run only in `kenn-io/ghosthub`.
-Every such job in `.github/workflows/release.yml` and `nightly.yml` carries a
-`github.repository == 'kenn-io/ghosthub'` condition, so a fork that inherits
-the tag or schedule trigger skips the job instead of failing on absent
-credentials. `tools/tests/test_workflow_fork_guards.py` enforces that contract.
-Validation lanes (`pull_request` and branch pushes) stay unguarded so forks
-can still build and test.
+All signing, notarization, and publishing jobs in `release.yml` and
+`nightly.yml` guard with `github.repository == 'kenn-io/ghosthub'` (enforced by
+`tools/tests/test_workflow_fork_guards.py`) so forks skip them cleanly while
+keeping PR validation jobs open.
 
-The `release-signing` GitHub Actions environment is owner-operated. Its current
-policy does not require a second reviewer. Keep:
-
-- deployment branches and tags restricted to `main` and `v*`
-- the following environment secrets (not repository secrets)
+Keep the `release-signing` GitHub Actions environment restricted to `main` and
+`v*`, owner-operated, with these environment secrets (never repository secrets):
 
 | Secret | Value |
 | --- | --- |
@@ -254,36 +125,19 @@ policy does not require a second reviewer. Keep:
 | `APPLE_API_KEY_CONTENT` | Base64-encoded `.p8` API key |
 | `SPARKLE_ED_PRIVATE_KEY` | Exported Sparkle Ed25519 private seed |
 
-The same environment has a non-secret variable named
-`SPARKLE_PUBLIC_ED_KEY`. Its value must match the reviewed `SUPublicEDKey`
-embedded by `tools/assemble_app_bundle.py`; appcast generation fails on a
-mismatch. It also derives the public key from the protected private seed and
-refuses to publish if the pair does not match. The private key's durable source
-of truth is the shared Kenn Software LLC 1Password vault. Generation, custody,
-restoration, and rotation follow the
+Set the non-secret environment variable `SPARKLE_PUBLIC_ED_KEY` to match the
+`SUPublicEDKey` embedded by `tools/assemble_app_bundle.py`. Appcast generation
+derives the public key from `SPARKLE_ED_PRIVATE_KEY` (supporting both Sparkle's
+32-byte seed format and legacy 64+32-byte format with challenge-signature
+verification) and aborts on any mismatch. Private keys live in the Kenn
+Software LLC 1Password vault; custody and rotation follow the
 [Kenn operations runbook](https://github.com/kenn-io/kenn-ops/blob/main/docs/runbooks/sparkle-update-signing.md).
 
-The derivation guard accepts Sparkle's current exported-key format (a
-base64-encoded 32-byte seed) and its legacy format (64 bytes of private material
-followed by the 32-byte public key). Sparkle 2.9.4's own
-`decodePrivateAndPublicKeys` routine defines those formats. Legacy records are
-accepted only after the private material signs a challenge that the appended
-public key successfully verifies.
-
-Environment protection must pass before GitHub sends the job to a runner or
-makes its environment secrets available. Manual candidate jobs also enforce
-`refs/heads/main` in the workflow, and publication requires a tag push rather
-than a manually dispatched tag.
-
-The values are maintained in 1Password and must never be committed. Check only
-the environment secret names with:
+Inspect or update environment secrets via `gh`:
 
 ```bash
 gh secret list --env release-signing --repo kenn-io/ghosthub
 ```
-
-Set or replace a value directly from 1Password or an exported file. These
-commands prompt for the secret when no body is provided:
 
 ```bash
 gh secret set APPLE_CERTIFICATE --env release-signing --repo kenn-io/ghosthub
@@ -299,9 +153,7 @@ gh variable set SPARKLE_PUBLIC_ED_KEY \
   --body '<reviewed public key>'
 ```
 
-After all environment secrets exist, delete any repository-level copies.
-Repository secrets are available when a run is queued and would bypass the
-environment boundary:
+Remove any repository-level copies so they cannot bypass environment protection:
 
 ```bash
 for name in \
@@ -317,23 +169,13 @@ do
 done
 ```
 
-No cross-repository token is required. The workflow uses its short-lived
-`GITHUB_TOKEN` with `contents: write` only when a source tag is being released.
+No cross-repo token is needed for stable releases; the tag job uses its
+short-lived `GITHUB_TOKEN` (`contents: write`).
 
 ## Candidate run
 
-Release preparation updates `RELEASE_VERSION` and adds the matching dated
-section to `website/docs/content/changelog.md`. Write the notes in plain language, starting with what
-people can do or what now works better. Omit internal build and test work;
-keep technical details only when users need them to understand a limit or
-adjust their workflow. Every packaging entry point reads the version file by
-default. The Makefile passes its resolved version explicitly to the standalone
-DMG and appcast scripts, and the release workflow rejects a tag whose version
-does not match `RELEASE_VERSION`. Do not duplicate the current version in
-scripts, workflows, tests, Makefile help, or this playbook.
-
-After release workflow changes reach the default branch, run the manual
-workflow before creating a tag:
+After release prep (`RELEASE_VERSION` + dated changelog entry) lands on `main`,
+trigger a signed candidate build before tagging:
 
 ```bash
 gh workflow run release.yml \
@@ -341,25 +183,16 @@ gh workflow run release.yml \
   --ref main
 ```
 
-The manual path imports the signing certificate into an ephemeral keychain,
-builds the pinned local kwt helper, verifies that it is an Apple Silicon
-Mach-O, cross-compiles the Darwin/Linux/Windows amd64/arm64 remote matrix,
-builds release-optimized libghostty and Ghosthub, re-signs Sparkle's nested
-helpers and framework with Ghosthub's Developer ID identity, signs the local
-kwt helper and both Darwin remote kwt variants with hardened runtime and secure
-timestamps, then signs the enclosing app and DMG, submits it to Apple, staples
-and validates the ticket, and uploads a seven-day candidate artifact. Linux
-and experimental Windows remote variants remain unsigned ELF/PE resources.
-The candidate does not consume
-the production Sparkle private key, generate an appcast, create a tag, or
-create a GitHub release. Both checksum files name the DMG by basename, so they
-remain valid after download.
+The candidate job imports the cert into an ephemeral keychain, builds the
+pinned local kwt helper and six-target remote matrix, builds release libghostty
+and Ghosthub, signs Sparkle's nested components, local kwt, Darwin remote kwt
+variants, the app, and the DMG with hardened runtime and secure timestamps,
+notarizes and staples the DMG, and uploads a 7-day candidate artifact (without
+consuming the Sparkle key, generating an appcast, tagging, or creating a GitHub
+release).
 
-Download the candidate artifact and verify it on an Apple Silicon Mac that
-has never built Ghosthub, so no local build or signing state can hide a
-packaging problem. The check runs headless, so an SSH session is enough. The
-Mac needs Xcode or the Command Line Tools for the ticket check; the script
-stops with that message when they are missing:
+Verify the downloaded candidate on an Apple Silicon Mac that has never built
+Ghosthub (SSH is fine; requires Xcode or Command Line Tools for ticket check):
 
 ```bash
 version="$(tr -d '[:space:]' < RELEASE_VERSION)"
@@ -368,206 +201,125 @@ scp -r candidate tools/verify_release_candidate.sh <clean-mac>:
 ssh <clean-mac> "sh verify_release_candidate.sh candidate/* $version"
 ```
 
-`tools/verify_release_candidate.sh` checks both checksum files, quarantines the
-DMG like a browser download, then requires the stapled notarization ticket,
-Gatekeeper acceptance of the DMG and app as `Notarized Developer ID`, a strict
-deep signature, bundle identifier `com.ghosthub`, team `2YMZH84KR8`, the
-`RELEASE_VERSION` app version, and a bundled kwt helper that runs. It prints
-`PASS` only when all of them hold. These are the same gates the
-[Homebrew tap](#homebrew-tap) applies before it updates the cask.
-
-Also open the candidate and use it by hand when the release changes
-packaging, signing, the bundled kwt helpers, or Sparkle. Check that About
-reports the version and license, local and SSH tmux sessions attach, managed
-kwt installs on a remote host, and **Check for Updates…** opens without an
-error. Other releases rely on the automated check and the test suites.
+`tools/verify_release_candidate.sh` verifies both checksums, quarantines the
+DMG, checks the stapled notarization ticket, Gatekeeper `Notarized Developer ID`
+acceptance on both DMG and app, strict deep signature, bundle ID `com.ghosthub`,
+team `2YMZH84KR8`, version `RELEASE_VERSION`, and a runnable bundled kwt helper
+(printing `PASS` only if all hold). When packaging, signing, kwt helpers, or
+Sparkle changed, also launch the candidate manually and verify About, local/SSH
+tmux attach, remote kwt install, and **Check for Updates…**.
 
 ## Publishing
 
-Only publish after the candidate succeeds. From a clean `main` checkout:
+After the candidate passes, run from a clean `main` checkout:
 
 ```bash
 ./scripts/release.sh
 ```
 
-The script reads `RELEASE_VERSION`, then creates and pushes the matching
-annotated `vX.Y.Z` tag. The tag workflow rebuilds
-from source, repeats signing and notarization, generates the production-signed
-appcast, and creates the matching GitHub release with:
+This reads `RELEASE_VERSION` and pushes the annotated `vX.Y.Z` tag. The tag
+workflow extracts and validates the changelog section up front (failing in
+seconds if missing, duplicated, empty, or malformed), rebuilds, signs,
+notarizes, generates the signed appcast, and publishes the GitHub release with:
 
 - `Ghosthub_X.Y.Z_macos_arm64.dmg`
 - `Ghosthub_X.Y.Z_macos_arm64.dmg.sha256`
 - `SHA256SUMS`
 - `appcast.xml`
 
-The appcast contains only the current full DMG and embeds the exact dated
-changelog section for `RELEASE_APP_VERSION`, along with a link to the
-tag-specific GitHub release. Appcast generation stops before signing when that
-section is missing, duplicated, empty, or malformed; it never publishes
-placeholder release notes. The tag workflow also runs this same changelog
-extraction as a validation step before building anything, so a bad changelog
-fails the release in seconds instead of after signing and notarization.
-The stable `latest/download` feed redirects clients
-to this release's appcast. Publishing is also aborted if the protected private
-key does not match the public key embedded in the app.
-Release bundles set `SUSignedFeedFailureExpirationInterval` to `0`, so an
-invalid feed never ages into Sparkle's key-rotation fallback. This is the exact
-Info.plist key declared by Sparkle 2.9.4's
-`SUSignedFeedFailureExpirationIntervalKey`; debug bundles omit the production
-feed, public key, and automatic-update settings entirely.
+Key release safeguards:
 
-Publishing is safe to rerun after a partial GitHub release failure. The
-workflow reuses an existing release for the tag, refreshes its title and notes,
-and replaces its assets with the newly notarized outputs.
-
-Release binaries target macOS 15.0 and the assembled app declares the same
-minimum through `LSMinimumSystemVersion`. Pull requests and `main` pushes build
-the unsigned release bundle on GitHub's Apple Silicon macOS 15 image, reject
-any packaged Mach-O with a newer deployment target, and run the libghostty
-runtime smoke suite there. Xcode 26's separately downloaded Metal toolchain
-does not activate on the hosted Sequoia image, so that job builds libghostty's
-shaders with Xcode 16.4's bundled Metal compiler before compiling and packaging
-Ghosthub with Xcode 26.0.1. Stable and nightly builds use that same split on
-the macOS 15 runner, so the tested libghostty and Metal artifacts are the ones
-that signing and notarization ship. Lowering the deployment target does not
-create a separate Sequoia artifact.
-
-If Apple rejects the submission, the workflow prints the notary response and
-fetches the detailed notarization log before failing. It never publishes an
-unsigned or unnotarized fallback artifact.
-
-After Apple accepts a submission, ticket stapling and validation use
-`tools/stapler.sh`. Ticket-service failures (exit 68) get up to three attempts,
-waiting 10 and 20 seconds between attempts. Other errors, including invalid
-ticket data, fail immediately. Exhausted retries preserve the last stapler error.
-Successful stapling must still pass ticket validation and Gatekeeper assessment
-before the script writes the release checksum. Stable and nightly builds use
-this same path, including the nightly candidate's final ticket validation.
+- **Sparkle config:** release bundles set
+  `SUSignedFeedFailureExpirationInterval` to `0` so invalid feeds never age
+  into key-rotation fallback; debug bundles omit feed, public key, and
+  auto-update settings entirely.
+- **Rerunnable publishing:** rerunning after a partial GitHub release failure
+  reuses the tag's release, updates its notes, and replaces its assets.
+- **macOS 15.0 floor:** release binaries target macOS 15.0
+  (`LSMinimumSystemVersion`). Because Xcode 26's separate Metal toolchain does
+  not activate on the hosted macOS 15 runner, CI builds libghostty shaders with
+  Xcode 16.4's bundled Metal compiler and compiles/packages Ghosthub with Xcode
+  26.0.1, then verifies every packaged Mach-O deployment target and runs the
+  libghostty smoke suite on Sequoia.
+- **Notarization and stapling:** Apple rejection prints the detailed notary log
+  and fails closed (never publishing an unnotarized artifact).
+  `tools/stapler.sh` retries transient ticket-service failures (exit 68) up to
+  3 times (10s, 20s backoff), fails immediately on invalid tickets, and requires
+  ticket validation plus Gatekeeper assessment before writing checksums.
 
 ### Homebrew tap
 
-The public release is consumed downstream by
-[`kenn-io/homebrew-tap`](https://github.com/kenn-io/homebrew-tap). Its hourly
-Linux job only checks the latest stable release metadata and exits when the
-cask is current. A newer version starts the Apple Silicon macOS 26 validation
-job; routine polling does not consume a macOS runner.
+[`kenn-io/homebrew-tap`](https://github.com/kenn-io/homebrew-tap) polls stable
+release metadata hourly on Linux and triggers Apple Silicon macOS 26 validation
+only when a newer version appears. Before proposing a cask PR, the exact DMG
+must pass:
 
-Before the tap can propose a cask update, the exact versioned DMG must pass all
-of these gates:
+- SHA-256 match against the GitHub release API digest;
+- `stapler` ticket validation and Gatekeeper `Notarized Developer ID` on both
+  the DMG and mounted `Ghosthub.app`;
+- strict deep signature check, bundle ID `com.ghosthub`, and Team ID
+  `2YMZH84KR8`;
+- Homebrew style, strict online audit, livecheck, install, installed-app check,
+  and uninstall.
 
-- its computed SHA-256 matches the digest reported by GitHub's release API;
-- `stapler` validates the ticket attached to the DMG;
-- Gatekeeper accepts the DMG as `Notarized Developer ID`;
-- the mounted `Ghosthub.app` passes deep, strict code-signature verification;
-- Gatekeeper accepts the app as `Notarized Developer ID`;
-- the app has bundle identifier `com.ghosthub` and Developer ID Team Identifier
-  `2YMZH84KR8`; and
-- Homebrew style, strict online audit, livecheck, install, installed-app
-  verification, and uninstall all succeed against the same checksum-pinned
-  artifact.
-
-Any failure leaves the existing cask untouched and creates no pull request.
-Successful update pull requests use the tap repository's workflow-scoped
-`GITHUB_TOKEN`. GitHub does not automatically execute ordinary `pull_request`
-workflows for pull requests created by that token; depending on repository
-settings, the corresponding runs may instead appear waiting for maintainer
-approval. The successful pre-PR macOS validation is therefore the authoritative
-test evidence, and tap branch protection must not require an automatically
-started pull-request check for these automation PRs. This boundary deliberately
-avoids a personal access token, separate GitHub App, or credential in Ghosthub's
-release environment.
+Any failure leaves the existing cask untouched. Update PRs use the tap's
+`GITHUB_TOKEN`, so pre-PR macOS validation is the authoritative check (tap
+branch protection must not require an auto-triggered `pull_request` check on
+those bot PRs).
 
 ## Nightly channel
 
-The nightly channel is an opt-in production build of `main` for early exposure
-to regressions between stable releases. It deliberately keeps the stable
-`com.ghosthub` bundle identifier and app-owned state, so installing Ghosthub
-Nightly replaces a stable installation at the same application path. Its
-`Ghosthub Nightly` display name, About version, feed URL, and Sparkle public key
-are selected at build time. Nightlies are published as releases in the separate
-public `kenn-io/ghosthub-nightly` distribution repository. The canonical
-`kenn-io/ghosthub` repository receives no nightly tag or release, and the
-channel is not linked from ghosthub.ai or consumed by Homebrew.
+Nightlies are opt-in production builds of `main` published to the separate
+public `kenn-io/ghosthub-nightly` repo (never linked from ghosthub.ai or
+Homebrew). They share `com.ghosthub` and `~/.ghosthub/` state (replacing a
+stable install at the same path) while using display name **Ghosthub Nightly**,
+their own feed URL, and their own Sparkle Ed25519 key. Sparkle nightly dialogs
+format the build date and numeric build number (`CFBundleShortVersionString`
+stays `RELEASE_VERSION`; `CFBundleVersion` stays the commit count). Update
+relaunch window-frame capture runs in the outgoing app (so the first update
+from a pre-capture build cannot restore frames).
 
-Sparkle's nightly update dialogs display the build date and numeric build
-number, including when multiple builds share the same release version or date.
-This is display formatting only: `CFBundleShortVersionString` still comes from
-`RELEASE_VERSION`, and `CFBundleVersion` remains the commit-count build number.
-Manual checks refresh queued offers against the current signed, single-release
-feed before replacing them. An unavailable or incompatible newer release leaves
-the existing offer available.
-
-Update relaunches capture ordinary window frames with their session descriptors.
-This capture must run in the app being replaced, so the first update from a
-build predating frame capture cannot provide those frames. macOS retains
-ownership of native Spaces, full-screen restoration, and tab groups.
-
-`.github/workflows/nightly.yml` is scheduled for 08:00 UTC. It exits before
-allocating a macOS runner when the current `main` source revision is already the completed
-channel revision. A manual `workflow_dispatch` with `force: true` rebuilds that
-same source for recovery. Every attempt receives a unique release tag and
-immutable asset URL:
+`.github/workflows/nightly.yml` runs at 08:00 UTC and exits early without a
+macOS runner when `main` already matches the latest published commit (dispatch
+with `force: true` to rebuild the same commit for recovery). Every attempt gets
+a unique tag and immutable asset URL:
 
 ```text
 nightly-<build>-<run>-<attempt>
 https://github.com/kenn-io/ghosthub-nightly/releases/download/<tag>/<dmg>
 ```
 
-Nightly notes retain commit hashes beside their subjects, separated by a
-regular space. Tabs can collapse against the hash in Sparkle's Markdown view.
+Nightly notes separate commit hashes from subjects with a regular space so
+Sparkle's Markdown renderer does not collapse tabs.
 
 ### Check a missing nightly
-
-Check the latest published release and the most recent workflow runs once:
 
 ```sh
 gh release view --repo kenn-io/ghosthub-nightly
 gh run list --repo kenn-io/ghosthub --workflow nightly.yml --limit 5
 ```
 
-Compare the release's source commit with `main`. A successful older run means
-that source was published; it does not show whether a newer scheduled run
-started. If no new run exists, check that the workflow is active. If a run
-failed, inspect that run's failed job before changing the publishing path.
-Check `channel.json` and `appcast.xml` under the latest release to confirm what
-installed nightly clients are offered. Older clients may display the shared
-release version even when the nightly build number has increased.
+Compare the release's source commit with `main`. Inspect any failed job and
+check `channel.json` and `appcast.xml` under the latest release. To trigger a
+fresh nightly, dispatch `nightly.yml` from `main` with `force: false` (use
+`force: true` only to rebuild the same source). Never alter stable tags or
+feeds to fix nightly.
 
-When a fresh nightly is explicitly requested, dispatch the workflow from
-`main` with the default `force: false`. Use `force: true` only to rebuild the
-same published source for recovery. Do not change stable release tags or
-feeds to repair the nightly channel.
+### Publication, retention, and secrets
 
-### Publication and retention
+Publication verifies artifacts, appcast, and checksums, creates a draft with
+the immutable DMG, its checksum, `SHA256SUMS`, `appcast.xml`, `channel.json`,
+and `Ghosthub_Nightly_latest_macos_arm64.dmg`, revalidates the manifest, runs
+retention (keeping all attempts of the current build plus the 29 highest prior
+builds, ignoring drafts/prereleases/non-nightly tags), and publishes as latest
+in one atomic transition (deleting the draft/tag on earlier failure).
+Eligibility validates both manifest and appcast (treating broken feeds as
+repairable) and fingerprints the prior manifest; publication rejects lower
+builds, conflicting commits, or fingerprint drift so out-of-order retries
+cannot roll the channel back.
 
-The attempt component is mandatory even for a same-day retry: damaged bytes are
-never replaced at an existing immutable URL. Publication first verifies the
-downloaded workflow artifact, appcast, and checksums. It then creates a draft
-release containing the immutable DMG, its checksum, `SHA256SUMS`, `appcast.xml`,
-`channel.json`, and a copy named
-`Ghosthub_Nightly_latest_macos_arm64.dmg`. Only after every asset is uploaded,
-the authoritative manifest is revalidated, and retention succeeds does the
-workflow publish the draft and mark it latest in one release transition. Thus
-the `/releases/latest/download/...` feed, manifest, and bootstrap URLs switch
-together. A failure before that transition deletes the candidate draft and tag
-and leaves the preceding latest release authoritative.
-
-The manifest records the source revision, monotonically increasing commit-count
-build number, workflow run and candidate attempt, timestamp, immutable DMG URL,
-and SHA-256. A publish-only job retry reuses that candidate attempt's verified
-artifact and tag instead of substituting the retry's newer workflow-attempt
-number. Eligibility validates both the manifest and appcast; a missing,
-malformed, signature-incomplete, or mismatched appcast is repairable even when
-the source revision has not changed. It fingerprints the prior manifest, and
-publication reads that manifest again before creating and before publishing the
-draft. It rejects a lower build, a conflicting source revision, or state that
-differs from the eligibility fingerprint. These fences make a delayed retry
-fail rather than rolling the completed channel back; workflow concurrency
-prevents normal publication overlap.
-
-Create a `nightly-signing` GitHub Actions environment with no required
-reviewers and deployment branches restricted to `main`. Store these values as
-environment secrets, never repository secrets:
+Configure the `nightly-signing` environment (`main`-only, no required
+reviewers) with environment secrets only:
 
 | Secret | Value |
 | --- | --- |
@@ -580,50 +332,30 @@ environment secrets, never repository secrets:
 | `NIGHTLY_SPARKLE_ED_PRIVATE_KEY` | Nightly-only Sparkle Ed25519 private seed |
 | `NIGHTLY_RELEASE_APP_PRIVATE_KEY` | Private key for the `kenn-dist-update-bot` GitHub App |
 
-Configure these non-secret environment variables:
+Non-secret environment variables:
 
 | Variable | Value |
 | --- | --- |
 | `NIGHTLY_SPARKLE_PUBLIC_ED_KEY` | Public key matching the nightly private seed |
 | `NIGHTLY_RELEASE_APP_CLIENT_ID` | Client ID for the `kenn-dist-update-bot` GitHub App |
 
-Keep the nightly Sparkle key, Apple credentials, and GitHub App private key in
-the shared Kenn Software LLC 1Password vault. Install `kenn-dist-update-bot` on
-`kenn-io/ghosthub-nightly`. The workflow exchanges its private key for a
-short-lived installation token restricted to that repository and requests only
-Contents write permission; no personal access token is supported or required.
-GitHub Actions remains disabled in the distribution repository because all
-building, signing, notarization, and publication logic lives in
-`ghosthub/.github/workflows/nightly.yml`.
+`kenn-dist-update-bot` is installed only on `kenn-io/ghosthub-nightly` (where
+GitHub Actions stays disabled) and mints short-lived `contents: write` tokens
+that cannot modify `kenn-io/ghosthub`. Because both channels share Kenn
+Software's Apple Developer ID, this publication boundary is what isolates
+stable users from unattended nightly credentials, with separate Sparkle keys as
+defense in depth.
 
-Cleanup retains every release attempt for the current build and the 29 highest
-lower numeric builds. It ignores drafts, prereleases, and tags that do not
-match the nightly tag format rather than deleting them. The release description
-and repository README should continue to identify the repository as an
-automated artifact host, not a source or support repository.
+### Enrolling in and leaving nightly
 
-Stable and nightly have distinct Sparkle keys, but they share the Apple
-Developer ID identity that Sparkle can use for key rotation. The separate
-nightly key is therefore defense in depth. Stable-feed routing and publication
-authority are the hard operational boundary: nightly credentials can write
-only releases in `kenn-io/ghosthub-nightly` and cannot change the canonical
-repository's stable release or appcast. The approval-gated `release-signing`
-environment remains the only automated path authorized to publish stable
-updates.
+Before enrolling, quit Ghosthub and back up shared state:
 
-To enroll, quit Ghosthub and back up all state shared by the two channels:
+- `~/.ghosthub/` (or resolved state dir);
+- `~/.config/ghosthub/` (or target selected by `init.toml` / env overrides);
+- `defaults export com.ghosthub Ghosthub-preferences.plist`.
 
-- the resolved application-state directory (`~/.ghosthub/` by default);
-- the resolved configuration directory (`~/.config/ghosthub/` by default,
-  including any target selected by `init.toml` or an environment override); and
-- the `com.ghosthub` preferences domain, exported with
-  `defaults export com.ghosthub Ghosthub-preferences.plist`.
-
-The latest-DMG URL is a mutable GitHub release convenience pointer that is not
-trusted to authorize code. The first install does not pass through Sparkle, so
-verify the DMG and mounted app's Apple Team Identifier before copying it.
-Checking the DMG before mounting also rejects an otherwise valid image
-notarized by another Developer ID:
+Because manual enrollment bypasses Sparkle, verify Gatekeeper acceptance and
+pin Team ID `2YMZH84KR8` on both the DMG (before mounting) and the app:
 
 ```bash
 bash <<'SCRIPT'
@@ -669,24 +401,17 @@ read -r -p 'After copying Ghosthub.app to Applications, press Return to unmount:
 SCRIPT
 ```
 
-Confirm **Ghosthub Nightly** and the expected date and source revision in About
-before relying on it. To leave the channel, quit the app and reinstall the
-latest stable DMG from ghosthub.ai. Restore the state and configuration
-directories and import the preferences with
-`defaults import com.ghosthub Ghosthub-preferences.plist` only if the nightly
-changed shared state incompatibly; the release process does not add a downgrade
-compatibility layer. Loss of the nightly Sparkle key requires a manual
-reinstall. Compromise of that key or of the nightly release credential is a
-nightly release incident; compromise of the shared Apple signing identity is
-an incident for both channels.
+Confirm **Ghosthub Nightly**, date, and revision in About. To leave nightly,
+quit Ghosthub and reinstall the latest stable DMG from ghosthub.ai (restore
+backed-up state and `defaults import com.ghosthub Ghosthub-preferences.plist`
+only if state changed incompatibly). Compromise of the nightly Sparkle key or
+bot key is a nightly incident; compromise of the shared Apple identity affects
+both channels.
 
 ## Local packaging
 
-Both debug and release app bundles require the local kwt binary and complete
-remote variant matrix that will be embedded.
-With the default `.build/kwt/kwt`, the app packaging targets verify and build
-the exact `KWT_REVISION` automatically. Set `KWT_BINARY_PATH` to an existing
-executable only when deliberately packaging a separately prepared build:
+Debug and release bundles automatically build the pinned local kwt binary and
+six-target remote matrix. Override locally only when testing a separate build:
 
 ```bash
 make release-app \
@@ -695,27 +420,14 @@ make release-app \
   KWT_SOURCE_REVISION=local
 ```
 
-`KWT_BINARY_PATH` changes only the local helper. Remote variants remain pinned
-to `KWT_REF`; use `KWT_VARIANTS_DIR` only when deliberately supplying a
-complete six-target matrix. An explicit variants directory is treated as
-prebuilt input: packaging verifies all six binary formats, target
-architectures, and embedded `KWT_REF`, and never rebuilds or modifies that
-directory. The default variants directory continues to be built from the
-pinned kwt source. Installation additionally runs the uploaded helper and
-requires its first `version` line to report that exact revision before the
-helper is promoted into the revisioned remote path.
+`KWT_BINARY_PATH` overrides only the local helper; set `KWT_VARIANTS_DIR` only
+to supply a prebuilt six-target matrix (validated for format, architecture, and
+`KWT_REF`, never modified). Local stable builds embed `git describe` in
+`GhosthubDevelopmentVersion` so About and telemetry report `X.Y.Z-N-gHASH`
+(only release CI sets `OFFICIAL_RELEASE=1`). `tools/build_release_dmg.sh`
+forwards kwt overrides only when nonempty.
 
-Local stable bundles record their git description in
-`GhosthubDevelopmentVersion`, so the About panel and anonymous usage telemetry
-report a development version such as `X.Y.Z-N-gHASH` instead of the
-`RELEASE_VERSION` value. Only the release workflow sets `OFFICIAL_RELEASE=1`,
-which leaves that key out; do not set it for local builds.
-
-`tools/build_release_dmg.sh` passes kwt overrides to the Makefile only when
-they are nonempty. A clean release therefore retains these pinned defaults
-instead of overriding `KWT_BINARY_PATH` with an empty value.
-
-Unsigned DMG:
+Unsigned local DMG:
 
 ```bash
 make release-dmg \
@@ -733,8 +445,8 @@ KWT_BINARY_PATH=/absolute/path/to/kwt \
 make release-dmg
 ```
 
-After the DMG is notarized, generate a local signed appcast with an exported
-working copy of the Sparkle key supplied through the environment:
+Local signed appcast (load the private seed from 1Password in real operations,
+never from shell history):
 
 ```bash
 SPARKLE_PUBLIC_ED_KEY='<reviewed public key>' \
@@ -742,32 +454,15 @@ SPARKLE_ED_PRIVATE_KEY='<temporary private seed>' \
 make release-appcast
 ```
 
-Do not place the private seed directly in shell history in real operations;
-load it from the protected 1Password export as described by the operations
-runbook.
+Outputs land in `dist/release/`. `tools/build_release_dmg.sh` signs from the
+inside out (Sparkle nested helpers/framework, local kwt and Darwin remote kwt
+variants, then the app with `Resources/Ghosthub.entitlements` kept in sync with
+`Info.plist`); never replace this with `codesign --deep`. SwiftPM staging
+copies only `GRDB_GRDB.bundle` (including its privacy manifest) into
+`Contents/Resources` and never puts symlinks at the `.app` root. `make
+debug-app` adds the library-validation exception only to its temporary ad-hoc
+signature so macOS loads Sparkle without a Team ID; Developer ID signatures
+always retain library validation.
 
-Outputs live in `dist/release/`. `tools/build_release_dmg.sh` signs Sparkle's
-nested executables and services from the inside out, then the local kwt helper
-and Darwin remote kwt resources, then the containing app. The app signature
-uses `Resources/Ghosthub.entitlements` so terminal child processes can trigger
-the protected-resource consent described by the app's privacy purpose strings;
-keep that file aligned with the generated `Info.plist`. Do not replace the
-release signing order with recursive `codesign --deep` signing. Mach-O helpers
-require their own Developer ID signatures even when staged as non-executable
-resources; the Linux ELF variants do not. Sparkle remains under
-`Contents/Frameworks`. SwiftPM resource staging copies only the required
-`GRDB_GRDB.bundle` into `Contents/Resources`, including its privacy manifest.
-It ignores unrelated bundles left in cached build output. Placing compatibility
-symlinks at the `.app` root creates unsealed content that strict code-signing
-rejects. Ghosthub's Apache-2.0 license and every third-party notice in `LICENSES`
-are staged during the same assembly step.
-
-`make debug-app` keeps the hardened runtime but adds the library-validation
-exception only to its temporary ad-hoc signature. Ad-hoc signatures have no
-Team ID, so macOS otherwise rejects the bundled Sparkle framework before the
-debug executable reaches `main`. Developer ID release and nightly signatures
-do not receive this exception: their app and nested framework signatures share
-the release Team ID and retain library validation.
-
-Update this document whenever release packaging, signing, notarization, the
+Update this playbook whenever release packaging, signing, notarization, the
 embedded kwt policy, or `.github/workflows/release.yml` changes.
