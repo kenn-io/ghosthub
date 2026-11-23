@@ -26,6 +26,8 @@ private final class RebootingHost: Sendable {
     /// kwt also lists an older saved copy of the session, from before an
     /// earlier server loss.
     let olderCopy = LockedValue(false)
+    /// kwt also lists a saved copy of another session, `web`.
+    let otherSession = LockedValue(false)
     /// When set, a restore creates the session, then waits for this before
     /// it reports, as kwt does while panes start their programs.
     let restoreGate: DispatchSemaphore?
@@ -92,6 +94,11 @@ private final class RebootingHost: Sendable {
                     if hasSavedCopy.load() {
                         entries
                             .append(#"{"id": "a1", "session": "api", "saved_at": 2, "# + socket +
+                                "}")
+                    }
+                    if otherSession.load() {
+                        entries
+                            .append(#"{"id": "b1", "session": "web", "saved_at": 2, "# + socket +
                                 "}")
                     }
                     return (0, marker + #"{"entries": ["# + entries.joined(separator: ", ") + "]}")
@@ -286,18 +293,50 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
-    @Test("a restored session that ends before the window attaches offers Reopen")
+    @Test("a restored session that ends before the window attaches waits for Retry Restore")
     func restoredSessionEndsBeforeAttach() async throws {
         let host = RebootingHost(restoredSessionExits: true)
+        // An older copy stays listed after the restore.
+        host.olderCopy.withLock { $0 = true }
         let (model, _) = try await windowOnRebootedHost(host)
 
-        await waitUntilMainActor { !host.restores.isEmpty }
         await waitUntilMainActor {
-            model.activeBorrowedTmuxSessionIsConfirmedEnded
-                && model.activeBorrowedTmuxSavedRestore == nil
+            if case .failed = model.activeBorrowedTmuxSavedRestore {
+                return true
+            }
+            return false
         }
+        model.refreshKwtInventory()
         try await Task.sleep(for: .milliseconds(300))
         #expect(host.restores.count == 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "after a failed saved-copy check, restoring another session does not restore from the cache"
+    )
+    func failedListingKeepsCachedCopyUnused() async throws {
+        let host = RebootingHost(restoreOutcome: "failed")
+        host.olderCopy.withLock { $0 = true }
+        host.otherSession.withLock { $0 = true }
+        let (model, store, handle) = try await windowOn(host)
+        await waitUntilMainActor { model.snapshot.hosts[0].savedTmuxSessions.count == 2 }
+        host.listingFails.withLock { $0 = true }
+        host.reboot()
+        store.surface.closeObservers[handle.id]?(false, 1)
+        model.refreshTmuxSessionDiscovery()
+        await waitUntilMainActor {
+            if case .failed = model.activeBorrowedTmuxSavedRestore {
+                return true
+            }
+            return false
+        }
+
+        _ = try await model.restoreSavedTmuxSessions(["b1"], hostID: model.snapshot.hosts[0].id)
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(host.restores.map { $0.hasSuffix("'b1'") } == [true])
         await model.shutdown()
     }
 

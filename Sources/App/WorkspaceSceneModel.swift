@@ -6472,8 +6472,10 @@ final class WorkspaceSceneModel: ObservableObject {
             } else if savedTmuxWindowRestores[handle.id] == .restoring,
                       savedTmuxWindowRestoreTasks[handle.id] == nil {
                 // kwt restored the session, but it ended before this window
-                // attached. The window offers Reopen; it does not restore again.
-                savedTmuxWindowRestores[handle.id] = nil
+                // attached. Another restore waits for Retry Restore.
+                savedTmuxWindowRestores[handle.id] = .failed(
+                    "The restored session ended before Ghosthub could attach."
+                )
             }
         }
         if newlyEnded {
@@ -12212,7 +12214,11 @@ final class WorkspaceSceneModel: ObservableObject {
         // that sees the session end could restore kwt's saved copy before
         // kwt forgets it.
         let restores = savedTmuxSessionRestores
-        restores.fence(session: tmuxSelection.name, hostID: tmuxSelection.hostID)
+        restores.fence(
+            session: tmuxSelection.name,
+            socketName: tmuxSelection.socketName,
+            hostID: tmuxSelection.hostID
+        )
         do {
             try await tmuxSessionKiller(
                 tmuxSelection,
@@ -12225,7 +12231,11 @@ final class WorkspaceSceneModel: ObservableObject {
                 confirmedHost
             )
         } catch {
-            restores.lift(session: tmuxSelection.name, hostID: tmuxSelection.hostID)
+            restores.lift(
+                session: tmuxSelection.name,
+                socketName: tmuxSelection.socketName,
+                hostID: tmuxSelection.hostID
+            )
             throw error
         }
         forgetSavedTmuxSession(request, on: confirmedHost)
@@ -16630,8 +16640,11 @@ extension WorkspaceSceneModel {
             refreshSavedTmuxSessions(hostID: hostID)
         }
         // A listing in flight can hold a newer copy than the cached one, as
-        // after a reboot; its result runs this again.
-        guard savedTmuxSessionDiscoveryTasks[hostID] == nil else { return }
+        // after a reboot; its result runs this again. After a failed listing
+        // the cache may be stale, so only Retry Restore goes on.
+        guard savedTmuxSessionDiscoveryTasks[hostID] == nil,
+              savedTmuxSessionListingFailures[hostID] == nil
+        else { return }
         let saved = savedTmuxSessionsByHost[hostID] ?? []
         for presentation in retainedTmuxPresentations.values {
             let handleID = presentation.handle.id
@@ -16644,7 +16657,9 @@ extension WorkspaceSceneModel {
                 continue
             }
             guard let copy = Self.savedCopy(of: presentation.selection, in: saved),
-                  !savedTmuxSessionRestores.isFenced(session: copy.session, hostID: hostID)
+                  !savedTmuxSessionRestores.isFenced(
+                      session: copy.session, socketName: nil, hostID: hostID
+                  )
             else {
                 savedTmuxWindowRestores[handleID] = nil
                 continue
@@ -16778,12 +16793,13 @@ extension WorkspaceSceneModel {
     ) {
         let hostID = request.session.hostID
         let session = request.session.name
+        let socket = request.session.socketName
         let restores = savedTmuxSessionRestores
         guard Self.keepsSavedTmuxSessions(host) else {
-            restores.lift(session: session, hostID: hostID)
+            restores.lift(session: session, socketName: socket, hostID: hostID)
             return
         }
-        let socketName = request.session.socketName ?? "default"
+        let socketName = socket ?? "default"
         let identity = TmuxSessionIdentity(
             serverPID: request.serverPID,
             sessionID: request.sessionID,
@@ -16798,7 +16814,7 @@ extension WorkspaceSceneModel {
                 identity: identity,
                 on: host
             )) != nil {
-                restores.lift(session: session, hostID: hostID)
+                restores.lift(session: session, socketName: socket, hostID: hostID)
             }
             self?.refreshSavedTmuxSessions(hostID: hostID)
         }

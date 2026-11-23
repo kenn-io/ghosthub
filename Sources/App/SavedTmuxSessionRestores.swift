@@ -17,6 +17,8 @@ final class SavedTmuxSessionRestores {
     private struct Fence: Hashable {
         var hostID: UUID
         var session: String
+        /// nil for the default tmux server.
+        var socketName: String?
     }
 
     private var active: [Key: Task<TmuxRestoreReport, Error>] = [:]
@@ -71,17 +73,17 @@ final class SavedTmuxSessionRestores {
 
     /// Keeps windows from restoring a session someone chose to kill, from
     /// before the kill until kwt has forgotten its saved copy.
-    func fence(session: String, hostID: UUID) {
-        fenced[Fence(hostID: hostID, session: session), default: 0] += 1
+    func fence(session: String, socketName: String?, hostID: UUID) {
+        fenced[Fence(hostID: hostID, session: session, socketName: socketName), default: 0] += 1
     }
 
-    func lift(session: String, hostID: UUID) {
-        let key = Fence(hostID: hostID, session: session)
+    func lift(session: String, socketName: String?, hostID: UUID) {
+        let key = Fence(hostID: hostID, session: session, socketName: socketName)
         guard let count = fenced[key] else { return }
         fenced[key] = count > 1 ? count - 1 : nil
     }
 
-    func isFenced(session: String, hostID: UUID) -> Bool {
-        fenced[Fence(hostID: hostID, session: session)] != nil
+    func isFenced(session: String, socketName: String?, hostID: UUID) -> Bool {
+        fenced[Fence(hostID: hostID, session: session, socketName: socketName)] != nil
     }
 }

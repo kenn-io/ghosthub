@@ -511,19 +511,22 @@ become restorable:
   the restore finishes first. A window that notices its client closed only
   after the session came back attaches too, because discovery no longer lists
   its own session. A restored session that ends before the window attaches
-  leaves **Reopen**; the window does not restore it again on its own. A failed
-  restore shows kwt's reason with **Retry Restore** in every waiting window and
-  is not retried on its own. While the listing runs, the window shows **Looking
-  for a saved copy…**; a listing that fails shows its error with **Retry
-  Restore**. **Reopen**, which creates an empty session, appears only after a
-  listing finds no saved copy or the restored session has ended.
+  shows that with **Retry Restore**; the window does not restore it again on
+  its own. A failed restore shows kwt's reason with **Retry Restore** in every
+  waiting window and is not retried on its own. While the listing runs, the
+  window shows **Looking for a saved copy…**; a listing that fails shows its
+  error with **Retry Restore**, and no window on that host restores from older
+  cached copies until a listing succeeds. **Reopen**, which creates an empty
+  session, appears only after a listing finds no saved copy.
 - A confirmed Kill Session keeps every window from restoring that session from
   before the kill until kwt has forgotten its saved copy. Ghosthub runs
   `forget` in the background using the socket name (since killing the last
   session stops the server) so intentionally killed sessions are not offered
-  for restore. Each kill holds its own block, so a duplicate kill that fails
-  does not lift another's. If `forget` fails, the block stays until Ghosthub
-  quits and the saved copy stays listed for the person to dismiss.
+  for restore. The block covers the killed session's own tmux server, so a
+  same-named session on another server can still be restored. Each kill holds
+  its own block, so a duplicate kill that fails does not lift another's. If
+  `forget` fails, the block stays until Ghosthub quits and the saved copy stays
+  listed for the person to dismiss.
 - Pull-request imports remain the one alternate-socket case: `kwt pr attach`
   validates provenance and creates or repairs the inert protected session on
   each attach and SSH reconnect via the managed kwt path (never falling back to
