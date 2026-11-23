@@ -9,21 +9,18 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
-        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
-        - 'astral-sh/setup-uv@v10.3.2'
+        - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
     '.github/workflows/docs.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
-        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
-        - 'astral-sh/setup-uv@v10.3.2'
+        - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
         - 'kenn-io/actions@33ced853fa88b70eb178ecd40ec74ef64420479d'
     '.github/workflows/macos-compatibility.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
-        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
-        - 'astral-sh/setup-uv@v10.3.2'
+        - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
     '.github/workflows/nightly.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
@@ -35,8 +32,7 @@ workflows:
         - 'actions/setup-go@v7.0.0'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
-        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
-        - 'astral-sh/setup-uv@v10.3.2'
+        - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
     '.github/workflows/release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
@@ -46,16 +42,14 @@ workflows:
         - 'actions/setup-go@v7.0.0'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         - 'actions/upload-artifact@v7.0.2'
-        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
-        - 'astral-sh/setup-uv@v10.3.2'
+        - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
     '.github/workflows/rust-port.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
         - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
-        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
-        - 'astral-sh/setup-uv@v10.3.2'
+        - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
         - 'kenn-io/actions@6a8b4227ec7ce3c28c6b042b735781b1601211f4'
         - 'step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e'
         - 'step-security/rust-cache@v2.9.2'
@@ -64,8 +58,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         - 'actions/setup-go@v7.0.0'
-        - 'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
-        - 'astral-sh/setup-uv@v10.3.2'
+        - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
         - 'step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e'
         - 'step-security/rust-cache@v2.9.2'
     '.github/workflows/website.yml':
@@ -140,14 +133,9 @@ dependencies:
         commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
         owner_id: 44036562
         repo_id: 192625955
-    'astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e':
-        ref: 'v10.3.2'
-        commit: 'sha1-07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
-        owner_id: 115962839
-        repo_id: 846733598
-    'astral-sh/setup-uv@v10.3.2':
-        ref: 'v10.3.2'
-        commit: 'sha1-07a047e608db84b3d8c06cd9a7c7dcc9c355c18e'
+    'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2':
+        ref: 'v10.3.3'
+        commit: 'sha1-68559e99cc807c1eb7e9238fd43a15bba460eec2'
         owner_id: 115962839
         repo_id: 846733598
     'kenn-io/actions@33ced853fa88b70eb178ecd40ec74ef64420479d':
