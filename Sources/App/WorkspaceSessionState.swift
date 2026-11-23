@@ -88,6 +88,15 @@ struct WorkspaceInventoryRefreshProgress: Equatable {
     var zellijCompleted = false
 }
 
+/// A window bringing back its tmux session from kwt's saved copy after the
+/// session's server stopped, as when its host rebooted.
+enum SavedTmuxWindowRestore: Equatable {
+    /// kwt is listing the host's saved sessions.
+    case checking
+    case restoring
+    case failed(String)
+}
+
 enum NativeSessionRecoveryState: Equatable {
     case reconnecting(message: String)
     case needsAttention(message: String, canReviewConnection: Bool)

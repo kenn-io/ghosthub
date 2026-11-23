@@ -499,6 +499,16 @@ become restorable:
   window while kwt rebuilds it, provisions remote kwt if needed, attaches if
   the user did not navigate away, and alerts only for failed entries or pane
   notes.
+- A window whose plain tmux session ends, whether its client exits 255 and the
+  reconnect probe finds the session gone or discovery confirms it, starts a
+  fresh `snapshot` listing for that host. When kwt lists a saved copy of that
+  session (same name, default socket, newest first, name not taken), the window
+  shows **Restoring…**, restores it through the same shared restore path, and
+  reattaches. A window that finds another window already restoring it attaches
+  when discovery lists the session again. A failed restore shows kwt's reason
+  with **Retry Restore** and is not retried on its own. While the listing runs,
+  the window shows **Looking for a saved copy…** so **Reopen**, which creates an
+  empty session, appears only when no saved copy exists.
 - After a confirmed Kill Session, Ghosthub runs `forget` in the background
   using the socket name (since killing the last session stops the server) so
   intentionally killed sessions are not offered for restore.
