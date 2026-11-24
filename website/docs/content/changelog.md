@@ -47,6 +47,9 @@ docs-only changes are left out.
 - Ghosthub keyboard shortcuts now fire once instead of also passing through to
   the terminal, which could cause **Split Down** (`Cmd-Shift-D`) or **Split
   Right** (`Cmd-D`) to split a tmux pane twice.
+- The local Mac's sidebar row now uses your Mac's Sharing name instead of
+  looking up local hostnames through `/etc/hosts`, so loopback aliases for
+  port-forwarded VMs no longer rename it.
 
 ## [0.13.1] - 2026-11-10
 

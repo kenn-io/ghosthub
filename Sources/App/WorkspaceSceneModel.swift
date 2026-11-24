@@ -1858,7 +1858,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 HostSummary(
                     id: resolvedLocalHostID,
                     configKey: "local",
-                    name: ProcessInfo.processInfo.hostName,
+                    name: LocalHostName.current(),
                     kind: .selfHost,
                     platform: .macOS,
                     preferredTransport: .local,
