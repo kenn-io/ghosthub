@@ -21,8 +21,8 @@ struct AddProjectSheet: View {
             : projectPath
     }
 
-    private var isAbsolutePath: Bool {
-        normalizedPath.hasPrefix("/")
+    private var isValidProjectPath: Bool {
+        ProjectPath.isValidUserInput(normalizedPath)
     }
 
     var body: some View {
@@ -47,16 +47,16 @@ struct AddProjectSheet: View {
                 Text(recoveringProject.map {
                     "The folder for \($0.name) is unavailable at \($0.rootPath). Enter the new location of its main checkout."
                 } ?? (
-                    "Enter the absolute path of an existing Git checkout."
-                        + " Ghosthub delegates registration to kwt and does"
-                        + " not scan the host."
+                    "Enter the path of an existing Git checkout (starting with"
+                        + " / or ~). Ghosthub delegates registration to kwt and"
+                        + " does not scan the host."
                 ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
                 TextField(
-                    "/absolute/path/to/repository",
+                    "/path/to/repository or ~/repository",
                     text: $projectPath
                 )
                 .textFieldStyle(.roundedBorder)
@@ -84,8 +84,8 @@ struct AddProjectSheet: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
-                } else if !normalizedPath.isEmpty, !isAbsolutePath {
-                    Text("Enter an absolute path beginning with /.")
+                } else if !normalizedPath.isEmpty, !isValidProjectPath {
+                    Text("Enter a path beginning with / or ~.")
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
@@ -105,7 +105,7 @@ struct AddProjectSheet: View {
                         addProject()
                     }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isAdding || !isAbsolutePath)
+                    .disabled(isAdding || !isValidProjectPath)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -118,7 +118,7 @@ struct AddProjectSheet: View {
     }
 
     private func addProject() {
-        guard isAbsolutePath, !isAdding else { return }
+        guard isValidProjectPath, !isAdding else { return }
         errorMessage = nil
         isAdding = true
         Task {

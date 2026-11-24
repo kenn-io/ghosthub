@@ -19,7 +19,7 @@ Start with an existing Git checkout on the host where the code lives.
 
 1. Expand your Mac or a remote macOS or Linux host in the sidebar.
 2. Click the **+** beside **Projects**.
-3. Enter the checkout's full path on that host.
+3. Enter the checkout's path on that host (starting with `/` or `~`).
 4. Confirm.
 
 Ghosthub registers that single path with kwt and refreshes the sidebar. It never

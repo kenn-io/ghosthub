@@ -715,7 +715,7 @@ public struct HostsSettingsView: View {
 
                                     HStack(spacing: 8) {
                                         TextField(
-                                            "/absolute/path/to/repository",
+                                            "/path/to/repository or ~/repository",
                                             text: $remoteProjectPath
                                         )
                                         .textFieldStyle(.roundedBorder)
@@ -731,13 +731,13 @@ public struct HostsSettingsView: View {
                                         }
                                         .disabled(
                                             isHostActionInProgress
-                                                || !isRemoteProjectPathAbsolute
+                                                || !isRemoteProjectPathValid
                                         )
                                     }
 
                                     if !normalizedRemoteProjectPath.isEmpty,
-                                       !isRemoteProjectPathAbsolute {
-                                        Text("Enter an absolute path beginning with /.")
+                                       !isRemoteProjectPathValid {
+                                        Text("Enter a path beginning with / or ~.")
                                             .font(.system(size: 12))
                                             .foregroundStyle(.red)
                                     }
@@ -1238,8 +1238,8 @@ public struct HostsSettingsView: View {
         )
     }
 
-    private var isRemoteProjectPathAbsolute: Bool {
-        normalizedRemoteProjectPath.hasPrefix("/")
+    private var isRemoteProjectPathValid: Bool {
+        ProjectPath.isValidUserInput(normalizedRemoteProjectPath)
     }
 
     private func installKwt(on draft: SSHHostDraft) async {
@@ -1295,7 +1295,7 @@ public struct HostsSettingsView: View {
 
     private func addRemoteProject(on draft: SSHHostDraft) async {
         let target = HostOperationTarget(draft)
-        guard isRemoteProjectPathAbsolute else { return }
+        guard isRemoteProjectPathValid else { return }
         let path = normalizedRemoteProjectPath
 
         hostProbeErrorMessage = nil
