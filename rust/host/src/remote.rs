@@ -15,18 +15,13 @@ use session::{
 use crate::{
     AttachTerm, CancellationToken, CommandPrefix, CommandRunner, CreationReceipt, HerdrInventory,
     HostError, KwtSshExecutable, KwtSshLeaseClient, KwtSshResolver, SshLease, SshLeaseEvent,
-    SshLeasePrompt, SshTarget, ZellijInventory, herdr, zellij,
+    SshLeasePrompt, SshTarget, ZellijInventory, herdr, local::INVENTORY_FORMAT, zellij,
 };
 
 mod kwt;
 pub use kwt::RemoteKwtTarget;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
-// Keep fixed metadata printable under `LC_ALL=C`: tmux sanitizes control
-// characters in format output to `_` in that locale. The name remains
-// length-prefixed, so it may contain the separator or any other non-NUL byte.
-const INVENTORY_FORMAT: &str =
-    "#{pid}|#{session_id}|#{session_created}|#{session_attached}|#{n:session_name}|#{session_name}";
 const TMUX_PATH_MARKER: &str = "GHOSTHUB_TMUX_PATH=";
 const TMUX_PROBE_PREFIX: &str = "GHOSTHUB_TMUX_PROBE_";
 const HERDR_PROBE_PREFIX: &str = "GHOSTHUB_HERDR_PROBE_";

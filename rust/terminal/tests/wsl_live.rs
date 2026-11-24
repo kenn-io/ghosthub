@@ -79,10 +79,10 @@ impl IsolatedServer {
         let output = self.run_tmux([
             "list-sessions",
             "-F",
-            "#{pid}\t#{session_id}\t#{session_created}",
+            "#{pid}|#{session_id}|#{session_created}",
         ]);
         let text = String::from_utf8(output.stdout).expect("UTF-8 tmux identity");
-        let fields = text.trim().split('\t').collect::<Vec<_>>();
+        let fields = text.trim().split('|').collect::<Vec<_>>();
         assert_eq!(fields.len(), 3);
         SessionIdentity::new(
             fields[0].parse().expect("server PID"),
