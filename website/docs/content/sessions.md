@@ -467,6 +467,10 @@ server stops, those saved sessions appear in the host's session list as dimmed
 
 ![Sidebar listing two saved tmux sessions as dimmed rows below the running sessions](/docs/assets/guide-session-restore.png)
 
+- A window that was showing a session when its host rebooted restores that
+  session and reattaches on its own once the host is back. It shows
+  **Restoring…** meanwhile, and if the restore fails, it shows why with
+  **Retry Restore**.
 - Click a saved row to restore that session and attach to it. The row shows
   **restoring…** while agents start, which can take a few seconds.
 - To restore every saved session on a host at once, open the host's **+** menu

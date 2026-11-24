@@ -161,14 +161,13 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(model.snapshot.hosts[0].savedTmuxSessions.filter(\.isRestoring).map(\.id) == ["a1"])
 
         // A second click while kwt rebuilds it must not start another
-        // restore, which would tear down the half-built session.
-        let second = try await model.restoreSavedTmuxSessions(["a1"], hostID: hostID)
-        #expect(second.entries.isEmpty)
-        // The same holds for a click in another window.
-        let fromOtherWindow = try await otherWindow.restoreSavedTmuxSessions(
-            ["a1"], hostID: hostID
-        )
-        #expect(fromOtherWindow.entries.isEmpty)
+        // restore, which would tear down the half-built session; it waits
+        // for the first one and shares its outcome. The same holds for a
+        // click in another window.
+        let second = Task { try await model.restoreSavedTmuxSessions(["a1"], hostID: hostID) }
+        let fromOtherWindow = Task {
+            try await otherWindow.restoreSavedTmuxSessions(["a1"], hostID: hostID)
+        }
         // An entry kwt no longer lists is not passed to it.
         let stale = try await model.restoreSavedTmuxSessions(["gone"], hostID: hostID)
         #expect(stale.entries.isEmpty)
@@ -176,6 +175,8 @@ extension WorkspaceTmuxDiscoveryTests {
         finishRestore.signal()
         let report = try await first.value
         #expect(report.entries.map(\.outcome) == ["restored"])
+        #expect(try await second.value.entries.map(\.outcome) == ["restored"])
+        #expect(try await fromOtherWindow.value.entries.map(\.outcome) == ["restored"])
         #expect(restores().count == 1)
         #expect(restores().first?.hasSuffix("session 'restore' '--json' 'a1'") == true)
         let stillRestoring = model.snapshot.hosts[0].savedTmuxSessions.filter(\.isRestoring)

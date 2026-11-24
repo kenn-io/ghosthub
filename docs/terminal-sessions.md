@@ -506,9 +506,34 @@ become restorable:
   window while kwt rebuilds it, provisions remote kwt if needed, attaches if
   the user did not navigate away, and alerts only for failed entries or pane
   notes.
-- After a confirmed Kill Session, Ghosthub runs `forget` in the background
-  using the socket name (since killing the last session stops the server) so
-  intentionally killed sessions are not offered for restore.
+- A window whose plain tmux session ends, whether its client exits 255 and the
+  reconnect probe finds the session gone or discovery confirms it, starts a
+  fresh `snapshot` listing for that host and waits for it. When that listing
+  has a saved copy of that session (same name, default socket, newest first,
+  name not taken), the window shows **Restoring…** and restores it through the
+  same shared restore path. A window that finds another window already
+  restoring it waits for that restore and shares its outcome. An ended window
+  attaches when discovery lists its session again, under the new server PID,
+  session ID, and creation time the restored session has, whether discovery or
+  the restore finishes first. A window that notices its client closed only
+  after the session came back attaches too, because discovery no longer lists
+  its own session. A restored session that ends before the window attaches
+  shows that with **Retry Restore**; the window does not restore it again on
+  its own. A failed restore shows kwt's reason with **Retry Restore** in every
+  waiting window and is not retried on its own. While the listing runs, the
+  window shows **Looking for a saved copy…**; a listing that fails shows its
+  error with **Retry Restore**, and no window on that host restores from older
+  cached copies until a listing succeeds. **Reopen**, which creates an empty
+  session, appears only after a listing finds no saved copy.
+- A confirmed Kill Session keeps every window from restoring that session from
+  before the kill until kwt has forgotten its saved copy. Ghosthub runs
+  `forget` in the background using the socket name (since killing the last
+  session stops the server) so intentionally killed sessions are not offered
+  for restore. The block covers the killed session's own tmux server, so a
+  same-named session on another server can still be restored. Each kill holds
+  its own block, so a duplicate kill that fails does not lift another's. If
+  `forget` fails, the block stays until Ghosthub quits and the saved copy stays
+  listed for the person to dismiss.
 - Pull-request imports remain the one alternate-socket case: `kwt pr attach`
   validates provenance and creates or repairs the inert protected session on
   each attach and SSH reconnect via the managed kwt path (never falling back to

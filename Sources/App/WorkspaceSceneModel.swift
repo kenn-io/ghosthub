@@ -233,6 +233,13 @@ final class WorkspaceSceneModel: ObservableObject {
     /// Saved-session entries any window is restoring now.
     private let savedTmuxSessionRestores: SavedTmuxSessionRestores
     private var savedTmuxSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
+    /// Windows restoring their ended session from a saved copy, by handle.
+    @Published private(set) var savedTmuxWindowRestores: [UUID: SavedTmuxWindowRestore] = [:]
+    /// Why kwt could not list a host's saved sessions, until a listing
+    /// succeeds. Until then no window can tell that its session has no saved
+    /// copy.
+    @Published private var savedTmuxSessionListingFailures: [UUID: String] = [:]
+    private var savedTmuxWindowRestoreTasks: [UUID: Task<Void, Never>] = [:]
     private let kwtSessionClient: KwtSessionClient
     // Backend terminals (Herdr Core and Rex); see the extension at the end
     // of this file.
@@ -2884,6 +2891,10 @@ final class WorkspaceSceneModel: ObservableObject {
         exhaustedCreatedTmuxSessionHandles.removeAll()
         endedCreatedTmuxSessionHandles.removeAll()
         confirmedEndedTmuxSessionHandles.removeAll()
+        savedTmuxWindowRestoreTasks.values.forEach { $0.cancel() }
+        savedTmuxWindowRestoreTasks.removeAll()
+        savedTmuxWindowRestores.removeAll()
+        savedTmuxSessionListingFailures.removeAll()
         failPendingHerdrLaunchOperations { _ in true }
         invalidateZellijPresentationIntent()
         cancelZellijReconnect()
@@ -6447,6 +6458,7 @@ final class WorkspaceSceneModel: ObservableObject {
         hostID: UUID,
         kwtAvailable: Bool
     ) {
+        var newlyEnded = false
         for presentation in retainedTmuxPresentations.values {
             let selection = presentation.selection
             let handle = presentation.handle
@@ -6465,10 +6477,35 @@ final class WorkspaceSceneModel: ObservableObject {
                         || (identity != nil && $0.socketName == nil
                             && Self.tmuxSessionIdentity($0.summary) == identity)
                 }) {
-                confirmedEndedTmuxSessionHandles.remove(handle.id)
-            } else {
-                confirmedEndedTmuxSessionHandles.insert(handle.id)
+                let returned = discovered.first(where: {
+                    $0.name == selection.name && $0.socketName == selection.socketName
+                })
+                let returnedIdentity = returned.flatMap { Self.tmuxSessionIdentity($0.summary) }
+                // The window's own session is listed nowhere, so it ended, as
+                // in a reboot, even when this window noticed only after a
+                // session of the same name came back.
+                let replaced = identity != nil && returnedIdentity != nil
+                    && !discovered.contains(where: {
+                        $0.socketName == nil && Self.tmuxSessionIdentity($0.summary) == identity
+                    })
+                if confirmedEndedTmuxSessionHandles.remove(handle.id) != nil || replaced,
+                   Self.isPlainTmuxSession(selection),
+                   returned != nil {
+                    attachToReturnedTmuxSession(presentation, identity: returnedIdentity)
+                }
+            } else if confirmedEndedTmuxSessionHandles.insert(handle.id).inserted {
+                newlyEnded = true
+            } else if savedTmuxWindowRestores[handle.id] == .restoring,
+                      savedTmuxWindowRestoreTasks[handle.id] == nil {
+                // kwt restored the session, but it ended before this window
+                // attached. Another restore waits for Retry Restore.
+                savedTmuxWindowRestores[handle.id] = .failed(
+                    "The restored session ended before Ghosthub could attach."
+                )
             }
+        }
+        if newlyEnded {
+            restoreEndedTmuxSessionsFromSavedCopies(hostID: hostID, refreshing: true)
         }
     }
 
@@ -8557,6 +8594,7 @@ final class WorkspaceSceneModel: ObservableObject {
                 nativeTmuxSessionCoordinator.attachmentClosure(handle),
                 sessionClosed:
                 confirmedEndedTmuxSessionHandles.contains(handle.id),
+                savedRestore: activeBorrowedTmuxSavedRestore,
                 defersTerminalResize: defersTerminalResize,
                 retryRequiresConfirmation:
                 activeBorrowedTmuxRetryRequiresConfirmation,
@@ -8573,6 +8611,9 @@ final class WorkspaceSceneModel: ObservableObject {
                 },
                 onRetryRequest: { [weak self] in
                     self?.retryBorrowedTmuxSession(selection)
+                },
+                onRetrySavedRestore: { [weak self] in
+                    self?.retryActiveBorrowedTmuxSavedRestore()
                 },
                 onConfirmedRetryRequest: { [weak self] in
                     self?
@@ -12195,16 +12236,34 @@ final class WorkspaceSceneModel: ObservableObject {
                 session: tmuxSelection.name
             )
         }
-        try await tmuxSessionKiller(
-            tmuxSelection,
-            TmuxSessionIdentity(
-                serverPID: request.serverPID,
-                sessionID: request.sessionID,
-                createdAt: request.sessionCreatedAt
-            ),
-            request.routeIdentity,
-            confirmedHost
+        // Killing a server's last session stops the server, and a window
+        // that sees the session end could restore kwt's saved copy before
+        // kwt forgets it.
+        let restores = savedTmuxSessionRestores
+        restores.fence(
+            session: tmuxSelection.name,
+            socketName: tmuxSelection.socketName,
+            hostID: tmuxSelection.hostID
         )
+        do {
+            try await tmuxSessionKiller(
+                tmuxSelection,
+                TmuxSessionIdentity(
+                    serverPID: request.serverPID,
+                    sessionID: request.sessionID,
+                    createdAt: request.sessionCreatedAt
+                ),
+                request.routeIdentity,
+                confirmedHost
+            )
+        } catch {
+            restores.lift(
+                session: tmuxSelection.name,
+                socketName: tmuxSelection.socketName,
+                hostID: tmuxSelection.hostID
+            )
+            throw error
+        }
         forgetSavedTmuxSession(request, on: confirmedHost)
 
         let activeTargetAfterKill = activeBorrowedTmuxSelection.flatMap {
@@ -14399,6 +14458,10 @@ final class WorkspaceSceneModel: ObservableObject {
                 presentation.recoveryState = nil
                 presentation.recoveryRequest = nil
                 publishActiveState(for: presentation)
+                restoreEndedTmuxSessionsFromSavedCopies(
+                    hostID: presentation.selection.hostID,
+                    refreshing: true
+                )
                 return .stop
             }
             guard context.surfaceExitCode == 255
@@ -16597,7 +16660,8 @@ extension WorkspaceSceneModel {
     }
 
     /// Lists the sessions kwt can restore on each POSIX host, in the
-    /// background. A host where kwt cannot list them shows none.
+    /// background. A host where kwt cannot list them keeps its last listing
+    /// and records why.
     /// A scheduled refresh passes `restarting: false` so a listing already
     /// running finishes; other refreshes replace it with a fresh one.
     private func refreshSavedTmuxSessions(
@@ -16612,11 +16676,22 @@ extension WorkspaceSceneModel {
             }
             savedTmuxSessionDiscoveryTasks[id]?.cancel()
             savedTmuxSessionDiscoveryTasks[id] = Task { [weak self, kwtSessionClient] in
-                let sessions = await (try? kwtSessionClient.savedSessions(on: host)) ?? []
+                let listing: Result<[SavedTmuxSession], Error>
+                do {
+                    listing = try await .success(kwtSessionClient.savedSessions(on: host))
+                } catch {
+                    listing = .failure(error)
+                }
                 guard let self, !Task.isCancelled, !isShutDown else { return }
                 savedTmuxSessionDiscoveryTasks[id] = nil
                 guard inventoryHosts[id] == host else { return }
-                setSavedTmuxSessions(sessions.filter(\.isOnGhosthubServer), hostID: id)
+                switch listing {
+                case let .success(sessions):
+                    savedTmuxSessionListingFailures[id] = nil
+                    setSavedTmuxSessions(sessions.filter(\.isOnGhosthubServer), hostID: id)
+                case let .failure(error):
+                    savedTmuxSessionListingFailures[id] = error.localizedDescription
+                }
             }
         }
     }
@@ -16628,10 +16703,150 @@ extension WorkspaceSceneModel {
             return session
         }
         applyRuntimeInventoryOverlayIfNeeded(hostID: hostID)
+        restoreEndedTmuxSessionsFromSavedCopies(hostID: hostID)
     }
 
-    /// Restores the requested saved sessions that Ghosthub lists on the host
-    /// and that no window is restoring already.
+    // MARK: Restoring a window's ended session
+
+    /// The saved copy of a window's plain tmux session on the default
+    /// server, newest first. A live session with its name blocks it.
+    private static func savedCopy(
+        of selection: WorkspaceTmuxSessionSelection,
+        in saved: [SavedTmuxSession]
+    ) -> SavedTmuxSession? {
+        guard isPlainTmuxSession(selection) else { return nil }
+        return saved
+            .filter {
+                !$0.worktree && !$0.nameTaken
+                    && $0.session == selection.name && $0.tmuxSocketName == nil
+            }
+            .max { $0.savedAt < $1.savedAt }
+    }
+
+    /// A window whose tmux session ended because its server stopped, as
+    /// after a reboot, restores kwt's saved copy and attaches to it, so the
+    /// person never has to restore a session they were looking at.
+    /// `refreshing` starts a fresh listing first: kwt turns a stopped
+    /// server's sessions into saved copies only when it next lists, so a
+    /// listing that began before the server stopped lacks them.
+    private func restoreEndedTmuxSessionsFromSavedCopies(
+        hostID: UUID,
+        refreshing: Bool = false
+    ) {
+        guard !isShutDown else { return }
+        if refreshing {
+            refreshSavedTmuxSessions(hostID: hostID)
+        }
+        // A listing in flight can hold a newer copy than the cached one, as
+        // after a reboot; its result runs this again. After a failed listing
+        // the cache may be stale, so only Retry Restore goes on.
+        guard savedTmuxSessionDiscoveryTasks[hostID] == nil,
+              savedTmuxSessionListingFailures[hostID] == nil
+        else { return }
+        let saved = savedTmuxSessionsByHost[hostID] ?? []
+        for presentation in retainedTmuxPresentations.values {
+            let handleID = presentation.handle.id
+            guard presentation.selection.hostID == hostID,
+                  confirmedEndedTmuxSessionHandles.contains(handleID),
+                  savedTmuxWindowRestoreTasks[handleID] == nil,
+                  savedTmuxWindowRestores[handleID] != .restoring
+            else { continue }
+            if case .failed = savedTmuxWindowRestores[handleID] {
+                continue
+            }
+            guard let copy = Self.savedCopy(of: presentation.selection, in: saved),
+                  !savedTmuxSessionRestores.isFenced(
+                      session: copy.session, socketName: nil, hostID: hostID
+                  )
+            else {
+                savedTmuxWindowRestores[handleID] = nil
+                continue
+            }
+            savedTmuxWindowRestores[handleID] = .restoring
+            savedTmuxWindowRestoreTasks[handleID] = Task { [weak self] in
+                await self?.restoreSavedCopy(copy.id, for: presentation)
+            }
+        }
+    }
+
+    /// Restores the window's saved copy. The window attaches once discovery
+    /// lists the restored session, under the new identity it has on the new
+    /// server, whichever of the two finishes first.
+    private func restoreSavedCopy(
+        _ entryID: String,
+        for presentation: RetainedTmuxPresentation
+    ) async {
+        let handleID = presentation.handle.id
+        defer { savedTmuxWindowRestoreTasks[handleID] = nil }
+        let failure: String
+        do {
+            let report = try await restoreSavedTmuxSessions(
+                [entryID], hostID: presentation.selection.hostID
+            )
+            guard savedTmuxWindowRestores[handleID] == .restoring else { return }
+            guard let entry = report.entries.first(where: { $0.id == entryID }) else {
+                // kwt no longer lists the copy; the next listing decides.
+                savedTmuxWindowRestores[handleID] = nil
+                return
+            }
+            if entry.outcome == "restored" || entry.outcome == "partially restored" {
+                refreshTmuxSessionDiscovery()
+                return
+            }
+            failure = report.problems.joined(separator: "\n")
+        } catch is CancellationError {
+            return
+        } catch {
+            failure = error.localizedDescription
+        }
+        guard savedTmuxWindowRestores[handleID] == .restoring else { return }
+        savedTmuxWindowRestores[handleID] = .failed(failure)
+    }
+
+    /// Discovery lists an ended window's session again, as after its saved
+    /// copy was restored by this window or another. The session is new to
+    /// tmux, so the window attaches under the identity discovery reports.
+    private func attachToReturnedTmuxSession(
+        _ presentation: RetainedTmuxPresentation,
+        identity: TmuxSessionIdentity?
+    ) {
+        savedTmuxWindowRestores[presentation.handle.id] = nil
+        presentation.reconnectExpectedIdentity = identity
+        relaunchTmuxSession(presentation, launchMode: .attachOnly, intent: .restoreOnly)
+    }
+
+    /// What the active window shows while it restores its ended session.
+    var activeBorrowedTmuxSavedRestore: SavedTmuxWindowRestore? {
+        guard let handle = activeBorrowedTmuxHandle,
+              let selection = activeBorrowedTmuxSelection,
+              confirmedEndedTmuxSessionHandles.contains(handle.id)
+        else { return nil }
+        if let state = savedTmuxWindowRestores[handle.id] {
+            return state
+        }
+        // Until kwt lists the host's saved sessions, Reopen could create an
+        // empty session in place of the saved one.
+        guard Self.isPlainTmuxSession(selection) else { return nil }
+        if savedTmuxSessionDiscoveryTasks[selection.hostID] != nil {
+            return .checking
+        }
+        return savedTmuxSessionListingFailures[selection.hostID].map(SavedTmuxWindowRestore.failed)
+    }
+
+    /// Tries a failed restore of the active window's session again.
+    func retryActiveBorrowedTmuxSavedRestore() {
+        guard let handle = activeBorrowedTmuxHandle,
+              let selection = activeBorrowedTmuxSelection,
+              case .failed = activeBorrowedTmuxSavedRestore
+        else { return }
+        savedTmuxWindowRestores[handle.id] = nil
+        savedTmuxSessionListingFailures[selection.hostID] = nil
+        restoreEndedTmuxSessionsFromSavedCopies(hostID: selection.hostID, refreshing: true)
+    }
+
+    /// Restores the requested saved sessions that Ghosthub lists on the host.
+    /// A session another window is restoring is not restored twice; its
+    /// outcome is shared.
     func restoreSavedTmuxSessions(
         _ requested: [String],
         hostID: UUID
@@ -16640,21 +16855,21 @@ extension WorkspaceSceneModel {
             throw KwtSessionError(host: snapshot.host(id: hostID)?.name ?? "this host")
         }
         let listed = savedTmuxSessionsByHost[hostID] ?? []
-        let ids = savedTmuxSessionRestores.begin(
-            requested.filter { id in listed.contains { $0.id == id } },
-            hostID: hostID
-        )
+        let ids = requested.filter { id in listed.contains { $0.id == id } }
         guard !ids.isEmpty else { return TmuxRestoreReport(entries: []) }
-        setSavedTmuxSessions(listed, hostID: hostID)
         defer {
-            savedTmuxSessionRestores.end(ids, hostID: hostID)
             if let current = savedTmuxSessionsByHost[hostID] {
                 setSavedTmuxSessions(current, hostID: hostID)
             }
             refreshKwtInventory()
         }
-        try await ensureRemoteKwtForOperation(hostID: hostID)
-        return try await kwtSessionClient.restore(ids, on: host)
+        return try await savedTmuxSessionRestores
+            .restore(ids, hostID: hostID) { [weak self] claimed in
+                guard let self else { throw CancellationError() }
+                setSavedTmuxSessions(savedTmuxSessionsByHost[hostID] ?? listed, hostID: hostID)
+                try await ensureRemoteKwtForOperation(hostID: hostID)
+                return try await kwtSessionClient.restore(claimed, on: host)
+            }
     }
 
     /// Deletes a saved session the person chose not to restore.
@@ -16674,20 +16889,31 @@ extension WorkspaceSceneModel {
         _ request: TmuxSessionKillRequest,
         on host: CommandHost
     ) {
-        guard Self.keepsSavedTmuxSessions(host) else { return }
         let hostID = request.session.hostID
-        let socketName = request.session.socketName ?? "default"
+        let session = request.session.name
+        let socket = request.session.socketName
+        let restores = savedTmuxSessionRestores
+        guard Self.keepsSavedTmuxSessions(host) else {
+            restores.lift(session: session, socketName: socket, hostID: hostID)
+            return
+        }
+        let socketName = socket ?? "default"
         let identity = TmuxSessionIdentity(
             serverPID: request.serverPID,
             sessionID: request.sessionID,
             createdAt: request.sessionCreatedAt
         )
         Task { [weak self, kwtSessionClient] in
-            try? await kwtSessionClient.forget(
+            // If kwt keeps the saved copy, the fence stays, so no window
+            // restarts the killed programs. The copy stays listed for the
+            // person to dismiss.
+            if await (try? kwtSessionClient.forget(
                 socketName: socketName,
                 identity: identity,
                 on: host
-            )
+            )) != nil {
+                restores.lift(session: session, socketName: socket, hostID: hostID)
+            }
             self?.refreshSavedTmuxSessions(hostID: hostID)
         }
     }

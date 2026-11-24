@@ -14,12 +14,14 @@ struct BorrowedTmuxSessionView: View {
     var recoveryState: NativeSessionRecoveryState?
     var attachmentClosure: BorrowedTmuxAttachmentClosure?
     var sessionClosed: Bool
+    var savedRestore: SavedTmuxWindowRestore?
     var defersTerminalResize: Bool
     var retryRequiresConfirmation: Bool
     var retryCommand: String?
     var surface: () -> TerminalSurfaceView?
     var onCloseRequest: () -> Void
     var onRetryRequest: () -> Void
+    var onRetrySavedRestore: () -> Void
     var onConfirmedRetryRequest: () -> Void
     var onReconnectNow: () -> Void
     var onReviewConnection: () -> Void
@@ -36,12 +38,14 @@ struct BorrowedTmuxSessionView: View {
         recoveryState: NativeSessionRecoveryState? = nil,
         attachmentClosure: BorrowedTmuxAttachmentClosure? = nil,
         sessionClosed: Bool = false,
+        savedRestore: SavedTmuxWindowRestore? = nil,
         defersTerminalResize: Bool = false,
         retryRequiresConfirmation: Bool = false,
         retryCommand: String? = nil,
         surface: @escaping () -> TerminalSurfaceView?,
         onCloseRequest: @escaping () -> Void,
         onRetryRequest: @escaping () -> Void,
+        onRetrySavedRestore: @escaping () -> Void = {},
         onConfirmedRetryRequest: @escaping () -> Void = {},
         onReconnectNow: @escaping () -> Void = {},
         onReviewConnection: @escaping () -> Void = {},
@@ -55,12 +59,14 @@ struct BorrowedTmuxSessionView: View {
         self.recoveryState = recoveryState
         self.attachmentClosure = attachmentClosure
         self.sessionClosed = sessionClosed
+        self.savedRestore = savedRestore
         self.defersTerminalResize = defersTerminalResize
         self.retryRequiresConfirmation = retryRequiresConfirmation
         self.retryCommand = retryCommand
         self.surface = surface
         self.onCloseRequest = onCloseRequest
         self.onRetryRequest = onRetryRequest
+        self.onRetrySavedRestore = onRetrySavedRestore
         self.onConfirmedRetryRequest = onConfirmedRetryRequest
         self.onReconnectNow = onReconnectNow
         self.onReviewConnection = onReviewConnection
@@ -111,7 +117,9 @@ struct BorrowedTmuxSessionView: View {
     /// opaque cover, so rendering is unchanged.
     private var sessionFallback: some View {
         ZStack {
-            if recoveryState != nil {
+            if let savedRestore {
+                savedRestoreFallback(savedRestore)
+            } else if recoveryState != nil {
                 ContentUnavailableView {
                     Label(recoveryTitle, systemImage: "network.slash")
                 } description: {
@@ -164,6 +172,36 @@ struct BorrowedTmuxSessionView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkspaceSurfaceColor.chrome(backgroundAppearance))
+    }
+
+    @ViewBuilder
+    private func savedRestoreFallback(_ state: SavedTmuxWindowRestore) -> some View {
+        switch state {
+        case .checking, .restoring:
+            ProgressView(savedRestoreProgressTitle ?? "")
+        case let .failed(message):
+            ContentUnavailableView {
+                Label(
+                    "Couldn\u{2019}t restore \u{201C}\(handle.name)\u{201D}",
+                    systemImage: "exclamationmark.triangle"
+                )
+            } description: {
+                Text(message)
+            } actions: {
+                Button("Retry Restore", action: onRetrySavedRestore)
+            }
+        }
+    }
+
+    var savedRestoreProgressTitle: String? {
+        switch savedRestore {
+        case .checking:
+            "Looking for a saved copy of \u{201C}\(handle.name)\u{201D}\u{2026}"
+        case .restoring:
+            "Restoring \u{201C}\(handle.name)\u{201D}\u{2026}"
+        case .failed, nil:
+            nil
+        }
     }
 
     var recoveryTitle: String {
