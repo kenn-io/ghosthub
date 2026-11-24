@@ -20,7 +20,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(test_name: &str) -> Option<Self> {
+    fn new(test_name: &str, locale: &str) -> Option<Self> {
         let root = if let Some(root) = std::env::var_os("GHOSTHUB_NATIVE_FIXTURE") {
             PathBuf::from(root)
         } else {
@@ -52,7 +52,7 @@ impl Fixture {
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("PATH", "/usr/bin:/bin")
                 .env("SHELL", "/bin/sh")
-                .env("LANG", "C.UTF-8")
+                .env("LC_ALL", locale)
                 .status()
                 .unwrap();
             fs::remove_dir_all(root).unwrap();
@@ -214,9 +214,10 @@ impl Drop for Fixture {
 
 #[test]
 fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
-    let Some(fixture) =
-        Fixture::new("native_sessions_attach_resize_create_and_survive_detach_and_close")
-    else {
+    let Some(fixture) = Fixture::new(
+        "native_sessions_attach_resize_create_and_survive_detach_and_close",
+        "C",
+    ) else {
         return;
     };
     let identity = fixture.identity("work");
@@ -272,9 +273,10 @@ fn native_sessions_attach_resize_create_and_survive_detach_and_close() {
 
 #[test]
 fn native_kill_confirmation_preserves_cancelled_and_replaced_sessions() {
-    let Some(fixture) =
-        Fixture::new("native_kill_confirmation_preserves_cancelled_and_replaced_sessions")
-    else {
+    let Some(fixture) = Fixture::new(
+        "native_kill_confirmation_preserves_cancelled_and_replaced_sessions",
+        "C.UTF-8",
+    ) else {
         return;
     };
     let selection = fixture.selection("work");
@@ -328,9 +330,10 @@ fn native_kill_confirmation_preserves_cancelled_and_replaced_sessions() {
 
 #[test]
 fn missing_kwt_helper_blocks_rename_without_blocking_session_attachment() {
-    let Some(fixture) =
-        Fixture::new("missing_kwt_helper_blocks_rename_without_blocking_session_attachment")
-    else {
+    let Some(fixture) = Fixture::new(
+        "missing_kwt_helper_blocks_rename_without_blocking_session_attachment",
+        "C.UTF-8",
+    ) else {
         return;
     };
     fixture.wait(|| {
@@ -358,9 +361,10 @@ fn missing_kwt_helper_blocks_rename_without_blocking_session_attachment() {
 
 #[test]
 fn pane_hooks_refresh_live_agent_activity_without_changing_the_session() {
-    let Some(fixture) =
-        Fixture::new("pane_hooks_refresh_live_agent_activity_without_changing_the_session")
-    else {
+    let Some(fixture) = Fixture::new(
+        "pane_hooks_refresh_live_agent_activity_without_changing_the_session",
+        "C.UTF-8",
+    ) else {
         return;
     };
     let identity = fixture.identity("work");

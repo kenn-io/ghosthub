@@ -44,10 +44,13 @@ const UNCERTAIN_CLEANUP_DELAY: Duration = Duration::from_millis(50);
 const UNCERTAIN_CLEANUP_SETTLE: Duration = Duration::from_secs(2);
 // tmux 3.2 already implements `n:` with strlen, and admission exercises this
 // same framing before inventory. Delimiters in names therefore stay unambiguous
-// without adding another process crossing.
-const INVENTORY_FORMAT: &str = "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}";
-const CLIENT_READINESS_FORMAT: &str = "#{client_pid}\t#{pid}\t#{session_id}\t#{session_created}";
-const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}";
+// without adding another process crossing. Use printable separators because
+// tmux replaces tabs with underscores in the C locale.
+pub(crate) const INVENTORY_FORMAT: &str =
+    "#{pid}|#{session_id}|#{session_created}|#{session_attached}|#{n:session_name}|#{session_name}";
+pub(crate) const CLIENT_READINESS_FORMAT: &str =
+    "#{client_pid}|#{pid}|#{session_id}|#{session_created}";
+const ADMISSION_IDENTITY_FORMAT: &str = "#{pid}|#{session_id}|#{n:session_name}|#{session_name}";
 const KILL_IDENTITY_MISMATCH_MARKER: &str = "__ghosthub_kill_identity_mismatch_v1__";
 const LINUX_RUNTIME_GUARD_SCRIPT: &str = r#"
 expected_boot=$1
@@ -1627,7 +1630,7 @@ impl<R: CommandRunner> LocalHost<R> {
                 "query KWT tmux client readiness",
             ));
         }
-        let matched = parse_kwt_client_identity(&output.stdout, client_pid, '\t')?;
+        let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
         self.require_runtime(endpoint, runtime, cancellation)?;
         Ok(matched)
     }
@@ -1701,7 +1704,7 @@ impl<R: CommandRunner> LocalHost<R> {
                 "query named KWT tmux client readiness",
             ));
         }
-        let matched = parse_kwt_client_identity(&output.stdout, client_pid, '\t')?;
+        let matched = parse_kwt_client_identity(&output.stdout, client_pid)?;
         self.require_runtime(endpoint, runtime, cancellation)?;
         Ok(matched)
     }
@@ -4968,12 +4971,11 @@ pub(crate) fn parse_kwt_client_pid(bytes: &[u8]) -> Result<u32, HostError> {
 pub(crate) fn parse_kwt_client_identity(
     bytes: &[u8],
     client_pid: u32,
-    separator: char,
 ) -> Result<Option<SessionIdentity>, HostError> {
     let mut matched = None;
     let client_pid_text = client_pid.to_string();
     for line in decode(bytes, "KWT tmux client readiness")?.lines() {
-        let mut fields = line.split(separator);
+        let mut fields = line.split('|');
         if fields.next() != Some(client_pid_text.as_str()) {
             continue;
         }
@@ -5258,7 +5260,7 @@ fn parse_tmux_name_records<'a>(
 
 fn take_tmux_field<'a>(remaining: &mut &'a str, subject: &str) -> Result<&'a str, HostError> {
     let delimiter = remaining
-        .find('\t')
+        .find('|')
         .ok_or_else(|| malformed_name_record(subject))?;
     let (field, suffix) = remaining.split_at(delimiter);
     *remaining = &suffix[1..];
@@ -6418,13 +6420,13 @@ mod tests {
 
     #[test]
     fn kwt_client_readiness_matches_only_the_recorded_process() {
-        let identity = parse_kwt_client_identity(b"8\t40\t$1\t90\n7\t42\t$3\t99\n", 7, '\t')
+        let identity = parse_kwt_client_identity(b"8|40|$1|90\n7|42|$3|99\n", 7)
             .expect("valid readiness inventory")
             .expect("recorded client is attached");
 
         assert_eq!(identity, SessionIdentity::new(42, "$3", 99));
         assert!(
-            parse_kwt_client_identity(b"8\t40\t$1\t90\n", 7, '\t')
+            parse_kwt_client_identity(b"8|40|$1|90\n", 7)
                 .expect("unrelated clients are valid")
                 .is_none()
         );
@@ -6466,7 +6468,7 @@ mod tests {
                         .take()
                         .unwrap_or(CommandOutput {
                             status: 0,
-                            stdout: b"8\t40\t$1\t90\n7\t42\t$3\t99\n".to_vec(),
+                            stdout: b"8|40|$1|90\n7|42|$3|99\n".to_vec(),
                             stderr: Vec::new(),
                         }));
                 }

@@ -210,7 +210,7 @@ impl RecordingRunner {
     fn with_cleanup_failures(kill_failures: usize, verification_failures: usize) -> Self {
         let runner = Self::new(vec![
             instance_output(),
-            output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+            output(0, "4242|$3|1700000000|0|4|work\n", ""),
             instance_output(),
         ]);
         {
@@ -637,7 +637,7 @@ fn admission_output(
             output(
                 0,
                 &format!(
-                    "{}\t$1\t{}\t{session}\n{}\t$1\t{}\t{session}-renamed\n",
+                    "{}|$1|{}|{session}\n{}|$1|{}|{session}-renamed\n",
                     4242 + count,
                     session.len(),
                     4242 + count,
@@ -855,9 +855,9 @@ fn retries_discovery_when_the_distro_restarts_between_crossings() {
     let new = instance_output_with("91d83b4d-2b1a-47b7-bd2d-5d5bb698bdf7", 200);
     let runner = RecordingRunner::new(vec![
         old,
-        output(0, "4242\t$3\t1700000000\t0\t5\tstale\n", ""),
+        output(0, "4242|$3|1700000000|0|5|stale\n", ""),
         new.clone(),
-        output(0, "5252\t$4\t1700000001\t0\t5\tfresh\n", ""),
+        output(0, "5252|$4|1700000001|0|5|fresh\n", ""),
         new,
     ]);
     let host = test_host(
@@ -905,7 +905,7 @@ fn rejects_malformed_runtime_and_session_identity() {
         LocalConfig::with_distro("Ubuntu").expect("valid config"),
         RecordingRunner::new(vec![
             instance_output(),
-            output(0, "4242\tnot-an-id\t1700000000\t0\t4\twork\n", ""),
+            output(0, "4242|not-an-id|1700000000|0|4|work\n", ""),
         ]),
     );
     assert_eq!(
@@ -942,7 +942,7 @@ fn default_distro_with_no_tmux_server_is_empty_inventory() {
 fn discovers_identity_in_one_tmux_crossing() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t1\t9\twork name\n", ""),
+        output(0, "4242|$3|1700000000|1|9|work name\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -965,7 +965,7 @@ fn discovers_identity_in_one_tmux_crossing() {
 fn herdr_inventory_is_additive_and_scrubs_control_environment() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|1|4|work\n", ""),
         instance_output(),
     ]);
     runner.set_herdr_outputs(vec![
@@ -1047,7 +1047,7 @@ fn herdr_inventory_is_additive_and_scrubs_control_environment() {
 fn malformed_herdr_inventory_does_not_hide_tmux_sessions() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|1|4|work\n", ""),
         instance_output(),
     ]);
     runner.set_herdr_outputs(vec![
@@ -1071,7 +1071,7 @@ fn malformed_herdr_inventory_does_not_hide_tmux_sessions() {
 fn zellij_inventory_and_launch_plans_preserve_exact_names_and_scrub_control_environment() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|1|4|work\n", ""),
         instance_output(),
     ]);
     runner.set_zellij_outputs(vec![
@@ -1133,7 +1133,7 @@ fn zellij_inventory_and_launch_plans_preserve_exact_names_and_scrub_control_envi
 fn zellij_kill_revalidates_and_uses_an_exact_direct_argument() {
     let mut command_outputs = vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|1|4|work\n", ""),
         instance_output(),
     ];
     command_outputs.extend((0..5).map(|_| instance_output()));
@@ -1529,7 +1529,7 @@ fn herdr_stop_rejects_a_changed_default_role() {
 fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -1580,7 +1580,7 @@ fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
         !args.iter().any(|argument| argument == "list-sessions")
             || !args.iter().any(|argument| argument == "-F")
             || argument_after(args, "-F")
-                == Some("#{pid}\t#{session_id}\t#{n:session_name}\t#{session_name}")
+                == Some("#{pid}|#{session_id}|#{n:session_name}|#{session_name}")
     }));
     assert_cleanup_verification_count(&admission_calls, 2);
     assert!(admission_calls.iter().any(|(_, args)| {
@@ -1637,7 +1637,7 @@ fn admission_uses_inert_sessions_and_always_cleans_its_namespaces() {
 fn admission_does_not_require_xterm_256color_terminfo() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -1681,7 +1681,7 @@ fn admission_does_not_require_xterm_256color_terminfo() {
 fn admission_uses_xterm_256color_for_creation_when_the_client_proves_it() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -1710,7 +1710,7 @@ fn admission_uses_xterm_256color_for_creation_when_the_client_proves_it() {
 fn creation_receipt_polling_uses_a_stable_c_locale() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
         output(1, "", "/usr/bin/cat: receipt: No such file or directory\n"),
         output(0, "4242|$4|1700000001|!", ""),
@@ -1904,7 +1904,7 @@ fn failed_real_client_probe_is_not_cached_as_verified() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -2043,11 +2043,7 @@ fn duplicate_creation_failure_never_grants_cleanup_authority() {
 fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(
-            0,
-            "4242\t$3\t1700000000\t1\t19\twork name\tand\nlines\n",
-            "",
-        ),
+        output(0, "4242|$3|1700000000|1|19|work|name\tand\nlines\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -2057,9 +2053,9 @@ fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
 
     let snapshot = discover(&host).expect("discover length-prefixed session name");
 
-    assert_eq!(snapshot.sessions()[0].name(), "work name\tand\nlines");
+    assert_eq!(snapshot.sessions()[0].name(), "work|name\tand\nlines");
     let plan = host.attach_plan(snapshot.endpoint(), &snapshot.sessions()[0]);
-    assert_eq!(plan.target_name(), "work name\tand\nlines");
+    assert_eq!(plan.target_name(), "work|name\tand\nlines");
     assert!(
         plan.args()
             .iter()
@@ -2069,14 +2065,14 @@ fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
         !plan
             .args()
             .iter()
-            .any(|argument| argument.to_string_lossy().contains("work name")),
+            .any(|argument| argument.to_string_lossy().contains("work|name")),
         "the display name must not participate in attachment targeting"
     );
     assert!(host.runner().all_calls().iter().any(|(_, args)| {
         args.iter().any(|argument| argument == "list-sessions")
             && argument_after(args, "-F")
                 == Some(
-                    "#{pid}\t#{session_id}\t#{session_created}\t#{session_attached}\t#{n:session_name}\t#{session_name}",
+                    "#{pid}|#{session_id}|#{session_created}|#{session_attached}|#{n:session_name}|#{session_name}",
                 )
     }));
 }
@@ -2084,7 +2080,7 @@ fn discovery_decodes_length_prefixed_session_names_without_splitting_records() {
 #[test]
 fn kill_capture_matches_format_shaped_names_without_targeting_them() {
     let name = "work#(touch /tmp/ghosthub-owned)\nand-more";
-    let inventory = format!("4242\t$3\t1700000000\t0\t{}\t{name}\n", name.len());
+    let inventory = format!("4242|$3|1700000000|0|{}|{name}\n", name.len());
     let runner = RecordingRunner::new(vec![
         instance_output(),
         output(0, &inventory, ""),
@@ -2120,7 +2116,7 @@ fn kill_capture_matches_format_shaped_names_without_targeting_them() {
 fn attach_plan_targets_the_fresh_stable_session_id() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t9\twork name\n", ""),
+        output(0, "4242|$3|1700000000|0|9|work name\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -2173,10 +2169,10 @@ fn attach_plan_targets_the_fresh_stable_session_id() {
 fn kill_authority_comes_from_a_fresh_query_and_targets_stable_identity() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
         instance_output(),
         output(0, "", ""),
@@ -2229,10 +2225,10 @@ fn kill_authority_comes_from_a_fresh_query_and_targets_stable_identity() {
 fn replaced_session_is_not_killed_after_confirmation() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
         instance_output(),
         output(0, "__ghosthub_kill_identity_mismatch_v1__\n", ""),
@@ -2262,14 +2258,14 @@ fn replaced_session_is_not_killed_after_confirmation() {
 fn missing_stable_target_detects_a_same_named_replacement_from_inventory() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
         instance_output(),
         output(1, "", "can't find session: $3"),
-        output(0, "4242\t$4\t1700000001\t0\t4\twork\n", ""),
+        output(0, "4242|$4|1700000001|0|4|work\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -2316,7 +2312,7 @@ fn configured_socket_directory_is_explicit_environment() {
     .expect("valid config");
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
     ]);
     let host = test_host(config, runner);
@@ -2340,7 +2336,7 @@ fn configured_socket_directory_is_explicit_environment() {
 fn discovery_scrubs_inherited_tmux_client_environment() {
     let runner = RecordingRunner::new(vec![
         instance_output(),
-        output(0, "4242\t$3\t1700000000\t0\t4\twork\n", ""),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
         instance_output(),
     ]);
     let host = test_host(
@@ -2516,7 +2512,7 @@ fn optional_agent_probe_enriches_inventory_and_does_not_hide_sessions_on_failure
         let success = probe.status == 0 && probe.stdout.starts_with(b"4242");
         let runner = RecordingRunner::new(vec![
             instance_output(),
-            output(0, "4242\t$3\t1700000000\t1\t4\twork\n", ""),
+            output(0, "4242|$3|1700000000|1|4|work\n", ""),
             instance_output(),
         ]);
         runner.agent_outputs.lock().unwrap().push_back(probe);

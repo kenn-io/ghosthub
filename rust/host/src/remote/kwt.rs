@@ -731,11 +731,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
         }
         let pid = crate::local::parse_kwt_client_pid(&receipt.stdout)
             .map_err(|error| RemoteTmuxError::from_host(&error))?;
-        let args = [
-            "list-clients",
-            "-F",
-            "#{client_pid}|#{pid}|#{session_id}|#{session_created}",
-        ];
+        let args = ["list-clients", "-F", crate::local::CLIENT_READINESS_FORMAT];
         let command = self.kwt_tmux_probe(snapshot, socket, &args)?;
         let output = self.run_framed_remote_shell(
             snapshot.lease(),
@@ -756,7 +752,7 @@ impl<R: CommandRunner + Clone> RemoteTmuxHost<R> {
             return Ok(None);
         }
         require_kwt_output(&output)?;
-        crate::local::parse_kwt_client_identity(&output.stdout, pid, '|')
+        crate::local::parse_kwt_client_identity(&output.stdout, pid)
             .map_err(|error| RemoteTmuxError::from_host(&error))
     }
 
