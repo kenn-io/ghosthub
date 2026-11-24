@@ -227,8 +227,19 @@ Allowed types:
   change.
 
 Mark breaking changes with `!` before the colon (`feat(api)!: remove v1`) and a
-`BREAKING CHANGE:` footer. Releases and release notes are generated from these
-types, and version bumps follow the largest change since the last release.
+`BREAKING CHANGE:` footer.
+
+No tool reads these types. Release notes come only from the dated section of
+`website/docs/content/changelog.md`, and the release maintainer picks the
+version in `RELEASE_VERSION` (see [docs/release.md](docs/release.md)). So:
+
+- A `feat`, `fix`, or `perf` PR adds its own plain-language entry under
+  `## [Unreleased]` in `website/docs/content/changelog.md`. Without it, the
+  change is missing from the release notes.
+- The type tells the release maintainer how large the version bump should be:
+  a breaking change, then `feat`, then `fix`.
+- Nightly notes list every commit subject as written, so a missing type shows
+  there too.
 
 ## Issue tracking
 
