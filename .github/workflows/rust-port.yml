@@ -51,8 +51,10 @@ jobs:
         include:
           - name: Linux x86_64
             runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
           - name: Windows x86_64
             runner: windows-2025
+            target: x86_64-pc-windows-msvc
 
     defaults:
       run:
@@ -72,16 +74,31 @@ jobs:
         uses: step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e # v2.9.2
         with:
           workspaces: rust
-          cache-directories: |
-            .build/libghostty-vt
-            .build/zig
-            ${{ runner.os == 'Linux' && '.build/zellij-test' || '' }}
+          cache-directories: ${{ runner.os == 'Linux' && '.build/zellij-test' || '' }}
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      # Share only the built target prefix across jobs. The build script still
+      # checks its stamp and artifacts and falls back to installing Zig on a
+      # miss or mismatch.
+      - name: Restore terminal library
+        id: libghostty-vt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/libghostty-vt/${{ matrix.target }}
+          key: libghostty-vt-${{ matrix.target }}-${{ hashFiles('Vendor/libghostty-vt.version.json', 'tools/build_libghostty_vt.py') }}
 
       - name: Build the terminal library
         working-directory: .
         run: uv run --frozen python tools/build_libghostty_vt.py --install-zig
+
+      # Saved before the tests so a failing test does not discard the build.
+      - name: Save terminal library
+        if: steps.libghostty-vt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/libghostty-vt/${{ matrix.target }}
+          key: ${{ steps.libghostty-vt-cache.outputs.cache-primary-key }}
 
       - name: Set up Go for the Linux KWT helper
         if: runner.os == 'Linux'
@@ -236,11 +253,30 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install 1.96.1 --profile minimal
 
+      - name: Restore Rust cache
+        uses: step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e # v2.9.2
+        with:
+          workspaces: rust
+
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      - name: Restore terminal library
+        id: libghostty-vt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/libghostty-vt/x86_64-unknown-linux-gnu
+          key: libghostty-vt-x86_64-unknown-linux-gnu-${{ hashFiles('Vendor/libghostty-vt.version.json', 'tools/build_libghostty_vt.py') }}
 
       - name: Build the terminal library
         working-directory: .
         run: uv run --frozen python tools/build_libghostty_vt.py --install-zig
+
+      - name: Save terminal library
+        if: steps.libghostty-vt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/libghostty-vt/x86_64-unknown-linux-gnu
+          key: ${{ steps.libghostty-vt-cache.outputs.cache-primary-key }}
 
       - name: Build the web UI launcher
         run: cargo build --locked -p ghosthub-web --example serve

@@ -95,30 +95,47 @@ def zig_target(target: str) -> str:
     raise ValueError(f"Unsupported libghostty-vt target: {target}")
 
 
-def build(target: str, cache: Path, zig: str) -> Path:
-    pin = json.loads(PIN.read_text())
-    version = subprocess.check_output([zig, "version"], text=True).strip()
-    if version != pin["zig"]:
-        raise ValueError(f"libghostty-vt requires Zig {pin['zig']}, found {version}")
-    destination = cache / target
-    stamp = destination / "ghosthub-build.json"
-    identity = {
+def build_identity(pin: dict[str, object], target: str) -> dict[str, object]:
+    return {
         **pin,
         "target": target,
         "recipe": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     }
+
+
+def required_artifacts(destination: Path, target: str) -> list[Path]:
     library = destination / (
         "bin/ghostty-vt.dll" if "windows" in target else "lib/libghostty-vt.a"
     )
     required = [library, destination / "include/ghostty/vt.h"]
     if "windows" in target:
         required.append(destination / "lib/ghostty-vt.lib")
+    return required
+
+
+def existing_build(target: str, cache: Path) -> Path | None:
+    pin = json.loads(PIN.read_text())
+    destination = cache / target
+    stamp = destination / "ghosthub-build.json"
     if (
-        stamp.exists()
-        and all(path.is_file() for path in required)
-        and json.loads(stamp.read_text()) == identity
+        stamp.is_file()
+        and all(path.is_file() for path in required_artifacts(destination, target))
+        and json.loads(stamp.read_text()) == build_identity(pin, target)
     ):
         return destination
+    return None
+
+
+def build(target: str, cache: Path, zig: str) -> Path:
+    if existing := existing_build(target, cache):
+        return existing
+    pin = json.loads(PIN.read_text())
+    version = subprocess.check_output([zig, "version"], text=True).strip()
+    if version != pin["zig"]:
+        raise ValueError(f"libghostty-vt requires Zig {pin['zig']}, found {version}")
+    destination = cache / target
+    stamp = destination / "ghosthub-build.json"
+    identity = build_identity(pin, target)
     cache.mkdir(parents=True, exist_ok=True)
     base = f"https://release.files.ghostty.org/libghostty-vt/{pin['version']}"
     name = f"libghostty-vt-{pin['version']}"
@@ -148,7 +165,7 @@ def build(target: str, cache: Path, zig: str) -> Path:
     return destination
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--target", help="Rust target triple; defaults to the rustc host"
@@ -158,7 +175,7 @@ def main() -> None:
         action="store_true",
         help="Stage checksum-pinned Zig under .build for CI",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     target = args.target
     if target is None:
         version = subprocess.check_output(["rustc", "-vV"], text=True)
@@ -167,13 +184,17 @@ def main() -> None:
             for line in version.splitlines()
             if line.startswith("host: ")
         )
+    cache = ROOT / ".build/libghostty-vt"
+    if existing := existing_build(target, cache):
+        print(existing)
+        return
     zig = os.environ.get("ZIG", "zig")
     if args.install_zig:
         zig = str(install_zig(ROOT / ".build/zig", json.loads(PIN.read_text())["zig"]))
         if github_path := os.environ.get("GITHUB_PATH"):
             with Path(github_path).open("a", encoding="utf-8") as out:
                 out.write(str(Path(zig).parent) + "\n")
-    print(build(target, ROOT / ".build/libghostty-vt", zig))
+    print(build(target, cache, zig))
 
 
 if __name__ == "__main__":
