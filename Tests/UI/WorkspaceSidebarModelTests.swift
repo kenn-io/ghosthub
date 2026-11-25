@@ -405,7 +405,15 @@ struct WorkspaceSidebarModelTests {
         #expect(rows.map(\.inactiveLabel) == ["interrupted", "saved"])
         #expect(rows[0].subtitle
             == "Saved before its tmux server stopped, 1 window, 3 panes, 2 agents interrupted")
-        #expect(rows.map { $0.savedTmuxSession?.isInterrupted } == [true, false])
+        #expect(rows.map { $0.savedTmuxSession?.canContinue } == [true, false])
+
+        // A restore already running would absorb a request to continue.
+        host.savedTmuxSessions[0].isRestoring = true
+        let restoring = WorkspaceSidebarModel.sections(
+            in: WorkspaceSnapshot(hosts: [host], projects: [], worktrees: [])
+        )[0].sessionRows[0]
+        #expect(restoring.inactiveLabel == "restoring…")
+        #expect(restoring.savedTmuxSession?.canContinue == false)
     }
 
     @Test("saved tmux sessions get dimmed rows that become the restored session")

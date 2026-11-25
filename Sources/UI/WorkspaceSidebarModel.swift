@@ -213,17 +213,19 @@ enum WorkspaceSidebarDropPlacement: Equatable {
 public struct WorkspaceSavedTmuxSessionSelection: Equatable, Hashable, Sendable {
     public var entryID: String
     public var session: WorkspaceTmuxSessionSelection
-    /// An agent in the session was mid-turn when it was saved.
-    public var isInterrupted: Bool
+    /// An agent in the session was mid-turn when it was saved, and no
+    /// restore of it is running. A request made during a restore joins that
+    /// restore, so it could not continue the agents.
+    public var canContinue: Bool
 
     public init(
         entryID: String,
         session: WorkspaceTmuxSessionSelection,
-        isInterrupted: Bool = false
+        canContinue: Bool = false
     ) {
         self.entryID = entryID
         self.session = session
-        self.isInterrupted = isInterrupted
+        self.canContinue = canContinue
     }
 
     public var hostID: UUID { session.hostID }
@@ -444,7 +446,7 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
             session: WorkspaceTmuxSessionSelection(
                 hostID: hostID, name: name, socketName: socketName
             ),
-            isInterrupted: !savedTmuxSessionInterrupted.isEmpty
+            canContinue: !savedTmuxSessionInterrupted.isEmpty && !savedTmuxSessionIsRestoring
         )
     }
 

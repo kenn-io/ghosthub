@@ -1511,7 +1511,7 @@ struct WorkspaceSidebarView: View {
             var saved = [NativePopupMenuAction("Restore Session") {
                 onRestoreSavedTmuxSession(savedTmuxSession)
             }]
-            if savedTmuxSession.isInterrupted, !savedRestoresContinue {
+            if savedTmuxSession.canContinue, !savedRestoresContinue {
                 saved.append(NativePopupMenuAction("Restore and Continue") {
                     onRestoreAndContinueSavedTmuxSession(savedTmuxSession)
                 })
