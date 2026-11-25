@@ -129,7 +129,7 @@ struct RemoteAgentHooksSettingsTests {
     private static func showsProjectPathField(_ window: NSWindow) -> Bool {
         func search(_ view: NSView) -> Bool {
             if let field = view as? NSTextField,
-               field.placeholderString == "/absolute/path/to/repository" {
+               field.placeholderString == "/path/to/repository or ~/repository" {
                 return true
             }
             return view.subviews.contains(where: search)
