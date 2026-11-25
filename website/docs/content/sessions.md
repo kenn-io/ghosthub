@@ -498,6 +498,27 @@ kwt could not find.
 Saved worktree and directory sessions do not get separate **saved** rows. Click
 the workspace row as usual, and kwt restores its saved session when opening it.
 
+### Continue interrupted agents
+
+A reboot can stop an agent in the middle of a turn. Restored, its conversation
+waits for your next prompt. To have such agents pick up on their own, turn on
+**Continue interrupted agents after a restart** in **Settings → Agents**. Every
+restore then sends each interrupted agent a prompt to check the state of its
+work and continue, including a window restoring its own session after a reboot.
+The setting is off by default.
+
+Saved rows with interrupted agents read **interrupted** instead of **saved**.
+With the setting off, open the row's **⋯** menu and choose **Restore and
+Continue** to continue them this once.
+
+- An agent that had finished its turn, or was waiting for your approval or
+  answer, restores without a prompt.
+- Claude Code turns are detected only where kwt's agent hooks are installed. A
+  Claude Code turn you stopped with Esc counts as interrupted until you send
+  that agent another prompt.
+- Saved worktree and directory sessions restored by opening the workspace row
+  never continue.
+
 - Conversations resume only in panes where kwt's agent hooks recorded them. See
   [Agents waiting for you](#agents-waiting-for-you) to install the hooks.
 - Codex running on its shared background daemon comes back as a plain shell

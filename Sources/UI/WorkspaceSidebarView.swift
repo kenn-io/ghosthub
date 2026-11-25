@@ -250,6 +250,10 @@ struct WorkspaceSidebarView: View {
     let onAddProject: (HostSummary) -> Void
     let onRestoreSavedTmuxSessions: (HostSummary) -> Void
     let onRestoreSavedTmuxSession: (WorkspaceSavedTmuxSessionSelection) -> Void
+    let onRestoreAndContinueSavedTmuxSession: (WorkspaceSavedTmuxSessionSelection) -> Void
+    /// Every restore already continues interrupted agents, so the one-off
+    /// action would repeat Restore Session.
+    let savedRestoresContinue: Bool
     let onRequestDismissSavedTmuxSession: (WorkspaceSavedTmuxSessionSelection) -> Void
     let onRefreshInventory: () -> Void
     let onOpenHostSettings: () -> Void
@@ -370,6 +374,9 @@ struct WorkspaceSidebarView: View {
         onRestoreSavedTmuxSessions: @escaping (HostSummary) -> Void = { _ in },
         onRestoreSavedTmuxSession: @escaping (WorkspaceSavedTmuxSessionSelection) -> Void = { _ in
         },
+        onRestoreAndContinueSavedTmuxSession:
+        @escaping (WorkspaceSavedTmuxSessionSelection) -> Void = { _ in },
+        savedRestoresContinue: Bool = false,
         onRequestDismissSavedTmuxSession:
         @escaping (WorkspaceSavedTmuxSessionSelection) -> Void = { _ in },
         onRefreshInventory: @escaping () -> Void = {},
@@ -439,6 +446,8 @@ struct WorkspaceSidebarView: View {
         self.onAddProject = onAddProject
         self.onRestoreSavedTmuxSessions = onRestoreSavedTmuxSessions
         self.onRestoreSavedTmuxSession = onRestoreSavedTmuxSession
+        self.onRestoreAndContinueSavedTmuxSession = onRestoreAndContinueSavedTmuxSession
+        self.savedRestoresContinue = savedRestoresContinue
         self.onRequestDismissSavedTmuxSession = onRequestDismissSavedTmuxSession
         self.onRefreshInventory = onRefreshInventory
         self.onOpenHostSettings = onOpenHostSettings
@@ -1499,17 +1508,21 @@ struct WorkspaceSidebarView: View {
     ) -> [[NativePopupMenuAction]] {
         var groups: [[NativePopupMenuAction]] = []
         if let savedTmuxSession {
-            groups.append([
-                NativePopupMenuAction("Restore Session") {
-                    onRestoreSavedTmuxSession(savedTmuxSession)
-                },
-                NativePopupMenuAction(
-                    "Dismiss Saved Session…",
-                    role: .destructive
-                ) {
-                    onRequestDismissSavedTmuxSession(savedTmuxSession)
-                },
-            ])
+            var saved = [NativePopupMenuAction("Restore Session") {
+                onRestoreSavedTmuxSession(savedTmuxSession)
+            }]
+            if savedTmuxSession.isInterrupted, !savedRestoresContinue {
+                saved.append(NativePopupMenuAction("Restore and Continue") {
+                    onRestoreAndContinueSavedTmuxSession(savedTmuxSession)
+                })
+            }
+            saved.append(NativePopupMenuAction(
+                "Dismiss Saved Session…",
+                role: .destructive
+            ) {
+                onRequestDismissSavedTmuxSession(savedTmuxSession)
+            })
+            groups.append(saved)
         }
         if let renamableTmuxSession {
             groups.append([NativePopupMenuAction("Rename Session…") {

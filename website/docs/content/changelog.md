@@ -34,6 +34,11 @@ docs-only changes are left out.
   restarted appear as dimmed **saved** rows; click one to rebuild its windows
   and panes and resume the Claude Code, Codex, and Antigravity CLI (`agy`)
   conversations inside it, or restore all of them from the host's **+** menu.
+- Agents a reboot stopped mid-turn can carry on by themselves. Turn on
+  **Continue interrupted agents after a restart** in **Settings → Agents**, and
+  restored Claude Code and Codex sessions get a prompt to check their work and
+  continue. Saved rows show which sessions were **interrupted**, and **Restore
+  and Continue** in a row's **⋯** menu continues them once.
   See [Restore sessions after a reboot](sessions.md#restore-sessions-after-a-reboot).
 - Expand `~` and `~/...` to the target host's home directory when adding or
   locating a project on your Mac or an SSH host.

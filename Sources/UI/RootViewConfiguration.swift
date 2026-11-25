@@ -499,9 +499,10 @@ public struct InteractionHandlers {
     public let currentWorkspaceSnapshot: (() -> WorkspaceSnapshot)?
     public let loadWorktreeChanges: WorktreeChangesLoader?
     public let refreshWorkspaceInventory: (() -> Void)?
-    /// Restores the given kwt saved-session entries on a host.
+    /// Restores the given kwt saved-session entries on a host. True asks
+    /// kwt to continue agents a restart cut short, whatever the setting.
     public let restoreSavedTmuxSessions:
-        ((UUID, [String]) async throws -> TmuxRestoreReport)?
+        ((UUID, [String], Bool) async throws -> TmuxRestoreReport)?
     /// Deletes one kwt saved-session entry without restoring it.
     public let dismissSavedTmuxSession: ((UUID, String) async throws -> Void)?
     /// Changes with every navigation the scene handles itself.
@@ -611,7 +612,7 @@ public struct InteractionHandlers {
         loadWorktreeChanges: WorktreeChangesLoader? = nil,
         refreshWorkspaceInventory: (() -> Void)? = nil,
         restoreSavedTmuxSessions:
-        ((UUID, [String]) async throws -> TmuxRestoreReport)? = nil,
+        ((UUID, [String], Bool) async throws -> TmuxRestoreReport)? = nil,
         dismissSavedTmuxSession: ((UUID, String) async throws -> Void)? = nil,
         userNavigationRevision: (() -> UInt64)? = nil,
         reconnectActiveTmuxSessionNow: (() -> Void)? = nil,

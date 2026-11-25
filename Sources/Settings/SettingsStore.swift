@@ -18,6 +18,8 @@ public final class SettingsStore: ObservableObject {
             "ghosthub.settings.agents.autoInstallHooks"
         static let onboardingCompleted =
             "ghosthub.settings.application.onboardingCompleted"
+        static let continueInterruptedAgents =
+            "ghosthub.settings.sessions.continueInterruptedAgents"
         static let hideRootCheckout = "ghosthub.settings.worktrees.hideRootCheckout"
         static let showHiddenWorktreesByDefault = "ghosthub.settings.worktrees.showHiddenWorktreesByDefault"
         static let hideKwtManagedSessions =
@@ -94,6 +96,9 @@ public final class SettingsStore: ObservableObject {
     @Published public private(set) var autoInstallAgentHooks: Bool
     /// The welcome sheet was finished or skipped.
     @Published public private(set) var onboardingCompleted: Bool
+    /// Off by default: restoring a saved tmux session then also tells agents
+    /// that were mid-turn when the host restarted to continue.
+    @Published public private(set) var continueInterruptedAgents: Bool
     @Published public private(set) var interfaceAppearance: AppearancePreference
     @Published public private(set) var notificationConfiguration: NotificationsConfiguration
     @Published public private(
@@ -141,6 +146,9 @@ public final class SettingsStore: ObservableObject {
         let loadedConfirmBeforeQuitting = Self.loadConfirmBeforeQuitting(
             using: userDefaults
         )
+        let loadedContinueInterruptedAgents = userDefaults.bool(
+            forKey: DefaultsKey.continueInterruptedAgents
+        )
         let loadedAppearance = Self.loadInterfaceAppearance(
             using: userDefaults
         )
@@ -183,6 +191,7 @@ public final class SettingsStore: ObservableObject {
         confirmBeforeQuitting = loadedConfirmBeforeQuitting
         autoInstallAgentHooks = userDefaults.bool(forKey: DefaultsKey.autoInstallAgentHooks)
         onboardingCompleted = userDefaults.bool(forKey: DefaultsKey.onboardingCompleted)
+        continueInterruptedAgents = loadedContinueInterruptedAgents
         interfaceAppearance = loadedAppearance
         notificationConfiguration = loadedNotifications
         terminalAppearancePreferences = loadedTerminalAppearance
@@ -212,6 +221,9 @@ public final class SettingsStore: ObservableObject {
         )
         autoInstallAgentHooks = userDefaults.bool(forKey: DefaultsKey.autoInstallAgentHooks)
         onboardingCompleted = userDefaults.bool(forKey: DefaultsKey.onboardingCompleted)
+        continueInterruptedAgents = userDefaults.bool(
+            forKey: DefaultsKey.continueInterruptedAgents
+        )
         interfaceAppearance = Self.loadInterfaceAppearance(
             using: userDefaults
         )
@@ -281,6 +293,14 @@ public final class SettingsStore: ObservableObject {
     public func setOnboardingCompleted(_ completed: Bool) {
         onboardingCompleted = completed
         userDefaults.set(completed, forKey: DefaultsKey.onboardingCompleted)
+    }
+
+    public func setContinueInterruptedAgents(_ enabled: Bool) {
+        continueInterruptedAgents = enabled
+        userDefaults.set(
+            enabled,
+            forKey: DefaultsKey.continueInterruptedAgents
+        )
     }
 
     public func setShowMacOSNotifications(_ enabled: Bool) {

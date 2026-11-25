@@ -232,6 +232,11 @@ final class WorkspaceSceneModel: ObservableObject {
     private var savedTmuxSessionsByHost: [UUID: [SavedTmuxSession]] = [:]
     /// Saved-session entries any window is restoring now.
     private let savedTmuxSessionRestores: SavedTmuxSessionRestores
+    /// Whether every restore, including a window bringing back its own
+    /// session after a reboot, continues the turns the reboot cut short.
+    var continuesInterruptedAgents: @MainActor () -> Bool = {
+        SettingsStore.shared.continueInterruptedAgents
+    }
     private var savedTmuxSessionDiscoveryTasks: [UUID: Task<Void, Never>] = [:]
     /// Windows restoring their ended session from a saved copy, by handle.
     @Published private(set) var savedTmuxWindowRestores: [UUID: SavedTmuxWindowRestore] = [:]
@@ -16926,10 +16931,12 @@ extension WorkspaceSceneModel {
 
     /// Restores the requested saved sessions that Ghosthub lists on the host.
     /// A session another window is restoring is not restored twice; its
-    /// outcome is shared.
+    /// outcome is shared. Agents stopped mid-turn continue when `continuing`
+    /// asks for it or the person turned that on for every restore.
     func restoreSavedTmuxSessions(
         _ requested: [String],
-        hostID: UUID
+        hostID: UUID,
+        continuing: Bool = false
     ) async throws -> TmuxRestoreReport {
         guard let host = inventoryHosts[hostID] else {
             throw KwtSessionError(host: snapshot.host(id: hostID)?.name ?? "this host")
@@ -16943,12 +16950,15 @@ extension WorkspaceSceneModel {
             }
             refreshKwtInventory()
         }
+        let continuing = continuing || continuesInterruptedAgents()
         return try await savedTmuxSessionRestores
             .restore(ids, hostID: hostID) { [weak self] claimed in
                 guard let self else { throw CancellationError() }
                 setSavedTmuxSessions(savedTmuxSessionsByHost[hostID] ?? listed, hostID: hostID)
                 try await ensureRemoteKwtForOperation(hostID: hostID)
-                return try await kwtSessionClient.restore(claimed, on: host)
+                return try await kwtSessionClient.restore(
+                    claimed, continuing: continuing, on: host
+                )
             }
     }
 

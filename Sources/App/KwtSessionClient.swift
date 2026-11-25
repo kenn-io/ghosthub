@@ -64,8 +64,15 @@ struct KwtSessionClient: Sendable {
     }
 
     /// kwt exits non-zero when a session fails but still reports every one.
-    func restore(_ ids: [String], on host: CommandHost) async throws -> TmuxRestoreReport {
-        let result = try await run(["restore", "--json"] + ids, on: host)
+    /// With `continuing`, agents the server's loss stopped mid-turn resume
+    /// with a message to continue.
+    func restore(
+        _ ids: [String],
+        continuing: Bool = false,
+        on host: CommandHost
+    ) async throws -> TmuxRestoreReport {
+        let flags = continuing ? ["--json", "--continue"] : ["--json"]
+        let result = try await run(["restore"] + flags + ids, on: host)
         return try decode(TmuxRestoreReport.self, from: result.stdout, host: host)
     }
 

@@ -21,6 +21,9 @@ public struct SavedTmuxSession: Decodable, Equatable, Sendable, Identifiable {
     public var windows: Int
     public var panes: Int
     public var agents: [String]
+    /// The agent of each pane that was in the middle of a turn when the
+    /// server stopped. Restoring with continue tells those agents to go on.
+    public var interrupted: [String]
     /// A live session already has this name, so restore will skip it.
     public var nameTaken: Bool
     /// A kwt worktree or directory workspace session. Opening its workspace
@@ -39,6 +42,7 @@ public struct SavedTmuxSession: Decodable, Equatable, Sendable, Identifiable {
         windows: Int = 1,
         panes: Int = 1,
         agents: [String] = [],
+        interrupted: [String] = [],
         nameTaken: Bool = false,
         worktree: Bool = false,
         savedAt: Int64 = 0
@@ -49,6 +53,7 @@ public struct SavedTmuxSession: Decodable, Equatable, Sendable, Identifiable {
         self.windows = windows
         self.panes = panes
         self.agents = agents
+        self.interrupted = interrupted
         self.nameTaken = nameTaken
         self.worktree = worktree
         self.savedAt = savedAt
@@ -67,7 +72,7 @@ public struct SavedTmuxSession: Decodable, Equatable, Sendable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, socket, session, windows, panes, agents
+        case id, socket, session, windows, panes, agents, interrupted
         case nameTaken = "name_taken"
         case worktree
         case savedAt = "saved_at"
@@ -81,6 +86,7 @@ public struct SavedTmuxSession: Decodable, Equatable, Sendable, Identifiable {
         windows = try container.decodeIfPresent(Int.self, forKey: .windows) ?? 0
         panes = try container.decodeIfPresent(Int.self, forKey: .panes) ?? 0
         agents = try container.decodeIfPresent([String].self, forKey: .agents) ?? []
+        interrupted = try container.decodeIfPresent([String].self, forKey: .interrupted) ?? []
         nameTaken = try container.decodeIfPresent(Bool.self, forKey: .nameTaken) ?? false
         worktree = try container.decodeIfPresent(Bool.self, forKey: .worktree) ?? false
         savedAt = try container.decodeIfPresent(Int64.self, forKey: .savedAt) ?? 0
@@ -104,6 +110,8 @@ public struct TmuxRestoreReport: Decodable, Equatable, Sendable {
         public var agent: String?
         public var status: String
         public var note: String?
+        /// The agent resumed with kwt's message to continue its turn.
+        public var continued: Bool?
     }
 
     public var entries: [Entry]

@@ -189,6 +189,60 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a restore continues interrupted agents once, or always when chosen")
+    func savedTmuxSessionContinuesInterruptedAgents() async throws {
+        let environment = try setupStandardEnvironment()
+        let commands = Mutex<[String]>([])
+        let client = KwtSessionClient(
+            localRunner: { command in
+                commands.withLock { $0.append(command) }
+                let marker = "GHOSTHUB_KWT_SESSION_JSON\n"
+                if command.contains("'snapshot'") {
+                    return (0, marker + """
+                    {"entries": [
+                      {"id": "a1", "socket": {"path": "/tmp/tmux-501/default", "name": "default"},
+                       "session": "api", "interrupted": ["codex"]},
+                      {"id": "b2", "socket": {"path": "/tmp/tmux-501/default", "name": "default"},
+                       "session": "docs"}
+                    ]}
+                    """)
+                }
+                if command.contains("'restore'") {
+                    return (0, marker + #"{"entries": []}"#)
+                }
+                return (0, marker)
+            },
+            localBinaryPath: "/opt/kwt"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            kwtSessionClient: client
+        )
+        model.continuesInterruptedAgents = { false }
+        model.startKwtInventory()
+        await waitUntilMainActor { model.snapshot.hosts[0].savedTmuxSessions.count == 2 }
+        #expect(model.snapshot.hosts[0].savedTmuxSessions.map(\.interrupted) == [["codex"], []])
+        let hostID = environment.host.id
+        func lastRestore() -> String? {
+            commands.withLock { $0 }.last { $0.contains("'restore'") }
+        }
+
+        _ = try await model.restoreSavedTmuxSessions(["a1"], hostID: hostID)
+        #expect(lastRestore()?.hasSuffix("session 'restore' '--json' 'a1'") == true)
+
+        _ = try await model.restoreSavedTmuxSessions(["a1"], hostID: hostID, continuing: true)
+        #expect(lastRestore()?.hasSuffix("session 'restore' '--json' '--continue' 'a1'") == true)
+
+        model.continuesInterruptedAgents = { true }
+        _ = try await model.restoreSavedTmuxSessions(["b2"], hostID: hostID)
+        #expect(lastRestore()?.hasSuffix("session 'restore' '--json' '--continue' 'b2'") == true)
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a host changed to Windows drops the saved sessions it listed before")
     func savedSessionsClearWhenHostTurnsWindows() async throws {
         let environment = try setupStandardEnvironment()

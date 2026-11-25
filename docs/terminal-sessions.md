@@ -510,6 +510,7 @@ become restorable:
 | --- | --- |
 | List restorable sessions | `kwt session snapshot --json` |
 | Restore Saved tmux Sessions, or open a saved row | `kwt session restore --json <id>...` |
+| Any restore with **Continue interrupted agents after a restart** on, or **Restore and Continue** | `kwt session restore --json --continue <id>...` |
 | Dismiss Saved Session (confirmed) | `kwt session dismiss <id>` |
 | After a confirmed Kill Session | `kwt session forget --socket-name <name> --session-id <id> --server-pid <pid> --created <time>` |
 
@@ -543,6 +544,15 @@ become restorable:
   error with **Retry Restore**, and no window on that host restores from older
   cached copies until a listing succeeds. **Reopen**, which creates an empty
   session, appears only after a listing finds no saved copy.
+- kwt reports each saved entry's `interrupted` agents: panes whose agent was
+  mid-turn when the server stopped. Their rows read **interrupted** instead of
+  **saved**. The off-by-default setting **Continue interrupted agents after a
+  restart** (`SettingsStore.continueInterruptedAgents`) adds `--continue` to
+  every restore, including a window restoring its own session; kwt then resumes
+  only those panes with a fixed prompt to check their work and continue. With
+  the setting off, **Restore and Continue** on an interrupted row's menu passes
+  `--continue` once. kwt owns turn detection; see its `session restore` CLI
+  reference for the limits.
 - A confirmed Kill Session keeps every window from restoring that session from
   before the kill until kwt has forgotten its saved copy. Ghosthub runs
   `forget` in the background using the socket name (since killing the last
