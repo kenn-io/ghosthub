@@ -206,10 +206,13 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(!model.activeBorrowedTmuxSessionIsConfirmedEnded)
         #expect(model.activeBorrowedTmuxSavedRestore == nil)
         // The attach expects the restored session's new identity, not the
-        // one it had before the reboot.
+        // one it had before the reboot. Match the tmux identity clauses so a
+        // random client TTY token UUID cannot match a bare number.
         let attach = try #require(store.launchCommands.load().last)
-        #expect(attach.contains("201"))
-        #expect(!attach.contains("101"))
+        #expect(attach.contains("#{==:#{pid},201}"))
+        #expect(attach.contains("#{==:#{session_id},$2}"))
+        #expect(attach.contains("#{==:#{session_created},2000}"))
+        #expect(!attach.contains("#{==:#{pid},101}"))
         await model.shutdown()
     }
 
@@ -266,7 +269,8 @@ extension WorkspaceTmuxDiscoveryTests {
         await waitUntilMainActor {
             late.prepareActiveBorrowedTmuxSurface()
             // The restored session's creation time.
-            return lateStore.launchCommands.load().last?.contains("2000") == true
+            return lateStore.launchCommands.load().last?
+                .contains("#{==:#{session_created},2000}") == true
                 && late.activeBorrowedTmuxSessionIsConnected
         }
 
