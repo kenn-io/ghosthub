@@ -277,6 +277,22 @@ public struct WorktreeRemovalRequest: Equatable, Sendable {
     }
 }
 
+public struct DirectoryRemovalRequest: Equatable, Sendable {
+    public let directory: DirectoryWorkspaceSummary
+    public let confirmedHost: HostSummary
+    public let routeIdentity: String?
+
+    public init(
+        directory: DirectoryWorkspaceSummary,
+        confirmedHost: HostSummary,
+        routeIdentity: String?
+    ) {
+        self.directory = directory
+        self.confirmedHost = confirmedHost
+        self.routeIdentity = routeIdentity
+    }
+}
+
 public struct ProjectRemovalRequest: Equatable, Sendable {
     public let project: ProjectSummary
     public let confirmedHost: HostSummary
@@ -524,7 +540,18 @@ public struct InteractionHandlers {
     public let completeSSHAuthentication:
         ((UUID, SSHAuthenticationHandoff) async -> Void)?
     public let registerProject:
-        ((HostSummary, String) async -> Result<String, HostProbeError>)?
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)?
+    public let registerDirectory:
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)?
+    public let unregisterDirectory:
+        ((DirectoryRemovalRequest) async -> Result<String, HostProbeError>)?
+    public let prepareDirectoryRemoval:
+        ((HostSummary, DirectoryWorkspaceSummary) async -> Result<
+            DirectoryRemovalRequest,
+            HostProbeError
+        >)?
+    public let browseDirectory:
+        ((HostSummary, String) async -> Result<DirectoryListing, HostProbeError>)?
     public let recoverProject:
         ((HostSummary, ProjectSummary, String) async -> Result<String, HostProbeError>)?
     public let prepareProjectRemoval:
@@ -632,7 +659,18 @@ public struct InteractionHandlers {
         completeSSHAuthentication:
         ((UUID, SSHAuthenticationHandoff) async -> Void)? = nil,
         registerProject:
-        ((HostSummary, String) async -> Result<String, HostProbeError>)? = nil,
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)? = nil,
+        registerDirectory:
+        ((HostSummary, String, String?) async -> Result<String, HostProbeError>)? = nil,
+        unregisterDirectory:
+        ((DirectoryRemovalRequest) async -> Result<String, HostProbeError>)? = nil,
+        prepareDirectoryRemoval:
+        ((HostSummary, DirectoryWorkspaceSummary) async -> Result<
+            DirectoryRemovalRequest,
+            HostProbeError
+        >)? = nil,
+        browseDirectory:
+        ((HostSummary, String) async -> Result<DirectoryListing, HostProbeError>)? = nil,
         recoverProject:
         ((HostSummary, ProjectSummary, String) async -> Result<String, HostProbeError>)? = nil,
         prepareProjectRemoval:
@@ -710,6 +748,10 @@ public struct InteractionHandlers {
         self.cancelSSHAuthentication = cancelSSHAuthentication
         self.completeSSHAuthentication = completeSSHAuthentication
         self.registerProject = registerProject
+        self.registerDirectory = registerDirectory
+        self.unregisterDirectory = unregisterDirectory
+        self.prepareDirectoryRemoval = prepareDirectoryRemoval
+        self.browseDirectory = browseDirectory
         self.recoverProject = recoverProject
         self.prepareProjectRemoval = prepareProjectRemoval
         self.unregisterProject = unregisterProject

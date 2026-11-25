@@ -1202,8 +1202,20 @@ struct WorkspaceWindow: View {
                         startingNextOwner: startingNextOwner
                     )
                 },
-                registerProject: { [sceneModel] host, path in
-                    await sceneModel.registerProject(path, on: host)
+                registerProject: { [sceneModel] host, path, route in
+                    await sceneModel.registerProject(path, on: host, expectedRouteIdentity: route)
+                },
+                registerDirectory: { [sceneModel] host, path, route in
+                    await sceneModel.registerDirectory(path, on: host, expectedRouteIdentity: route)
+                },
+                unregisterDirectory: { [sceneModel] request in
+                    await sceneModel.unregisterDirectory(request)
+                },
+                prepareDirectoryRemoval: { [sceneModel] host, directory in
+                    await sceneModel.prepareDirectoryRemoval(directory, on: host)
+                },
+                browseDirectory: { [sceneModel] host, path in
+                    await sceneModel.browseDirectory(path, on: host)
                 },
                 recoverProject: { [sceneModel] host, project, path in
                     await sceneModel.recoverProject(project, to: path, on: host)

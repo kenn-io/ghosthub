@@ -866,7 +866,7 @@ enum KwtSnapshotMerger {
         }
         let existingDirectoryWorkspacesByPath = Dictionary(
             existingDirectoryWorkspaces.map {
-                (normalizePath($0.path), $0)
+                (Data(normalizePath($0.path).utf8), $0)
             },
             uniquingKeysWith: { first, _ in first }
         )
@@ -876,7 +876,7 @@ enum KwtSnapshotMerger {
             : inventory.directoryWorkspaces
         let directoryWorkspaces = directoryRecords.map { record in
             let recordPath = normalizePath(record.path)
-            let existing = existingDirectoryWorkspacesByPath[recordPath]
+            let existing = existingDirectoryWorkspacesByPath[Data(recordPath.utf8)]
             var workspace = existing ?? DirectoryWorkspaceSummary(
                 id: stableID(
                     "directory-workspace|\(hostID.uuidString)"

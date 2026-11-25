@@ -9,8 +9,86 @@ import Testing
 
 @Suite("Pinned kwt contract", .serialized)
 struct PinnedKwtContractTests {
+    @Test("directory browsing does not register children until explicitly requested")
+    func directoryBrowsingRegistration() async throws {
+        guard ProcessInfo.processInfo.environment[
+            "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
+        ] == "1" else { return }
+        let binary = try #require(ProcessInfo.processInfo
+            .environment["GHOSTHUB_KWT_CONTRACT_BINARY"])
+        let fixture = try TempDirectoryFixture(shortPath: true)
+        let home = try fixture.createSubdirectory("kwt-home")
+        let root = try fixture.createSubdirectory("hub's folder")
+        let checkout = root.appendingPathComponent("widget")
+        try FileManager.default.createDirectory(at: checkout, withIntermediateDirectories: true)
+        try initializeRepository(checkout)
+        let environment = ["KWT_HOME": home.path]
+        defer {
+            _ = AccountCommandRunner.runProcess(
+                executable: binary, arguments: ["daemon", "stop"], timeout: 10,
+                environmentOverrides: environment
+            )
+        }
+        let client = KwtDirectoryClient(
+            runner: { command in
+                AccountCommandRunner.runProcess(
+                    executable: "/bin/zsh", arguments: ["-l", "-c", command], timeout: 30,
+                    environmentOverrides: environment
+                )
+            },
+            binaryPath: binary
+        )
+        let inventory = KwtInventoryClient(
+            localRunner: { shell, command in
+                AccountCommandRunner.runLoginShell(
+                    shell: shell, command: command, timeout: 45,
+                    environmentOverrides: environment
+                )
+            }, localBinaryPath: binary
+        )
+        try await client.register(root.path, on: .local)
+        let listing = try await client.browse(root.path, on: .local)
+        #expect(listing.entries.count == 1)
+        let candidate = try #require(listing.entries.first?.projectPath)
+        #expect(URL(fileURLWithPath: candidate).resolvingSymlinksInPath().path
+            == checkout.resolvingSymlinksInPath().path)
+        let before = try await inventory.load(from: .local)
+        #expect(before.projects.isEmpty)
+        #expect(before.directoryWorkspaces.count == 1)
+        let registry = KwtProjectRegistryClient(
+            localRunner: { command in
+                AccountCommandRunner.runLoginShell(
+                    shell: "/bin/zsh", command: command, timeout: 45,
+                    environmentOverrides: environment
+                )
+            }, localBinaryPath: binary
+        )
+        _ = try await registry.register(projectPath: candidate, on: .local)
+        let after = try await inventory.load(from: .local)
+        #expect(after.projects.count == 1)
+        #expect(after.projects.first?.worktrees.count == 1)
+        #expect(after.directoryWorkspaces.count == 1)
+        try await client.register(checkout.path, on: .local)
+        let registered = try #require(after.directoryWorkspaces.first)
+        let removal = DirectoryWorkspaceSummary(
+            id: UUID(), hostID: UUID(), name: registered.name, path: registered.path,
+            tmuxSessionName: registered.sessionName, sessionLive: registered.sessionLive
+        )
+        let route = try await client.prepareRemoval(removal, on: .local)
+        try await client.unregister(removal, on: .local, expectedRouteIdentity: route)
+        let removed = try await inventory.load(from: .local)
+        #expect(removed.projects.count == 1)
+        #expect(removed.directoryWorkspaces.count == 1)
+        #expect(removed.directoryWorkspaces.first?.name == "widget")
+        #expect(FileManager.default
+            .fileExists(atPath: checkout.appendingPathComponent(".git").path))
+        try await client.register(root.path, on: .local)
+        let restored = try await inventory.load(from: .local)
+        #expect(restored.directoryWorkspaces.count == 2)
+    }
+
     @Test("directory workspace opens through the pinned helper", arguments: [false, true])
-    func directoryWorkspaceAttachment(existingSession: Bool) throws {
+    func directoryWorkspaceAttachment(existingSession: Bool) async throws {
         guard ProcessInfo.processInfo.environment[
             "GHOSTHUB_RUN_PINNED_KWT_CONTRACT_TESTS"
         ] == "1" else { return }
@@ -96,6 +174,35 @@ struct PinnedKwtContractTests {
             ], timeout: 2
         )
         #expect(liveSession.status == 0, Comment(rawValue: liveSession.stderr))
+        let client = KwtDirectoryClient(
+            runner: { command in
+                AccountCommandRunner.runProcess(
+                    executable: "/bin/zsh", arguments: ["-l", "-c", command], timeout: 30,
+                    environmentOverrides: environment
+                )
+            }, binaryPath: binary
+        )
+        let removal = DirectoryWorkspaceSummary(
+            id: UUID(), hostID: UUID(), name: record.name, path: record.path,
+            tmuxSessionName: record.sessionName, sessionLive: record.sessionLive
+        )
+        let route = try await client.prepareRemoval(removal, on: .local)
+        try await client.unregister(removal, on: .local, expectedRouteIdentity: route)
+        let remaining = AccountCommandRunner.runProcess(
+            executable: binary, arguments: ["workspace", "list", "--json"],
+            timeout: 10, environmentOverrides: environment
+        )
+        #expect(try JSONDecoder().decode(
+            [KwtDirectoryWorkspaceRecord].self, from: Data(remaining.stdout.utf8)
+        ).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: workspace.path))
+        let preservedSession = AccountCommandRunner.runProcess(
+            executable: tmuxPath,
+            arguments: server.connectionArguments + [
+                "has-session", "-t", "=\(record.sessionName)",
+            ], timeout: 2
+        )
+        #expect(preservedSession.status == 0)
     }
 
     enum RemovalGuard: CaseIterable, Sendable {

@@ -86,6 +86,7 @@ the repository root):
 make screenshot-settings SCREENSHOT_DIR=/tmp/ghosthub-website-assets
 make screenshot-project-recovery SCREENSHOT_PATH=/tmp/ghosthub-website-assets/guide-project-recovery.png
 make screenshot-worktree-flags SCREENSHOT_DIR=/tmp/ghosthub-worktree-flags
+make screenshot-directory-browser SCREENSHOT_DIR=/tmp/ghosthub-directory-browser
 website/demo/render-launch-profile.sh /tmp/ghosthub-website-assets/docs-launch-profiles.png
 ```
 
@@ -96,6 +97,9 @@ website/demo/render-launch-profile.sh /tmp/ghosthub-website-assets/docs-launch-p
   preferences and writes `worktree-flags-light.png` and
   `worktree-flags-dark.png`. Publish the dark capture as
   `guide-worktree-flags.png`.
+- The directory browser renderer exercises nested registrations and cached
+  reopening in the real sidebar with synthetic data. It exports
+  `guide-directory-browser.png` and `guide-directory-browser-light.png`.
 - The staged demo app uses its own OpenSSH config, known-hosts file, and tmux
   socket directory (its tmux wrapper restores that directory for kwt commands
   that clear `TMUX_TMPDIR`). Because the controller captures its own process,

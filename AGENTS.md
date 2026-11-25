@@ -92,7 +92,9 @@ direct iteration.
   Authenticode-signed.
 - **No filesystem scanning:** remote hosts register projects only through Host
   Settings **Add Project** (passing one absolute repository path to kwt).
-  Ghosthub never scans remote filesystems or edits kwt config.
+  Ghosthub never scans remote filesystems automatically or edits kwt config.
+  Explicit directory expansion asks kwt for one level of child folders;
+  registering a discovered child requires its menu action.
 - **No backend reconstruction:** Ghosthub never uses `tmux -CC` and never
   reconstructs tmux, Herdr, or Zellij windows, tabs, panes, layouts, history,
   or terminal output in Swift.

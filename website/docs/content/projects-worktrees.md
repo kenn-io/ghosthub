@@ -81,20 +81,83 @@ and on macOS and Linux SSH hosts, not on native Windows hosts.
 
 ## Register a plain directory
 
-A notes folder, monorepo hub, or any other non-Git directory can still use kwt
-layouts and Ghosthub's session flow. Register it on the host where it lives:
+**Development preview:** the macOS Add Project sheet now has a **Directory**
+choice. Enter or choose a folder, then select **Add Directory**. The folder
+does not need Git.
+
+Select its name to open the root terminal. Select its chevron to browse child
+folders. Unregistered folders appear gray with a “Not registered” tooltip.
+Browsing never registers anything. Use a child row's **…** menu to **Add
+Project** when kwt recognizes a checkout, or **Add Directory** to give the folder
+its own root terminal. Registered projects show their normal worktree rows.
+Expand a project to see its worktrees and nested registrations together.
+Every registered project supports nested navigation, including a top-level
+project without an ancestor directory registration. Its normal disclosure shows
+worktrees and registered descendants without searching the filesystem.
+To find and add another nested project, choose **Show Unregistered Folders**
+from the project's **…** menu. Unregistered folders appear in gray; use their
+**…** menus to register them explicitly. **Hide Unregistered Folders** hides
+those candidates while keeping registered descendants visible. Sibling checkouts
+share one project group, while folders leading to other registrations stay
+reachable.
+
+![Nested projects and worktrees with a registered Notes folder](https://raw.githubusercontent.com/sarcasticbird/ghosthub/3e8410b742be705933f348c9594cb0b827b9de17/guide-directory-browser.png)
+
+Use **… → Refresh Folders** to reload a folder after filesystem changes.
+Unregistered folders are hidden by default. Use **… → Show Unregistered
+Folders** to see the full listing. **Hide Unregistered Folders** shows only
+registered children and folders leading to registered projects or directories.
+This choice applies to that folder while
+it remains in the sidebar.
+The registered-only view shows known projects immediately and displays
+**Loading projects…** while the first folder lookup is running. First expansion
+also requests a folder listing to recognize nested project containers and show
+their worktrees directly, without requiring a visibility toggle.
+Ancestor folders containing registered projects or directories use normal text
+even before browsing. Expand them to reach the registered project and its
+worktrees; gray text is reserved for folders with no known registrations.
+Full folder listings are loaded on demand and reused when you collapse and
+reopen a folder. **Refresh Folders** clears that folder's cached listing.
+For a registered directory with a running session, the same **…** menu includes
+**Kill Session…**, which asks for confirmation.
+Browsing is available on the local Mac and remote macOS/Linux hosts. It omits
+hidden folders and symbolic links and inspects up to 1,000 filesystem entries
+per expansion. Known registrations remain reachable even when their folders
+are missing or outside that listing limit.
+Directory names containing a dollar sign can be browsed but cannot currently
+be registered because kwt expands environment variables in stored paths.
+If an SSH alias points to a different server after browsing, registration stops
+and asks you to refresh the parent folder. Expanding a child cannot replace the
+destination that supplied its path; refresh its parent to use the new destination.
+A folder selected with **Choose
+Folder…** keeps its exact path, including trailing spaces.
+
+### Register from a shell
+
+A hub, notes tree, or other directory that is not a Git checkout can still use
+the same kwt layouts and Ghosthub terminal flow. Register it on the target host:
 
 ```sh
 kwt workspace add /absolute/path/to/directory
 ```
 
-Refresh Ghosthub and the directory appears as a single flat row under
-**Projects**, below your Git repositories. It has no expandable worktrees
-because one registered directory maps to one workspace session.
+Refresh Ghosthub. The directory appears in **Projects**. In the development
+preview it expands into browsable child folders; older builds show a flat row.
+Each registered directory owns one workspace session. Projects nested beneath
+it retain their own independently registered worktrees.
 
-Click the row to let kwt create or repair its layout and attach tmux. Removing
-the directory later with `kwt workspace remove` leaves any live session running;
-after a refresh, that session shows up in the host's session list.
+Click the row to let kwt create or repair its layout and attach tmux.
+In the development preview, choose **Remove Directory…** from its **…** menu
+and confirm to unregister it. Files, nested project and directory registrations,
+and running sessions are preserved. The sidebar refreshes automatically; a live
+session remains available in the host's session list. An unregistered parent may
+still appear as a navigation folder when it contains registered children.
+Ghosthub checks the host destination and registration before confirmation and
+again on the connection used for removal. If either changes, choose
+**Remove Directory…** again to review the current target.
+
+From a shell on the owning host, use `kwt workspace remove <name>` with the
+registered name shown by `kwt workspace list`, not its filesystem path.
 
 ## Open a project checkout
 

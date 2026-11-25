@@ -287,8 +287,8 @@ public enum TmuxAttachMode: String, Codable, Equatable, Sendable {
 }
 
 /// A kwt-registered plain directory with one canonical tmux workspace.
-/// Directory workspaces are host-level peers of projects rather than
-/// synthetic repositories: they have no Git branch or child worktrees.
+/// Directory workspaces own no Git branches or worktrees. The sidebar may
+/// group independently registered projects beneath their filesystem paths.
 public struct DirectoryWorkspaceSummary: Identifiable, Equatable, Sendable {
     public let id: UUID
     public var hostID: UUID

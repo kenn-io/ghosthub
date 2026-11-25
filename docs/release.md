@@ -105,6 +105,15 @@ against representative user state. The pinned revision must preserve:
   (daemon-serialized, accepting missing checkouts, rejecting live protected
   sessions, bare `.git` repo support).
 
+Directory browsing requires `workspace browse <absolute-path>` and registration
+uses `workspace add <absolute-path>`. The pinned-helper test browses a child
+checkout without registering it, then explicitly registers it and verifies
+both inventories. Ship matching local and remote POSIX helper revisions.
+Bare-container recognition verifies the live checkout and recorded inventory,
+with at most three Git processes per recognized container. Linked checkouts
+must share their live primary checkout's Git common directory. An empty
+container identity must never compare equal to the current directory.
+
 ## Protected signing environment
 
 All signing, notarization, and publishing jobs in `release.yml` and
