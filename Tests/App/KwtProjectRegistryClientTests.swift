@@ -1,6 +1,7 @@
-import GhosthubTransport
 import Foundation
 import GhosthubTmux
+import GhosthubTransport
+import GhosthubWorkspace
 import Testing
 @testable import GhosthubApp
 
@@ -348,5 +349,216 @@ struct KwtProjectRegistryClientTests {
             return status == 255
         }
         #expect(invalidations.load() == 1)
+    }
+
+    @Test(
+        "registration expands ~ and ~/ paths against the target host's HOME",
+        arguments: [
+            ("~", "\"${HOME:?}\""),
+            ("~/code/widget", "\"${HOME:?}\"'/code/widget'"),
+            (
+                "~/code/alice's $repo $(id)",
+                "\"${HOME:?}\"'/code/alice'\\''s $repo $(id)'"
+            ),
+        ]
+    )
+    func expandsTildeInRegistrationCommand(
+        input: String,
+        expectedArgument: String
+    ) async throws {
+        let localCommand = LockedValue<String?>(nil)
+        let remoteCommand = LockedValue<String?>(nil)
+        let client = KwtProjectRegistryClient(
+            localRunner: { command in
+                localCommand.store(command)
+                return (
+                    0,
+                    """
+                    GHOSTHUB_KWT_PROJECT_JSON
+                    {"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/home/alice/code/widget"}}
+                    """
+                )
+            },
+            remoteRunner: { _, _, command in
+                remoteCommand.store(command)
+                return AccountCommandOutput(
+                    status: 0,
+                    stdout: """
+                    GHOSTHUB_KWT_PROJECT_JSON
+                    {"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/home/alice/code/widget"}}
+                    """,
+                    stderr: ""
+                )
+            },
+            localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt",
+            remoteBinaryRevision: String(repeating: "d", count: 40)
+        )
+
+        _ = try await client.register(projectPath: input, on: .local)
+        _ = try await client.register(
+            projectPath: input,
+            on: SSHHostInfo(user: "alice", hostname: "builder.example.test", port: nil)
+        )
+
+        #expect(localCommand.load()?.contains(
+            "projects add \(expectedArgument) --json"
+        ) == true)
+        #expect(remoteCommand.load()?.contains(
+            "projects add \(expectedArgument) --json"
+        ) == true)
+    }
+
+    @Test("registration rejects other-user tilde paths before invoking kwt")
+    func rejectsOtherUserTildePath() async {
+        let invoked = LockedValue(false)
+        let client = KwtProjectRegistryClient(
+            localRunner: { _ in
+                invoked.store(true)
+                return (0, "")
+            }
+        )
+
+        await #expect {
+            try await client.register(projectPath: "~alice/widget", on: .local)
+        } throws: { error in
+            error as? KwtProjectCommandError == .invalidProjectPath
+        }
+        #expect(!invoked.load())
+    }
+
+    @Test("removal rejects unexpanded tilde paths")
+    func removalRejectsTildePath() async {
+        let invoked = LockedValue(false)
+        let client = KwtProjectRegistryClient(
+            localRunner: { _ in
+                invoked.store(true)
+                return (0, "")
+            }
+        )
+
+        await #expect {
+            try await client.unregister(
+                projectPath: "~/code/widget",
+                expectedRepository: "github.com/acme/widget",
+                expectedRegistration: "opaque-registration",
+                expectedRouteIdentity: nil,
+                on: .local
+            )
+        } throws: { error in
+            error as? KwtProjectCommandError == .invalidProjectPath
+        }
+        #expect(!invoked.load())
+    }
+
+    @Test("recovery expands ~ in destination while requiring an absolute project path")
+    func recoveryExpandsDestinationTilde() async throws {
+        let invocation = LockedValue<String?>(nil)
+        let client = KwtProjectRegistryClient(
+            localRunner: { command in
+                invocation.store(command)
+                return (
+                    0,
+                    """
+                    GHOSTHUB_KWT_PROJECT_JSON
+                    {"status":"recovered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/home/alice/moved/widget","registration_fingerprint":"fp-1"}}
+                    """
+                )
+            },
+            localBinaryPath: "/Applications/Ghosthub.app/Contents/Helpers/kwt"
+        )
+        let project = ProjectSummary(
+            id: UUID(),
+            hostID: UUID(),
+            scopedKey: "github.com/acme/widget",
+            name: "widget",
+            rootPath: "/old/widget",
+            registrationFingerprint: "fp-1"
+        )
+
+        _ = try await client.recover(
+            project: project,
+            to: "~/moved/widget",
+            expectedRouteIdentity: nil,
+            on: .local
+        )
+
+        #expect(invocation.load()?.contains(
+            "projects recover '/old/widget' --to \"${HOME:?}\"'/moved/widget' "
+                + "--expected-repository 'github.com/acme/widget' "
+                + "--expected-registration 'fp-1' --json"
+        ) == true)
+    }
+
+    @Test("shell execution expands ~ against target HOME without evaluating suffix metacharacters")
+    func shellExecutionExpandsTildeSafely() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghosthub-tilde-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let stubKwt = tempDir.appendingPathComponent("stub-kwt")
+        let capturedArgFile = tempDir.appendingPathComponent("captured-arg.txt")
+        let script = """
+        #!/bin/sh
+        printf '%s' "$3" > \(shellQuotedCommandArgument(capturedArgFile.path))
+        printf '{"status":"registered","project":{"repository":"github.com/acme/widget","name":"widget","path":"/expanded"}}\n'
+        """
+        try script.write(to: stubKwt, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: stubKwt.path
+        )
+
+        let fakeHome = tempDir.appendingPathComponent("Alice Home").path
+        let client = KwtProjectRegistryClient(
+            localRunner: { command in
+                Self.runPosixShell(command: command, home: fakeHome)
+            },
+            localBinaryPath: stubKwt.path
+        )
+
+        _ = try await client.register(
+            projectPath: "~/code/alice's $USER $(echo nope)",
+            on: .local
+        )
+        let receivedPath = try String(contentsOf: capturedArgFile, encoding: .utf8)
+        #expect(receivedPath == "\(fakeHome)/code/alice's $USER $(echo nope)")
+
+        // Empty HOME must fail closed rather than expanding ~/tmp to /tmp.
+        let emptyHomeClient = KwtProjectRegistryClient(
+            localRunner: { command in
+                Self.runPosixShell(command: command, home: "")
+            },
+            localBinaryPath: stubKwt.path
+        )
+        await #expect {
+            try await emptyHomeClient.register(projectPath: "~/tmp", on: .local)
+        } throws: { error in
+            guard case KwtProjectCommandError.commandFailed = error else {
+                return false
+            }
+            return true
+        }
+    }
+
+    private static func runPosixShell(
+        command: String,
+        home: String
+    ) -> (status: Int32, stdout: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ["HOME": home, "PATH": "/usr/bin:/bin"]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return (1, "")
+        }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 }

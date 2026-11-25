@@ -29,6 +29,8 @@ docs-only changes are left out.
   and panes and resume the Claude Code, Codex, and Antigravity CLI (`agy`)
   conversations inside it, or restore all of them from the host's **+** menu.
   See [Restore sessions after a reboot](sessions.md#restore-sessions-after-a-reboot).
+- Expand `~` and `~/...` to the target host's home directory when adding or
+  locating a project on your Mac or an SSH host.
 
 ### Changed
 

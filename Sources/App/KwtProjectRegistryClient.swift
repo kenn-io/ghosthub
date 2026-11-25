@@ -67,7 +67,7 @@ enum KwtProjectCommandError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidProjectPath:
-            return "Enter an absolute project path beginning with /."
+            return "Enter a project path beginning with / or ~."
         case .invalidRegistrationFingerprint:
             return "Refresh projects and confirm removal again."
         case let .commandFailed(
@@ -299,16 +299,18 @@ struct KwtProjectRegistryClient: Sendable {
         expectedRegistration: String?,
         binaryPrelude: String
     ) throws -> String {
-        guard projectPath.hasPrefix("/") else {
-            throw KwtProjectCommandError.invalidProjectPath
-        }
+        let projectPathArgument = try shellQuotedProjectPathArgument(
+            projectPath,
+            allowTildeExpansion: operation == .register
+        )
         var arguments = "projects \(operation.rawValue) "
-            + shellQuotedCommandArgument(projectPath)
+            + projectPathArgument
         if let destination {
-            guard destination.hasPrefix("/") else {
-                throw KwtProjectCommandError.invalidProjectPath
-            }
-            arguments += " --to " + shellQuotedCommandArgument(destination)
+            let destinationArgument = try shellQuotedProjectPathArgument(
+                destination,
+                allowTildeExpansion: true
+            )
+            arguments += " --to " + destinationArgument
         }
         if operation != .register {
             guard let expectedRepository,
@@ -325,6 +327,26 @@ struct KwtProjectRegistryClient: Sendable {
         return binaryPrelude
             + "printf 'GHOSTHUB_KWT_PROJECT_JSON\\n'; "
             + "exec \"$ghosthub_kwt_path\" \(arguments) --json"
+    }
+
+    private static func shellQuotedProjectPathArgument(
+        _ path: String,
+        allowTildeExpansion: Bool
+    ) throws -> String {
+        if path.hasPrefix("/") {
+            return shellQuotedCommandArgument(path)
+        }
+        guard allowTildeExpansion else {
+            throw KwtProjectCommandError.invalidProjectPath
+        }
+        if path == "~" {
+            return "\"${HOME:?}\""
+        }
+        if path.hasPrefix("~/") {
+            let suffix = String(path.dropFirst())
+            return "\"${HOME:?}\"" + shellQuotedCommandArgument(suffix)
+        }
+        throw KwtProjectCommandError.invalidProjectPath
     }
 
     private static func decode(
