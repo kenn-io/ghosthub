@@ -52,6 +52,10 @@ docs-only changes are left out.
 - The local Mac's sidebar row now uses your Mac's Sharing name instead of
   looking up local hostnames through `/etc/hosts`, so loopback aliases for
   port-forwarded VMs no longer rename it.
+- Opening a worktree whose `kwt open` takes longer than 7.5 seconds no longer
+  gets stuck on "Opening…" indefinitely; Ghosthub now keeps waiting up to 60
+  seconds for `kwt` to attach and shows an **Unable to attach** error with
+  **Retry** if it still times out.
 
 ## [0.13.1] - 2026-11-10
 

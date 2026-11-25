@@ -1608,4 +1608,23 @@ struct TmuxPaneSplitterTests {
             .split(whereSeparator: \.isNewline).map(String.init)
         #expect(attached == [other.clientTTY])
     }
+
+    @Test("client sizing failure reports sizing rather than pane splitting")
+    func clientSizingFailureDescribesSizing() async {
+        let splitter = TmuxPaneSplitter { _, _, _ in (0, "") }
+        let failure = await splitter.disableSizing(
+            target: TmuxPaneSplitTarget(
+                host: .local,
+                tmuxPath: "/usr/bin/tmux",
+                sessionName: "work",
+                socketName: "kwt",
+                sshConnectionArguments: [],
+                expectedClient: nil
+            )
+        )
+        #expect(
+            failure?.errorDescription?.contains("update client sizing") == true
+        )
+        #expect(failure?.errorDescription?.contains("split pane") == false)
+    }
 }

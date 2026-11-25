@@ -21,15 +21,25 @@ struct TmuxPaneSplitFailure: Error, Equatable, LocalizedError, Sendable {
     var status: Int32
     var diagnostic: String
     var kind: Kind = .terminal
+    var operation: Operation = .splitPane
 
     enum Kind: Equatable, Sendable {
         case terminal
         case atomicGuardChanged
     }
 
+    enum Operation: Equatable, Sendable {
+        case splitPane
+        case clientSizing
+    }
+
     var errorDescription: String? {
+        let verb = switch operation {
+        case .splitPane: "split pane"
+        case .clientSizing: "update client sizing"
+        }
         var description =
-            "tmux could not split pane in “\(sessionName)” on \(host) "
+            "tmux could not \(verb) in “\(sessionName)” on \(host) "
                 + "(status \(status))."
         if !diagnostic.isEmpty {
             description += " \(diagnostic)"
@@ -189,7 +199,8 @@ struct TmuxPaneSplitter: Sendable {
                 host: target.host.displayName,
                 sessionName: target.sessionName,
                 status: 75,
-                diagnostic: "The attached tmux client identity is unavailable."
+                diagnostic: "The attached tmux client identity is unavailable.",
+                operation: .clientSizing
             )
         }
         let mismatchMarker = Self.sizingMismatchMarker
@@ -215,7 +226,8 @@ struct TmuxPaneSplitter: Sendable {
                 sessionName: target.sessionName,
                 status: 75,
                 diagnostic: "The attached tmux session changed.",
-                kind: .atomicGuardChanged
+                kind: .atomicGuardChanged,
+                operation: .clientSizing
             )
         }
         guard result.status != 0 else { return nil }
@@ -223,7 +235,8 @@ struct TmuxPaneSplitter: Sendable {
             host: target.host.displayName,
             sessionName: target.sessionName,
             status: result.status,
-            diagnostic: Self.normalizedDiagnostic(result.diagnostic)
+            diagnostic: Self.normalizedDiagnostic(result.diagnostic),
+            operation: .clientSizing
         )
     }
 

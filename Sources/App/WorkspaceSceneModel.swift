@@ -272,6 +272,8 @@ final class WorkspaceSceneModel: ObservableObject {
     private var endedCreatedTmuxSessionHandles: Set<UUID> = []
     private var confirmedEndedTmuxSessionHandles: Set<UUID> = []
     private let createdSessionDiscoveryDelays: [Duration]
+    private let kwtEndpointConfirmationTimeout: Duration
+    private var awaitingKwtClientIdentityHandles: Set<UUID> = []
     private let tmuxSessionProbeBroker: TmuxSessionProbeBroker
     private let herdrSessionProbeBroker: HerdrSessionProbeBroker
     private let herdrSessionValidationDiscovery:
@@ -668,6 +670,8 @@ final class WorkspaceSceneModel: ObservableObject {
         var recoveryRequest: SessionConnectionRecoveryRequest?
         let reconnectSupervisor: SessionReconnectSupervisor
         var establishmentConfirmationTask: Task<Void, Never>?
+        var kwtEndpointConfirmationDeadline: ContinuousClock.Instant?
+        var kwtEndpointConfirmationRetryIndex = 0
         var verifiedPreviewIdentity: TmuxSessionIdentity?
         var reconnectExpectedIdentity: TmuxSessionIdentity?
         var previewIdentityUnavailable = false
@@ -806,11 +810,15 @@ final class WorkspaceSceneModel: ObservableObject {
         var restorationRouteID: UUID?
     }
     private var zellijRestorationRoute: ZellijRestorationRoute?
-    var activeBorrowedTmuxSessionIsConnected: Bool {
+    var activeBorrowedTmuxConnectionState: ConnectionState? {
         guard let handle = activeBorrowedTmuxHandle else {
-            return false
+            return nil
         }
-        return borrowedTmuxConnectionStates[handle.id] == .connected
+        return borrowedTmuxConnectionStates[handle.id]
+    }
+
+    var activeBorrowedTmuxSessionIsConnected: Bool {
+        activeBorrowedTmuxConnectionState == .connected
     }
     private var canSplitActiveTmuxPane: Bool {
         guard let selection = activeBorrowedTmuxSelection,
@@ -1679,6 +1687,7 @@ final class WorkspaceSceneModel: ObservableObject {
             .seconds(2),
             .seconds(4),
         ],
+        kwtEndpointConfirmationTimeout: Duration = .seconds(60),
         deferredTmuxPresentationRetryDelays: [Duration] = [
             .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
             .seconds(4), .seconds(8),
@@ -1826,6 +1835,7 @@ final class WorkspaceSceneModel: ObservableObject {
         self.hostSSHSessionProvider = hostSSHSessionProvider
         self.createdSessionDiscoveryDelays =
             createdSessionDiscoveryDelays
+        self.kwtEndpointConfirmationTimeout = kwtEndpointConfirmationTimeout
         self.deferredTmuxPresentationRetryDelays =
             deferredTmuxPresentationRetryDelays
         self.configuredSSHHostsProvider = configuredSSHHostsProvider
@@ -11296,6 +11306,20 @@ final class WorkspaceSceneModel: ObservableObject {
            .attachmentRouteIdentity(handle) {
             presentation.reconnectContext?.routeIdentity = routeIdentity
         }
+        if awaitingKwtClientIdentityHandles.remove(handle.id) != nil,
+           let context = presentation.reconnectContext,
+           context.handleID == handle.id,
+           Self.requiresKwtEndpointConfirmation(context),
+           borrowedTmuxConnectionStates[handle.id] == .connecting,
+           case .resolved = nativeTmuxSessionCoordinator
+           .attachedSessionIdentityResolution(handle) {
+            startEstablishmentConfirmationIfNeeded(
+                presentation: presentation,
+                confirmationDeadline: presentation.kwtEndpointConfirmationDeadline,
+                initialRetryIndex: presentation.kwtEndpointConfirmationRetryIndex,
+                runImmediately: true
+            )
+        }
         let key = TmuxPresentationKey(presentation.selection)
         if presentation.pendingSizingActivationNavigationRevision != nil {
             guard presentation.sizingTransitionTask == nil else { return }
@@ -12119,6 +12143,7 @@ final class WorkspaceSceneModel: ObservableObject {
             forKey: handle.id
         )?.cancel()
         confirmedEndedTmuxSessionHandles.remove(handle.id)
+        awaitingKwtClientIdentityHandles.remove(handle.id)
         borrowedTmuxConnectionStates.removeValue(forKey: handle.id)
         if var pending = pendingCreatedTmuxSessions[handle.id] {
             if nativeTmuxSessionCoordinator.hasLaunched(handle)
@@ -14776,6 +14801,9 @@ final class WorkspaceSceneModel: ObservableObject {
         presentation.reconnectSupervisor.cancel()
         presentation.establishmentConfirmationTask?.cancel()
         presentation.establishmentConfirmationTask = nil
+        presentation.kwtEndpointConfirmationDeadline = nil
+        presentation.kwtEndpointConfirmationRetryIndex = 0
+        awaitingKwtClientIdentityHandles.remove(presentation.handle.id)
         presentation.reconnectContext = nil
         presentation.recoveryState = nil
         presentation.recoveryRequest = nil
@@ -14783,7 +14811,10 @@ final class WorkspaceSceneModel: ObservableObject {
     }
 
     private func startEstablishmentConfirmationIfNeeded(
-        presentation: RetainedTmuxPresentation
+        presentation: RetainedTmuxPresentation,
+        confirmationDeadline existingDeadline: ContinuousClock.Instant? = nil,
+        initialRetryIndex: Int = 0,
+        runImmediately: Bool = false
     ) {
         let handle = presentation.handle
         guard let context = presentation.reconnectContext,
@@ -14801,14 +14832,48 @@ final class WorkspaceSceneModel: ObservableObject {
         let settledDelay = createdSessionDiscoveryDelays.last(where: {
             $0 > .zero
         }) ?? .seconds(4)
+        let confirmationDeadline = existingDeadline
+            ?? (ContinuousClock.now + kwtEndpointConfirmationTimeout)
+        presentation.kwtEndpointConfirmationDeadline =
+            requiresEndpointConfirmation ? confirmationDeadline : nil
+        presentation.kwtEndpointConfirmationRetryIndex = initialRetryIndex
         presentation.establishmentConfirmationTask = Task {
             [weak self, weak presentation] in
-            var retryIndex = 0
-            while retryIndex < initialDelays.count
-                || keepsProbingUntilConfirmed {
-                let delay = retryIndex < initialDelays.count
-                    ? initialDelays[retryIndex] : settledDelay
-                retryIndex += 1
+            var retryIndex = initialRetryIndex
+            var skipNextDelay = runImmediately
+            var resolvedClientMismatch = false
+            while true {
+                let shouldContinue: Bool
+                if skipNextDelay
+                    || retryIndex < initialDelays.count
+                    || keepsProbingUntilConfirmed {
+                    shouldContinue = true
+                } else if requiresEndpointConfirmation,
+                          !resolvedClientMismatch,
+                          ContinuousClock.now < confirmationDeadline {
+                    shouldContinue = true
+                } else {
+                    shouldContinue = false
+                }
+                guard shouldContinue else { break }
+                let delay: Duration
+                if skipNextDelay {
+                    skipNextDelay = false
+                    delay = .zero
+                } else if retryIndex < initialDelays.count {
+                    delay = initialDelays[retryIndex]
+                    retryIndex += 1
+                } else if requiresEndpointConfirmation,
+                          !keepsProbingUntilConfirmed {
+                    let remaining = confirmationDeadline - ContinuousClock.now
+                    guard remaining > .zero else { break }
+                    delay = min(settledDelay, remaining)
+                    retryIndex += 1
+                } else {
+                    delay = settledDelay
+                    retryIndex += 1
+                }
+                presentation?.kwtEndpointConfirmationRetryIndex = retryIndex
                 do {
                     try await Task.sleep(for: delay)
                 } catch {
@@ -14837,6 +14902,9 @@ final class WorkspaceSceneModel: ObservableObject {
                       == expectedConnectionState
                 else { return }
                 if outcome == .present {
+                    awaitingKwtClientIdentityHandles.remove(handle.id)
+                    presentation.kwtEndpointConfirmationDeadline = nil
+                    presentation.kwtEndpointConfirmationRetryIndex = 0
                     presentation.reconnectContext?.phase = .attachOnly
                     presentation.establishmentConfirmationTask = nil
                     releaseProtectedTmuxAttachmentScope(handleID: handle.id)
@@ -14857,18 +14925,47 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                     return
                 }
+                resolvedClientMismatch =
+                    requiresEndpointConfirmation && outcome == .absent
             }
             guard let self, let presentation,
                   presentation.reconnectContext == context
             else { return }
+            awaitingKwtClientIdentityHandles.remove(handle.id)
+            presentation.kwtEndpointConfirmationDeadline = nil
+            presentation.kwtEndpointConfirmationRetryIndex = 0
             presentation.establishmentConfirmationTask = nil
             if requiresEndpointConfirmation {
-                // The surface may be attached to the endpoint KWT resolved
-                // after the row was selected. Removing it detaches that client
-                // rather than retaining or exposing an unverified terminal.
-                invalidateBorrowedTmuxSession(presentation.selection)
+                failUnconfirmedKwtEndpoint(
+                    presentation,
+                    resolvedClientMismatch: resolvedClientMismatch
+                )
             }
         }
+    }
+
+    private func failUnconfirmedKwtEndpoint(
+        _ presentation: RetainedTmuxPresentation,
+        resolvedClientMismatch: Bool
+    ) {
+        guard activeBorrowedTmuxHandle == presentation.handle else {
+            invalidateBorrowedTmuxSession(presentation.selection)
+            return
+        }
+        // Detach the unverified surface so Ghosthub never retains or exposes
+        // a client attached to an unconfirmed session, while keeping the
+        // active presentation in an Unable to attach state with Retry instead
+        // of dropping back to an endless "Opening…" spinner.
+        presentation.reconnectSupervisor.cancel()
+        presentation.reconnectContext = nil
+        releaseProtectedTmuxAttachmentScope(handleID: presentation.handle.id)
+        nativeTmuxSessionCoordinator.detach(presentation.handle)
+        let reason = resolvedClientMismatch
+            ? "Ghosthub could not confirm the tmux session that kwt opened. "
+            + "Try opening the workspace again."
+            : "Timed out waiting for kwt to open this workspace. Check "
+            + "whether kwt is waiting for input or stuck, then try again."
+        stopTmuxReconnectWithUnableToAttach(presentation, reason)
     }
 
     private static func requiresKwtEndpointConfirmation(
@@ -14909,15 +15006,15 @@ final class WorkspaceSceneModel: ObservableObject {
         let attachedIdentity: TmuxSessionIdentity
         switch nativeTmuxSessionCoordinator
             .attachedSessionIdentityResolution(presentation.handle) {
-        case .pending:
+        case .pending, .unavailable:
+            awaitingKwtClientIdentityHandles.insert(presentation.handle.id)
             nativeTmuxSessionCoordinator.requestAttachedSessionIdentity(
                 presentation.handle
             )
             return .failure(.sessionContextUnavailable)
         case let .resolved(identity):
+            awaitingKwtClientIdentityHandles.remove(presentation.handle.id)
             attachedIdentity = identity
-        case .unavailable:
-            return .failure(.sessionContextUnavailable)
         }
         do {
             let capturedIdentity = try await tmuxRoutedSessionIdentityReader(

@@ -1982,6 +1982,7 @@ final class NativeTmuxSessionCoordinator {
     ) {
         guard let handle = currentHandle(handle) else { return }
         previewIdentityRetryHandles.insert(handle.id)
+        unavailablePreviewIdentityHandles.remove(handle.id)
         guard let attachment = attachments[handle.id],
               launchedAttachmentIDs[handle.id] == attachment.id
         else { return }

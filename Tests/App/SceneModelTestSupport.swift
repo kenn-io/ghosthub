@@ -610,6 +610,7 @@ func makeModel(
         .seconds(2),
         .seconds(4),
     ],
+    kwtEndpointConfirmationTimeout: Duration = .seconds(60),
     deferredTmuxPresentationRetryDelays: [Duration] = [
         .milliseconds(250), .milliseconds(500), .seconds(1), .seconds(2),
         .seconds(4), .seconds(8),
@@ -761,6 +762,7 @@ func makeModel(
         localHostID: localHostID,
         overrideSnapshot: snapshot,
         createdSessionDiscoveryDelays: createdSessionDiscoveryDelays,
+        kwtEndpointConfirmationTimeout: kwtEndpointConfirmationTimeout,
         deferredTmuxPresentationRetryDelays:
         deferredTmuxPresentationRetryDelays,
         tmuxReconnectIntervals: tmuxReconnectIntervals,
