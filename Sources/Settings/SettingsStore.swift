@@ -85,6 +85,9 @@ public final class SettingsStore: ObservableObject {
     public static let defaultSessionPreviewMode: SessionPreviewMode = .off
 
     @Published public var selectedDomain: SettingsDomain = .appearance
+    /// The next Settings window opens Hosts with a new host to fill in, as
+    /// the welcome sheet's Add a Host asks.
+    public var startsNewSSHHost = false
     @Published public private(set) var confirmBeforeQuitting: Bool
     /// Off until chosen: Ghosthub then installs and updates kwt's agent
     /// hooks on this Mac and every macOS and Linux SSH host.

@@ -485,8 +485,10 @@ Working).
 - **Welcome sheet:** `OnboardingPresenter` shows it in one workspace window. A
   first launch (no `ghosthub.db` yet) always shows it; otherwise it shows once
   only when a read-only status check finds a host whose agents lack current
-  hooks, and a failed check defers the decision to the next launch. **Show
-  Welcome** in the Command Palette reopens it.
+  hooks. The check first waits up to 60 seconds for each enabled exe.dev
+  account's VM list. A failed check or listing defers the decision to the next
+  launch. **Add a Host…** finishes the sheet and opens Settings → Hosts with a
+  new host draft. **Show Welcome** in the Command Palette reopens it.
 - **Pane option and refresh:** hooks write `@kwt_agent` as
   `<state> <unix-seconds> <agent>` (`working`, `approval`, `input`, `done`),
   cleared on session start/end (no-op outside tmux and for subagents). POSIX

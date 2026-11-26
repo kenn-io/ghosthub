@@ -49,7 +49,10 @@ enum AgentHookAutomation {
             await presenter.decideAtLaunch(
                 settings: settings,
                 maintainer: maintainer,
-                isNewInstall: isNewInstall
+                isNewInstall: isNewInstall,
+                discovered: {
+                    await exeHosts.listed(settings.exeAccounts, timeout: .seconds(60))
+                }
             )
         }
     }

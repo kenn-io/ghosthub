@@ -32,12 +32,10 @@ struct OnboardingView: View {
                 .font(.system(size: 22, weight: .bold))
 
             step("Hosts", systemImage: "desktopcomputer") {
-                Text("This Mac is ready. Add Macs and Linux machines you reach over SSH.")
-                Button("Add SSH Host\u{2026}") {
-                    apply()
-                    addHost()
-                }
-                .accessibilityIdentifier("onboarding-add-host")
+                Text(
+                    "This Mac is ready. Add Macs and Linux machines you reach"
+                        + " over SSH now or later in Settings → Hosts."
+                )
             }
 
             step("Agent Hooks", systemImage: "bell.badge") {
@@ -61,6 +59,11 @@ struct OnboardingView: View {
 
             HStack {
                 Spacer()
+                Button("Add a Host\u{2026}") {
+                    apply()
+                    addHost()
+                }
+                .accessibilityIdentifier("onboarding-add-host")
                 Button("Get Started") {
                     apply()
                     finish()

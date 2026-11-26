@@ -496,6 +496,38 @@ final class ExeVMInventoryStore: ObservableObject {
         return refreshID
     }
 
+    /// Waits until each enabled account in `accounts` has listed its VMs.
+    /// False when a listing failed or `timeout` passed first, so the caller
+    /// knows the VM list may be missing hosts.
+    func listed(_ accounts: [ExeAccount], timeout: Duration) async -> Bool {
+        let keys = ExeAccountSanitizer.discoverableAccounts(accounts)
+            .filter(\.isEnabled)
+            .map(\.configKey)
+        guard !keys.isEmpty else { return true }
+        let watcher = Task { @MainActor [statuses = $statuses] in
+            for await statuses in statuses.values {
+                let finished = keys.compactMap { key -> Bool? in
+                    switch statuses[key] {
+                    case .loaded: true
+                    case .failed: false
+                    case .loading, nil: nil
+                    }
+                }
+                if finished.count == keys.count {
+                    return !finished.contains(false)
+                }
+            }
+            return false
+        }
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            watcher.cancel()
+        }
+        let result = await watcher.value
+        timer.cancel()
+        return result
+    }
+
     func cancelRefresh(
         _ refreshID: UUID,
         retaining accounts: [ExeAccount]

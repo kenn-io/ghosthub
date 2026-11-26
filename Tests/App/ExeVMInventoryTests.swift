@@ -1154,4 +1154,26 @@ struct ExeVMInventoryTests {
         store.cancelRefresh(prodRefreshID, retaining: [devAccount])
         #expect(store.hosts.map(\.sshHost.name) == ["kelp-dev"])
     }
+
+    @MainActor
+    @Test("waiting for VM listings reports whether every enabled account listed")
+    func listedWaitsForEveryEnabledAccount() async {
+        let store = ExeVMInventoryStore(client: ExeVMClient { host, _, start, end in
+            host.hostname == "bad.exe.dev"
+                ? (255, "", "Permission denied")
+                : (0, "\(start)\n{\"vms\":[]}\n\(end)", "")
+        })
+        let good = ExeAccount(configKey: "good", name: "Good", sshDestination: "good.exe.dev")
+        let bad = ExeAccount(configKey: "bad", name: "Bad", sshDestination: "bad.exe.dev")
+        var disabled = bad
+        disabled.isEnabled = false
+
+        #expect(await !store.listed([good], timeout: .milliseconds(50)), "not listed yet")
+
+        store.refresh(accounts: [good])
+        #expect(await store.listed([good, disabled], timeout: .seconds(10)))
+
+        store.refresh(accounts: [good, bad])
+        #expect(await !store.listed([good, bad], timeout: .seconds(10)))
+    }
 }

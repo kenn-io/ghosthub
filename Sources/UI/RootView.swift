@@ -1889,6 +1889,7 @@ public struct RootView: View {
         }
         if opensHostsAfterOnboarding {
             opensHostsAfterOnboarding = false
+            settingsStore.startsNewSSHHost = true
             perform(.openSettings(.hosts))
         }
     }

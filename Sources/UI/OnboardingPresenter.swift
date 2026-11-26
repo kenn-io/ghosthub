@@ -45,12 +45,15 @@ public final class OnboardingPresenter {
     /// Decides at launch whether to welcome the person. A new install is
     /// always welcomed. Someone who used Ghosthub before is welcomed only
     /// when a host has an agent without current hooks, since the sheet is
-    /// where they learn Ghosthub can install them. A failed check decides
+    /// where they learn Ghosthub can install them. `discovered` waits for
+    /// hosts found outside Settings, such as exe.dev VMs, and is false when
+    /// that list may be incomplete. A failed check or listing decides
     /// nothing, so the next launch checks again.
     public func decideAtLaunch(
         settings: SettingsStore,
         maintainer: AgentHookMaintainer,
-        isNewInstall: Bool
+        isNewInstall: Bool,
+        discovered: () async -> Bool = { true }
     ) async {
         guard !settings.onboardingCompleted else { return }
         if settings.autoInstallAgentHooks {
@@ -61,6 +64,7 @@ public final class OnboardingPresenter {
             present()
             return
         }
+        guard await discovered() else { return }
         let targets = maintainer.targets(sshHosts: settings.sshHosts)
         await maintainer.check(targets, installing: false)
         if maintainer.hooksMissing(in: targets) {

@@ -324,6 +324,23 @@ struct OnboardingPresenterTests {
         #expect(presenter.isPending)
     }
 
+    @Test("an unfinished exe.dev VM listing leaves the decision for the next launch")
+    func discoveryUnfinished() async throws {
+        let settings = try makeSettings()
+        settings.setSSHHosts([linux])
+        let hosts = FakeHosts()
+        hosts.set("builder", [FakeHosts.claude(installed: true, current: true)])
+        let presenter = OnboardingPresenter()
+
+        await presenter.decideAtLaunch(
+            settings: settings, maintainer: hosts.maintainer(), isNewInstall: false,
+            discovered: { false }
+        )
+
+        #expect(!presenter.isPending)
+        #expect(!settings.onboardingCompleted)
+    }
+
     @Test("a host Ghosthub cannot reach leaves the decision for the next launch")
     func unreachableHost() async throws {
         let settings = try makeSettings()

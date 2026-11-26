@@ -74,13 +74,14 @@ brew install zellij
 The first time Ghosthub opens, a welcome sheet helps you set up hosts and
 agent hooks.
 
-![Ghosthub welcome sheet with Add SSH Host and the automatic agent hooks setting checked](/docs/assets/guide-welcome.png)
+![Ghosthub welcome sheet with the automatic agent hooks setting checked, and Add a Host and Get Started buttons](/docs/assets/guide-welcome.png)
 
 ### Hosts
 
-This Mac works right away. Click **Add SSH Host…** to close the welcome and
-open **Settings → Hosts**, where you add the Macs and Linux machines you reach
-over SSH. See [Remote hosts](remote-hosts.md).
+This Mac works right away. To add a Mac or Linux machine you reach over SSH,
+click **Add a Host…**. The welcome closes and **Settings → Hosts** opens with a
+new host ready for its name and SSH address. You can also add hosts later
+there. See [Remote hosts](remote-hosts.md).
 
 ### Agent hooks
 
@@ -94,7 +95,7 @@ is doing, which lets Ghosthub:
   [restores your sessions after a reboot](sessions.md#restore-sessions-after-a-reboot).
 
 **Install and update agent hooks automatically** is checked on the welcome
-sheet. When you click **Get Started** or **Add SSH Host…** with it checked,
+sheet. When you click **Get Started** or **Add a Host…** with it checked,
 Ghosthub:
 
 1. Installs hooks on this Mac and every macOS and Linux SSH host, including
@@ -119,8 +120,9 @@ on each host.
 
 After an update, the welcome sheet appears once, and only if a host has an
 agent whose hooks are missing or out of date. That check reads hook status
-and changes nothing. If a host cannot be reached, Ghosthub checks again at the
-next launch.
+and changes nothing. It waits for Ghosthub to list your exe.dev VMs first. If
+a host cannot be reached or an exe.dev account cannot be listed, Ghosthub
+checks again at the next launch.
 
 ## Open an existing session
 

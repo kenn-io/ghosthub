@@ -198,6 +198,7 @@ public struct SettingsView: View {
     @State private var isTailscaleSheetPresented = false
     @State private var isInstallingWindowsKwt = false
     @State private var exeAccountRefreshID: UUID?
+    @State private var startsNewSSHHost: Bool
     public init(
         store: SettingsStore,
         actions: SettingsActions = SettingsActions(),
@@ -233,11 +234,13 @@ public struct SettingsView: View {
                 store: store
             )
         )
+        _startsNewSSHHost = State(initialValue: store.startsNewSSHHost)
     }
 
     public var body: some View {
         settingsContent
             .presentationSizing(.form)
+            .onAppear { store.startsNewSSHHost = false }
             .onDisappear {
                 persist()
                 finishExeAccountRefresh()
@@ -440,7 +443,8 @@ public struct SettingsView: View {
             installWindowsKwt: actions.installWindowsKwt,
             loadAgentHooks: actions.loadAgentHooks,
             installAgentHooks: actions.installAgentHooks,
-            savedSSHHosts: store.sshHosts
+            savedSSHHosts: store.sshHosts,
+            startsNewHost: $startsNewSSHHost
         )
     }
 
