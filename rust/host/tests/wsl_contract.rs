@@ -42,9 +42,17 @@ struct RecordingRunner {
     namespaces_are_isolated: bool,
     exact_targets_are_strict: bool,
     admission_directory: Mutex<AdmissionDirectoryState>,
+    post_kill_server: Mutex<PostKillServerState>,
     herdr_outputs: Mutex<VecDeque<CommandOutput>>,
     zellij_outputs: Mutex<VecDeque<CommandOutput>>,
     agent_outputs: Mutex<VecDeque<CommandOutput>>,
+}
+
+#[derive(Debug, Default)]
+struct PostKillServerState {
+    armed: bool,
+    responses: VecDeque<CommandOutput>,
+    cancel_on_exhaust: Option<CancellationToken>,
 }
 
 #[derive(Debug, Default)]
@@ -81,6 +89,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            post_kill_server: Mutex::new(PostKillServerState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
             agent_outputs: Mutex::new(VecDeque::new()),
@@ -104,6 +113,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            post_kill_server: Mutex::new(PostKillServerState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
             agent_outputs: Mutex::new(VecDeque::new()),
@@ -131,6 +141,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            post_kill_server: Mutex::new(PostKillServerState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
             agent_outputs: Mutex::new(VecDeque::new()),
@@ -162,6 +173,7 @@ impl RecordingRunner {
             namespaces_are_isolated: true,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            post_kill_server: Mutex::new(PostKillServerState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
             agent_outputs: Mutex::new(VecDeque::new()),
@@ -185,6 +197,7 @@ impl RecordingRunner {
             namespaces_are_isolated: false,
             exact_targets_are_strict: true,
             admission_directory: Mutex::new(AdmissionDirectoryState::default()),
+            post_kill_server: Mutex::new(PostKillServerState::default()),
             herdr_outputs: Mutex::new(VecDeque::new()),
             zellij_outputs: Mutex::new(VecDeque::new()),
             agent_outputs: Mutex::new(VecDeque::new()),
@@ -251,6 +264,20 @@ impl RecordingRunner {
 
     fn set_zellij_outputs(&self, outputs: Vec<CommandOutput>) {
         *self.zellij_outputs.lock().expect("Zellij outputs lock") = outputs.into();
+    }
+
+    fn set_post_kill_server_outputs(
+        &self,
+        outputs: Vec<CommandOutput>,
+        cancel_on_exhaust: Option<CancellationToken>,
+    ) {
+        let mut state = self
+            .post_kill_server
+            .lock()
+            .expect("post kill-server state lock");
+        state.armed = false;
+        state.responses = outputs.into();
+        state.cancel_on_exhaust = cancel_on_exhaust;
     }
 
     fn all_timeouts(&self) -> Vec<std::time::Duration> {
@@ -426,6 +453,30 @@ impl CommandRunner for RecordingRunner {
             return Ok(output(i32::from(exists), "", ""));
         }
         let admission_command = admission_command(args);
+        if timeout > std::time::Duration::from_millis(500) {
+            let mut post_kill = self
+                .post_kill_server
+                .lock()
+                .expect("post kill-server state lock");
+            if admission_command == Some("kill-server") && !post_kill.responses.is_empty() {
+                post_kill.armed = true;
+            } else if post_kill.armed {
+                if admission_command == Some("new-session") && !post_kill.responses.is_empty() {
+                    return Ok(output(1, "", "server exited unexpectedly\n"));
+                }
+                if matches!(admission_command, Some("list-sessions" | "has-session"))
+                    && let Some(response) = post_kill.responses.pop_front()
+                {
+                    if post_kill.responses.is_empty() {
+                        post_kill.armed = false;
+                        if let Some(token) = post_kill.cancel_on_exhaust.take() {
+                            token.cancel();
+                        }
+                    }
+                    return Ok(response);
+                }
+            }
+        }
         if timeout <= std::time::Duration::from_millis(500) {
             let mut cleanup = self.late_creation.lock().expect("cleanup state lock");
             if matches!(admission_command, Some("kill-session" | "kill-server"))
@@ -794,8 +845,12 @@ fn assert_cleanup_verification_count(
     admission_calls: &[&(OsString, Vec<OsString>)],
     expected: usize,
 ) {
+    let last_kill = admission_calls
+        .iter()
+        .rposition(|(_, args)| args.iter().any(|argument| argument == "kill-server"))
+        .expect("cleanup server termination");
     assert_eq!(
-        admission_calls
+        admission_calls[last_kill + 1..]
             .iter()
             .filter(|(_, args)| {
                 args.iter().any(|argument| argument == "list-sessions")
@@ -1742,6 +1797,126 @@ fn creation_receipt_polling_uses_a_stable_c_locale() {
         args.windows(3)
             .any(|arguments| arguments == ["/usr/bin/env", "LC_ALL=C", "/usr/bin/cat"])
     }));
+}
+
+#[test]
+fn admission_waits_for_stopped_server_before_restarting() {
+    let runner = RecordingRunner::new(vec![
+        instance_output(),
+        output(0, "4242|$3|1700000000|0|4|work\n", ""),
+        instance_output(),
+    ]);
+    runner.set_post_kill_server_outputs(
+        vec![
+            output(0, "4242|$2|10|old\n", ""),
+            output(1, "", "server exited unexpectedly\n"),
+            output(
+                1,
+                "",
+                "error connecting to /tmp/probe/tmux-1000/ghv-test (Connection refused)\n",
+            ),
+        ],
+        None,
+    );
+    let host = test_host(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let snapshot = discover(&host).expect("admission waits for kill-server shutdown");
+
+    assert_eq!(snapshot.sessions().len(), 1);
+    assert_eq!(snapshot.sessions()[0].name(), "work");
+    let calls = host.runner().all_calls();
+    let kill_index = calls
+        .iter()
+        .position(|(_, args)| args.iter().any(|argument| argument == "kill-server"))
+        .expect("admission stop command");
+    let restart_index = calls[kill_index + 1..]
+        .iter()
+        .position(|(_, args)| args.iter().any(|argument| argument == "new-session"))
+        .map(|offset| kill_index + 1 + offset)
+        .expect("admission restart command");
+    let stop_polls = calls[kill_index + 1..restart_index]
+        .iter()
+        .filter(|(_, args)| args.iter().any(|argument| argument == "list-sessions"))
+        .count();
+    assert_eq!(
+        stop_polls, 4,
+        "admission must poll list-sessions through transient shutdown states until no server is running"
+    );
+}
+
+#[test]
+fn admission_fails_fast_when_stopped_server_probe_reports_permission_denied() {
+    let runner = RecordingRunner::new(vec![instance_output()]);
+    runner.set_post_kill_server_outputs(
+        vec![output(
+            1,
+            "",
+            "error connecting to /tmp/probe/tmux-1000/ghv-test: Permission denied\n",
+        )],
+        None,
+    );
+    let host = test_host(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let error =
+        discover(&host).expect_err("permission denied while waiting for shutdown must fail");
+
+    assert_eq!(error.kind(), HostErrorKind::PermissionDenied);
+    let calls = host.runner().all_calls();
+    let kill_index = calls
+        .iter()
+        .position(|(_, args)| args.iter().any(|argument| argument == "kill-server"))
+        .expect("admission stop command");
+    assert!(
+        !calls[kill_index + 1..]
+            .iter()
+            .any(|(_, args)| args.iter().any(|argument| argument == "new-session")),
+        "a fatal stop-wait error must not restart the isolated server"
+    );
+}
+
+#[test]
+fn admission_cancellation_stops_waiting_for_stopped_server() {
+    let cancellation = CancellationToken::new();
+    let runner = RecordingRunner::new(vec![instance_output()]);
+    runner.set_post_kill_server_outputs(
+        vec![
+            output(1, "", "server exited unexpectedly\n"),
+            output(1, "", "server exited unexpectedly\n"),
+        ],
+        Some(cancellation.clone()),
+    );
+    let host = test_host(
+        LocalConfig::with_distro("Ubuntu").expect("valid config"),
+        runner,
+    );
+
+    let started = std::time::Instant::now();
+    let error = host
+        .discover_with_cancel(host.runner(), &cancellation)
+        .expect_err("cancellation must stop waiting for kill-server shutdown");
+
+    assert_eq!(error.kind(), HostErrorKind::Transport);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "cancellation must not wait for the full stop-probe timeout"
+    );
+    let calls = host.runner().all_calls();
+    let kill_index = calls
+        .iter()
+        .position(|(_, args)| args.iter().any(|argument| argument == "kill-server"))
+        .expect("admission stop command");
+    assert!(
+        !calls[kill_index + 1..]
+            .iter()
+            .any(|(_, args)| args.iter().any(|argument| argument == "new-session")),
+        "a cancelled stop-wait must not restart the isolated server"
+    );
 }
 
 #[test]

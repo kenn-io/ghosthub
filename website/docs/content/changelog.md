@@ -56,6 +56,9 @@ docs-only changes are left out.
   gets stuck on "Opening…" indefinitely; Ghosthub now keeps waiting up to 60
   seconds for `kwt` to attach and shows an **Unable to attach** error with
   **Retry** if it still times out.
+- Rust port: local tmux discovery on Linux and WSL now waits for its temporary
+  probe server to exit before restarting it. Previously, startup could fail
+  when `tmux kill-server` returned before the server finished shutting down.
 
 ## [0.13.1] - 2026-11-10
 

@@ -39,6 +39,7 @@ const KWT_PROVIDER_TIMEOUT: Duration = Duration::from_mins(5);
 // do not apply the short inventory/probe deadline to them.
 const KWT_MUTATION_TIMEOUT: Duration = Duration::from_mins(5);
 const ATTACHMENT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const SERVER_STOP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_millis(500);
 const UNCERTAIN_CLEANUP_DELAY: Duration = Duration::from_millis(50);
 const UNCERTAIN_CLEANUP_SETTLE: Duration = Duration::from_secs(2);
@@ -3880,6 +3881,12 @@ impl<R: CommandRunner> LocalHost<R> {
             &["-f", "/dev/null", "-L", &namespace, "kill-server"],
             "stop isolated tmux server",
         )?;
+        self.wait_for_admission_server_stopped(
+            endpoint,
+            cancellation,
+            &admission_tmpdir,
+            &namespace,
+        )?;
         self.require_admission_session_absent(
             endpoint,
             cancellation,
@@ -4318,6 +4325,57 @@ impl<R: CommandRunner> LocalHost<R> {
                 ));
             }
             thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_for_admission_server_stopped(
+        &self,
+        endpoint: &LocalEndpoint,
+        cancellation: &CancellationToken,
+        tmux_tmpdir: &str,
+        namespace: &str,
+    ) -> Result<(), HostError> {
+        // `tmux kill-server` can return before the server unlinks its socket
+        // and exits; wait until the private namespace reports no server.
+        let deadline = Instant::now() + SERVER_STOP_PROBE_TIMEOUT;
+        loop {
+            let output = self.run_tmux(
+                endpoint,
+                cancellation,
+                tmux_tmpdir,
+                &["-f", "/dev/null", "-L", namespace, "list-sessions"],
+            )?;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status != 0 && is_no_server(&stderr) {
+                return Ok(());
+            }
+            if output.status != 0 && !is_server_stopping(&stderr) {
+                return Err(classify_admission_failure(
+                    output.status,
+                    &output.stderr,
+                    "wait for isolated tmux server to stop",
+                ));
+            }
+            if Instant::now() >= deadline {
+                let detail = stderr.trim();
+                let message = if detail.is_empty() {
+                    "isolated tmux admission server did not stop after kill-server".to_owned()
+                } else {
+                    format!(
+                        "isolated tmux admission server did not stop after kill-server: {detail}"
+                    )
+                };
+                return Err(HostError::new(
+                    DiagnosticKind::UnsupportedEnvironment,
+                    message,
+                ));
+            }
+            if cancellation.wait_cancelled(Duration::from_millis(20)) {
+                return Err(HostError::new(
+                    DiagnosticKind::Transport,
+                    "command cancelled",
+                ));
+            }
         }
     }
 
@@ -5355,6 +5413,14 @@ fn is_no_server(stderr: &str) -> bool {
     let lower = stderr.to_ascii_lowercase();
     lower.contains("no server running")
         || (lower.contains("error connecting") && lower.contains("no such file"))
+}
+
+fn is_server_stopping(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("server exited")
+        || lower.contains("lost server")
+        || (lower.contains("error connecting")
+            && (lower.contains("connection refused") || lower.contains("connection reset")))
 }
 
 fn is_missing_session(stderr: &str) -> bool {

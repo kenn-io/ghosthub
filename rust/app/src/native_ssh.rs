@@ -113,19 +113,17 @@ impl Fixture {
             if condition(&snapshot) {
                 return prompts;
             }
-            let host = snapshot
-                .hosts()
-                .iter()
-                .find(|host| host.id() == self.host_id)
-                .unwrap();
-            assert_ne!(
-                host.connection(),
-                HostConnectionState::Unavailable,
-                "{host:?}"
-            );
+            for host in snapshot.hosts() {
+                assert_ne!(
+                    host.connection(),
+                    HostConnectionState::Unavailable,
+                    "{host:?}"
+                );
+            }
             assert!(
                 Instant::now() < deadline,
-                "SSH timed out: {host:?}; {}",
+                "SSH timed out: {:?}; {}",
+                snapshot.hosts(),
                 self.terminal_text()
             );
             thread::sleep(Duration::from_millis(20));
