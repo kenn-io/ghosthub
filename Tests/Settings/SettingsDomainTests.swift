@@ -34,7 +34,7 @@ struct SettingsDomainTests {
             (
                 .agents,
                 "Agents",
-                "Attention notifications and agent hooks."
+                "Attention notifications, agent hooks, and restarts."
             ),
             (
                 .privacy,

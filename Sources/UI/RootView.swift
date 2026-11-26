@@ -2369,6 +2369,7 @@ public struct RootView: View {
             isSidebarVisible: isSidebarVisible,
             isSidePanelVisible: isSidePanelVisible,
             interfaceAppearance: settingsStore.interfaceAppearance,
+            continuesInterruptedAgents: settingsStore.continueInterruptedAgents,
             worktreeVisibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             supportsSettings: content.settingsSheetBuilder != nil,
@@ -2437,6 +2438,10 @@ public struct RootView: View {
             restoreSavedTmuxSessions(host)
         case let .restoreSavedTmuxSession(saved):
             restoreSavedTmuxSession(saved)
+        case let .restoreAndContinueSavedTmuxSession(saved):
+            restoreSavedTmuxSession(saved, continuing: true)
+        case let .setContinueInterruptedAgents(enabled):
+            settingsStore.setContinueInterruptedAgents(enabled)
         case let .dismissSavedTmuxSession(saved):
             requestSavedTmuxSessionDismissal(saved)
         case let .openTmuxSession(tmuxSession):

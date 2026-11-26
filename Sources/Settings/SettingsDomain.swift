@@ -50,7 +50,7 @@ public enum SettingsDomain: String, CaseIterable, Identifiable, Sendable {
         case .worktrees:
             return "Hidden tmux session patterns and workspace sessions."
         case .agents:
-            return "Attention notifications and agent hooks."
+            return "Attention notifications, agent hooks, and restarts."
         case .privacy:
             return "Control anonymous usage reporting."
         case .hosts:

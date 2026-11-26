@@ -502,14 +502,16 @@ the workspace row as usual, and kwt restores its saved session when opening it.
 
 A reboot can stop an agent in the middle of a turn. Restored, its conversation
 waits for your next prompt. To have such agents pick up on their own, turn on
-**Continue interrupted agents after a restart** in **Settings → Agents**. Every
+**Continue interrupted agents after a restart** in **Settings → Agents**, or
+choose it from the Command Palette. Every
 restore then sends each interrupted agent a prompt to check the state of its
 work and continue, including a window restoring its own session after a reboot.
 The setting is off by default.
 
 Saved rows with interrupted agents read **interrupted** instead of **saved**.
 With the setting off, open the row's **⋯** menu and choose **Restore and
-Continue** to continue them this once.
+Continue**, or choose **Restore and continue tmux session** in the Command
+Palette, to continue them this once.
 
 - An agent that had finished its turn, or was waiting for your approval or
   answer, restores without a prompt.

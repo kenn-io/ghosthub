@@ -14,6 +14,8 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case addProject(UUID)
     case restoreSavedTmuxSessions(UUID)
     case restoreSavedTmuxSession(WorkspaceSavedTmuxSessionSelection)
+    case restoreAndContinueSavedTmuxSession(WorkspaceSavedTmuxSessionSelection)
+    case setContinueInterruptedAgents(Bool)
     case dismissSavedTmuxSession(WorkspaceSavedTmuxSessionSelection)
     case openTmuxSession(WorkspaceTmuxSessionSelection)
     case openHerdrSession(WorkspaceHerdrSessionSelection)
@@ -110,6 +112,7 @@ public enum CommandPaletteModel {
         isSidebarVisible: Bool,
         isSidePanelVisible: Bool,
         interfaceAppearance: AppearancePreference = .system,
+        continuesInterruptedAgents: Bool = false,
         worktreeVisibility: WorktreeVisibility = .default,
         tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
         supportsSettings: Bool = true,
@@ -275,6 +278,9 @@ public enum CommandPaletteModel {
         }
 
         commands.append(contentsOf: appearanceCommands(current: interfaceAppearance))
+        commands.append(continueInterruptedAgentsCommand(
+            enabled: continuesInterruptedAgents
+        ))
         commands.append(contentsOf: settingsCommands(
             supportsSettings: supportsSettings
         ))
@@ -301,6 +307,7 @@ public enum CommandPaletteModel {
         ))
         commands.append(contentsOf: savedTmuxSessionCommands(
             in: snapshot,
+            continuesInterruptedAgents: continuesInterruptedAgents,
             visibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             worktreeOrderRawValue: worktreeOrderRawValue,
@@ -440,6 +447,26 @@ public enum CommandPaletteModel {
                 action: .setInterfaceAppearance(.dark)
             ),
         ]
+    }
+
+    private static func continueInterruptedAgentsCommand(
+        enabled: Bool
+    ) -> WorkspaceCommandItem {
+        WorkspaceCommandItem(
+            id: "continue-interrupted-agents",
+            title: enabled
+                ? "Stop Continuing Interrupted Agents After a Restart"
+                : "Continue Interrupted Agents After a Restart",
+            subtitle: enabled
+                ? "Restored agents that were mid-turn wait for your next prompt."
+                : "Restored agents that were mid-turn get a prompt to check their"
+                + " work and continue.",
+            keywords: [
+                "continue", "interrupted", "agents", "restart", "reboot",
+                "restore", "resume", "claude", "codex", "settings",
+            ],
+            action: .setContinueInterruptedAgents(!enabled)
+        )
     }
 
     private static func settingsCommands(
@@ -760,6 +787,7 @@ public enum CommandPaletteModel {
     /// Each saved session's row, as palette commands.
     private static func savedTmuxSessionCommands(
         in snapshot: WorkspaceSnapshot,
+        continuesInterruptedAgents: Bool,
         visibility: WorktreeVisibility,
         tmuxSessionVisibility: TmuxSessionVisibility,
         worktreeOrderRawValue: String,
@@ -781,7 +809,7 @@ public enum CommandPaletteModel {
                     "tmux", "session", "saved", "reboot", name,
                     section.host.name, section.row.title,
                 ]
-                return [
+                var commands = [
                     WorkspaceCommandItem(
                         id: "restore-saved-tmux-session-\(saved.entryID)",
                         title: "Restore tmux session: \(name)",
@@ -789,6 +817,18 @@ public enum CommandPaletteModel {
                         keywords: ["restore", "attach"] + keywords,
                         action: .restoreSavedTmuxSession(saved)
                     ),
+                ]
+                if saved.canContinue, !continuesInterruptedAgents {
+                    commands.append(WorkspaceCommandItem(
+                        id: "restore-and-continue-saved-tmux-session-\(saved.entryID)",
+                        title: "Restore and continue tmux session: \(name)",
+                        subtitle: "Resume it and tell its interrupted agents to continue"
+                            + " on \(section.host.name).",
+                        keywords: ["restore", "continue", "interrupted", "attach"] + keywords,
+                        action: .restoreAndContinueSavedTmuxSession(saved)
+                    ))
+                }
+                return commands + [
                     WorkspaceCommandItem(
                         id: "dismiss-saved-tmux-session-\(saved.entryID)",
                         title: "Dismiss saved tmux session: \(name)",
