@@ -28,7 +28,8 @@ like iTerm2, Ghostty, or Kitty).
 - **Worktree:** a kwt workspace (primary checkout or linked Git worktree) with
   an exact tmux session name.
 - **Directory workspace:** a kwt-registered plain directory with an exact tmux
-  session name and no Git children.
+  session name. The sidebar groups independently registered projects beneath
+  it and browses child folders; the directory owns no Git state.
 - **Session:** an ordinary tmux session, running or stopped Herdr TUI session,
   backend terminal (live Herdr Core terminal/tab or Rex window), or active
   Zellij session. Herdr Core support is macOS-only today. The Rust Linux client
@@ -50,7 +51,7 @@ Hosts are the only top-level grouping in the sidebar. Under each host:
 - **Ordering:** saved manual order, or sorted by name, backend, or agent
   attention. Stopped Herdr sessions always appear last.
 - **Projects group:** sits quietly below the session list, showing repository
-  trees followed by flat registered-directory rows. Inventories stay
+  trees and browsable registered directories. Inventories stay
   independent; kwt worktrees and directory workspaces remain tmux-backed.
 - **Filtering and duplicates:** case-sensitive wildcard patterns hide matching
   standalone tmux sessions from navigation while discovery keeps full inventory
@@ -530,7 +531,45 @@ resources).
   one automatic `kwt projects recover` attempt (relocating only on an
   unambiguous match). **Locate Folder…** sends an explicit destination with
   repository and registration guards through kwt. Ghosthub never scans remote
-  filesystems.
+  filesystems automatically.
+
+#### Directory hierarchy
+
+The macOS Add Project sheet offers **Directory**, backed by
+`kwt workspace add <path>`. Clicking a registered directory opens its canonical
+directory session. Its chevron requests `kwt workspace browse <path>`, which
+returns immediate child folders and optional primary checkout paths. Browsing
+never registers children or creates sessions. Gray unregistered rows offer
+**Add Project** or **Add Directory** only in their **…** menus.
+
+The registered-only view shows known inventory immediately. First folder
+expansion loads one listing to resolve project containers such as `Atlas/main`.
+Rows cache listings until **Refresh Folders** or removal from the view; there
+is no background folder polling. Normal project expansion shows worktrees and
+nested registrations without scanning. **Show Unregistered Folders** loads
+candidates for explicit registration; hiding them preserves known descendants.
+Sibling checkouts share one project presentation, preferring the primary
+checkout or container, while folders with independent registrations remain
+reachable. Path keys compare normalized UTF-8 bytes without collapsing Unicode
+normalization variants.
+Current registrations at a folder's own path take precedence over cached
+checkout mappings, so replacing and registering a checkout cannot hide its
+project behind the former owner's cached mapping.
+
+Remote listings carry their SSH lease route identity. Child registration
+compares it with the mutation lease and requires a parent refresh on route
+change. Direct Add Project paths select the current host. Picker-selected paths
+retain exact spelling, including trailing whitespace.
+
+Kwt owns enumeration and Git recognition on local and remote POSIX hosts.
+Each expansion inspects at most 1,000 filesystem entries, omits hidden and
+symlink entries, and reports truncation. Known registrations remain reachable
+even when missing or omitted. Local and SSH browsing share a 64 MiB output
+cap, sized for 1,000 entries with two maximum-length POSIX paths and worst-case
+JSON escaping; the runner allocates only the output read. Projects match kwt's
+primary checkout path, including `.bare` containers with sibling `main`
+checkouts. Grouping changes presentation only; the command palette and terminal
+selection retain authoritative inventory.
 
 #### exe.dev host provider
 

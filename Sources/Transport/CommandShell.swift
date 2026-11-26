@@ -1,16 +1,19 @@
 import Foundation
 
 public func shellQuotedCommandArgument(_ value: String) -> String {
-    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    "'" + value.unicodeScalars.map { $0 == "'" ? "'\\''" : String($0) }.joined() + "'"
 }
 
 private func accountShellCommandArgument(_ value: String) -> String {
-    value.split(separator: "`", omittingEmptySubsequences: false)
+    // Shell syntax operates on bytes, not extended grapheme clusters.
+    value.utf8.split(separator: 0x60, omittingEmptySubsequences: false)
         .map { segment in
-            let escaped = String(segment)
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "$", with: "\\$")
+            let escaped = String(decoding: segment, as: UTF8.self).unicodeScalars.map {
+                switch $0 {
+                case "\\", "\"", "$": "\\" + String($0)
+                default: String($0)
+                }
+            }.joined()
             return "\"\(escaped)\""
         }
         .joined(separator: "'`'")

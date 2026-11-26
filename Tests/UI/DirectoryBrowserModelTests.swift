@@ -1,0 +1,295 @@
+import Foundation
+import GhosthubSettings
+import GhosthubWorkspace
+import Testing
+@testable import GhosthubUI
+
+@Suite("Directory browser")
+struct DirectoryBrowserModelTests {
+    @Test(
+        "child registration keeps the destination that supplied its path",
+        arguments: [false, true]
+    )
+    func childRegistrationRoute(hasListing: Bool) throws {
+        var listing = DirectoryListing(path: "/hub/child", entries: [])
+        listing.routeIdentity = "parent-host"
+        #expect(try DirectoryBrowserModel.registrationRoute(
+            parentRoute: "parent-host", listing: hasListing ? listing : nil, remote: true
+        ) == "parent-host")
+        if hasListing {
+            listing.routeIdentity = "replacement-host"
+            #expect(throws: HostProbeError.self) {
+                try DirectoryBrowserModel.registrationRoute(
+                    parentRoute: "parent-host", listing: listing, remote: true
+                )
+            }
+        }
+    }
+
+    @Test("root registration uses its own listing and rejects missing remote authority")
+    func rootRegistrationRoute() throws {
+        var listing = DirectoryListing(path: "/hub", entries: [])
+        #expect(throws: HostProbeError.self) {
+            try DirectoryBrowserModel.registrationRoute(
+                parentRoute: nil,
+                listing: listing,
+                remote: true
+            )
+        }
+        listing.routeIdentity = "root-host"
+        #expect(try DirectoryBrowserModel.registrationRoute(
+            parentRoute: nil, listing: listing, remote: true
+        ) == "root-host")
+        #expect(throws: HostProbeError.self) {
+            try DirectoryBrowserModel.registrationRoute(
+                parentRoute: nil,
+                listing: nil,
+                remote: true
+            )
+        }
+        #expect(try DirectoryBrowserModel.registrationRoute(
+            parentRoute: nil, listing: nil, remote: false
+        ) == nil)
+    }
+
+    @Test(
+        "first expansion resolves project containers even with unregistered folders hidden",
+        arguments: [
+            (false, false, false), (false, true, false),
+            (true, false, true), (true, true, false),
+        ]
+    )
+    func loadingPolicy(expanded: Bool, cached: Bool, expectedRead: Bool) {
+        #expect(DirectoryBrowserModel.shouldLoad(
+            expanded: expanded, hasListing: cached
+        ) == expectedRead)
+    }
+
+    private func project(path: String) -> WorkspaceSidebarProject {
+        WorkspaceSidebarProject(
+            project: ProjectSummary(id: UUID(), hostID: UUID(), name: "widget", rootPath: path),
+            worktrees: [], worktreeRows: []
+        )
+    }
+
+    @Test("bare containers and linked worktrees resolve to one registered project")
+    func canonicalProject() {
+        let project = project(path: "/hub/widget/main")
+        let container = DirectoryEntry(
+            name: "widget",
+            path: "/hub/widget",
+            projectPath: "/hub/widget/main"
+        )
+        #expect(DirectoryBrowserModel.project(for: container, in: [project])?.id == project.id)
+        let entries = ["main", "topic"].map {
+            DirectoryEntry(
+                name: $0,
+                path: "/hub/widget/\($0)",
+                projectPath: project.project.rootPath
+            )
+        }
+        let children = DirectoryBrowserModel.children(
+            of: "/hub/widget", entries: entries, directories: [], projects: [project]
+        )
+        #expect(children.count == 2)
+        #expect(children.filter(\.presentsProject).map(\.name) == ["main"])
+    }
+
+    @Test(
+        "project deduplication retains registrations beneath primary and linked checkouts",
+        arguments: ["/hub/widget", "/hub/a-primary"]
+    )
+    func nestedCheckoutRegistrations(primaryPath: String) {
+        let registered = project(path: primaryPath)
+        let paths = ["/hub/a-primary", "/hub/widget"]
+        let entries = paths.map {
+            DirectoryEntry(
+                name: String($0.split(separator: "/").last!),
+                path: $0,
+                projectPath: primaryPath
+            )
+        }
+        let directory = DirectoryWorkspaceSummary(
+            id: UUID(), hostID: registered.project.hostID, name: "Notes",
+            path: "/hub/widget/Notes", tmuxSessionName: "notes", sessionLive: false
+        )
+        for shown in [false, true] {
+            let children = DirectoryBrowserModel.children(
+                of: "/hub", entries: entries, directories: [directory], projects: [registered],
+                showUnregisteredFolders: shown
+            )
+            #expect(children.contains { $0.path == "/hub/widget" })
+            #expect(children.filter(\.presentsProject).map(\.path) == [primaryPath])
+        }
+    }
+
+    @Test(
+        "current registrations outrank cached checkout mappings",
+        arguments: [false, true], [false, true]
+    )
+    func replacedCheckout(oldProjectRegistered: Bool, showUnregistered: Bool) throws {
+        let original = project(path: "/hub/original")
+        let replacement = project(path: "/hub/topic")
+        let cached = [
+            DirectoryEntry(name: "original", path: "/hub/original", projectPath: "/hub/original"),
+            DirectoryEntry(name: "topic", path: "/hub/topic", projectPath: "/hub/original"),
+        ]
+        let before = DirectoryBrowserModel.children(
+            of: "/hub", entries: cached, directories: [], projects: [original],
+            showUnregisteredFolders: showUnregistered
+        )
+        #expect(before.filter(\.presentsProject).map(\.path) == ["/hub/original"])
+
+        let projects = oldProjectRegistered ? [original, replacement] : [replacement]
+        let after = DirectoryBrowserModel.children(
+            of: "/hub", entries: cached, directories: [], projects: projects,
+            showUnregisteredFolders: showUnregistered
+        )
+        let row = try #require(after.first { $0.path == "/hub/topic" })
+        #expect(row.presentsProject)
+        #expect(DirectoryBrowserModel.project(for: row, in: projects)?.id == replacement.id)
+        let presented = after.filter(\.presentsProject).compactMap {
+            DirectoryBrowserModel.project(for: $0, in: projects)?.id
+        }
+        #expect(Set(presented) == Set(projects.map(\.id)))
+        #expect(presented.count == projects.count)
+    }
+
+    @Test("POSIX folder identities preserve normalization and leading combining marks")
+    func byteExactPaths() {
+        let paths = ["/hub/caf\u{e9}", "/hub/cafe\u{301}", "/hub/\u{301}notes"]
+        let projects = paths.map { project(path: $0) }
+        let entries = paths.map {
+            DirectoryEntry(name: String(decoding: $0.utf8.dropFirst(5), as: UTF8.self), path: $0)
+        }
+        let children = DirectoryBrowserModel.children(
+            of: "/hub", entries: entries, directories: [], projects: projects,
+            showUnregisteredFolders: false
+        )
+        #expect(Set(children.map(\.id)).count == 3)
+        for (entry, project) in zip(entries, projects) {
+            #expect(DirectoryBrowserModel.project(for: entry, in: projects)?.id == project.id)
+            #expect(DirectoryPaths.contains("/hub", entry.path))
+        }
+        #expect(!DirectoryPaths.contains(paths[0], paths[1] + "/nested"))
+    }
+
+    @Test("unregistered folders remain visible and known missing projects remain reachable")
+    func mixedInventory() {
+        let entries = [DirectoryEntry(name: "notes", path: "/hub/notes")]
+        let children = DirectoryBrowserModel.children(
+            of: "/hub", entries: entries, directories: [],
+            projects: [project(path: "/hub/missing/main"), project(path: "/hub-other/main")]
+        )
+        #expect(children.map(\.name) == ["missing", "notes"])
+        #expect(children.allSatisfy { $0.projectPath == nil })
+    }
+
+    @Test("hiding unregistered folders retains registrations and their ancestor paths")
+    func hideUnregisteredFolders() {
+        let entries = [
+            DirectoryEntry(name: "unused", path: "/hub/unused"),
+            DirectoryEntry(name: "checkout", path: "/hub/checkout", projectPath: "/elsewhere/main"),
+            DirectoryEntry(name: "unloaded", path: "/hub/unloaded", projectPath: "/hub/unloaded"),
+        ]
+        let directories = [DirectoryWorkspaceSummary(
+            id: UUID(), hostID: UUID(), name: "notes", path: "/hub/notes",
+            tmuxSessionName: "notes", sessionLive: false
+        )]
+        let projects = [project(path: "/elsewhere/main"), project(path: "/hub/team/widget/main")]
+        let hidden = DirectoryBrowserModel.children(
+            of: "/hub", entries: entries, directories: directories, projects: projects,
+            showUnregisteredFolders: false
+        )
+        #expect(hidden.map(\.name) == ["checkout", "notes", "team"])
+        let shown = DirectoryBrowserModel.children(
+            of: "/hub", entries: entries, directories: directories, projects: projects,
+            showUnregisteredFolders: true
+        )
+        #expect(shown.map(\.name) == ["checkout", "notes", "team", "unloaded", "unused"])
+    }
+
+    @Test("registered projects remain reachable through every ancestor before browsing")
+    func coldRegisteredTree() throws {
+        let registered = project(path: "/hub/team/widget/main")
+        #expect(DirectoryBrowserModel.containsRegistrations(
+            beneath: "/hub/team/widget", directories: [], projects: [registered]
+        ))
+        #expect(!DirectoryBrowserModel.containsRegistrations(
+            beneath: "/hub/team/widget-other", directories: [], projects: [registered]
+        ))
+        for (parent, expected) in [
+            ("/hub", "/hub/team"),
+            ("/hub/team", "/hub/team/widget"),
+            ("/hub/team/widget", "/hub/team/widget/main"),
+        ] {
+            let children = DirectoryBrowserModel.children(
+                of: parent, entries: [], directories: [], projects: [registered],
+                showUnregisteredFolders: false
+            )
+            #expect(children.map(\.path) == [expected])
+            if expected == registered.project.rootPath {
+                let child = try #require(children.first)
+                #expect(DirectoryBrowserModel.project(for: child, in: [registered])?.id
+                    == registered.id)
+            }
+        }
+    }
+
+    @Test("show then hide retains a recognized registered container and removes unrelated folders")
+    func registeredContainerAfterBrowse() throws {
+        let registered = project(path: "/hub/widget/main")
+        let entries = [
+            DirectoryEntry(name: "widget", path: "/hub/widget", projectPath: "/hub/widget/main"),
+            DirectoryEntry(name: "unused", path: "/hub/unused"),
+        ]
+        for showUnregistered in [false, true, false] {
+            let children = DirectoryBrowserModel.children(
+                of: "/hub", entries: entries, directories: [], projects: [registered],
+                showUnregisteredFolders: showUnregistered
+            )
+            #expect(children.map(\.name) == (showUnregistered ? ["unused", "widget"] : ["widget"]))
+            let container = try #require(children.first { $0.name == "widget" })
+            #expect(DirectoryBrowserModel.project(for: container, in: [registered])?.id
+                == registered.id)
+        }
+    }
+
+    @Test("large listings retain exactly the registered projects")
+    func largeListing() {
+        let entries = (0 ..< 1000).map {
+            DirectoryEntry(name: "folder-\($0)", path: "/hub/folder-\($0)")
+        }
+        let projects = (0 ..< 500).map { project(path: "/hub/folder-\($0)") }
+        let duration = ContinuousClock().measure {
+            for _ in 0 ..< 10 {
+                let children = DirectoryBrowserModel.children(
+                    of: "/hub", entries: entries, directories: [], projects: projects,
+                    showUnregisteredFolders: false
+                )
+                #expect(Set(children.map(\.path)) == Set(projects.map(\.project.rootPath)))
+            }
+        }
+        print("Directory projection: 10 x 1,000 folders / 500 projects: \(duration)")
+    }
+
+    @Test("group roots compare host and path components")
+    func roots() {
+        let hostID = UUID()
+        func directory(_ path: String, host: UUID) -> DirectoryWorkspaceSummary {
+            DirectoryWorkspaceSummary(
+                id: UUID(), hostID: host, name: path, path: path,
+                tmuxSessionName: path, sessionLive: false
+            )
+        }
+        let parent = directory("/hub", host: hostID)
+        let nested = directory("/hub/notes", host: hostID)
+        let sibling = directory("/hub-other", host: hostID)
+        let remote = directory("/hub/notes", host: UUID())
+        #expect(DirectoryBrowserModel.roots([parent, nested, sibling, remote]).map(\.id)
+            == [parent.id, sibling.id, remote.id])
+        #expect(DirectoryPaths.contains("/hub/./", "/hub/a/../widget/main"))
+        #expect(!DirectoryPaths.contains("/hub", "/hub"))
+        #expect(!DirectoryPaths.contains("/hub", "/hub-other"))
+    }
+}

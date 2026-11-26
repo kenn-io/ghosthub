@@ -423,6 +423,11 @@ and Zellij skipped on Windows) and keeps a loading state until kwt returns so
 empty onboarding never flashes prematurely. Failures degrade per host with
 cached rows and a retry warning (exit 255 reported as SSH failure).
 
+- **Directory hierarchy:** the Add Project sheet's **Directory** choice uses
+  `kwt workspace add`. Directory chevrons request one level of child inventory
+  through `kwt workspace browse`, without registering or starting sessions.
+  Gray rows offer registration in their **…** menus; clicking a registered
+  directory opens its canonical kwt session at the directory root.
 - **Remote kwt helpers:** auto-installed under `~/.ghosthub/` on macOS/Linux
   before kwt inventory (provisioning failures disable worktrees on that host
   without blocking tmux). **Add Project** revalidates host ID before passing
