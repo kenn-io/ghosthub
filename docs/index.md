@@ -24,8 +24,9 @@ help using the app, see the [public user guides](https://ghosthub.ai/docs/).
 | Prepare and publish a release | [Release](release.md) |
 | Edit or publish documentation | [Documentation publishing](https://github.com/kenn-io/ghosthub/blob/main/docs/README.md) |
 
-Ghosthub is alpha software. Schemas and internal contracts can change directly;
-check the repository rules in `AGENTS.md` before changing persistence.
+Ghosthub is under active development and some internal contracts still evolve
+directly; check the repository rules in `AGENTS.md` before changing
+persistence.
 
 ## Other implementations and planned work
 

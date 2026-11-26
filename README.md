@@ -57,8 +57,9 @@ separate Git checkout for each task, you can register a repository and use
 [kwt](https://kwt.sh) to create branch or pull-request worktrees with their own
 tmux sessions. Git and worktrees are optional.
 
-Ghosthub is alpha software. File bug reports and feature requests in
-[GitHub issues](https://github.com/kenn-io/ghosthub/issues).
+Ghosthub is production software under active development, with some newer
+features marked experimental in the guides. File bug reports and feature
+requests in [GitHub issues](https://github.com/kenn-io/ghosthub/issues).
 
 ## What it does
 
