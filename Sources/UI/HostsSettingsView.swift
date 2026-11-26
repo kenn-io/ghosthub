@@ -256,6 +256,8 @@ public struct HostsSettingsView: View {
     let installAgentHooks: (SSHHost?) async -> Result<[AgentHookSetupStatus], HostProbeError>
     /// The hosts as saved, before this window's unsaved edits.
     let savedSSHHosts: [SSHHost]
+    /// Starts a new host when the view appears, once.
+    @Binding var startsNewHost: Bool
 
     public init(
         sshHosts: Binding<[SSHHostDraft]>,
@@ -308,8 +310,10 @@ public struct HostsSettingsView: View {
             [AgentHookSetupStatus],
             HostProbeError
         > = { _ in .success([]) },
-        savedSSHHosts: [SSHHost]
+        savedSSHHosts: [SSHHost],
+        startsNewHost: Binding<Bool> = .constant(false)
     ) {
+        _startsNewHost = startsNewHost
         _sshHosts = sshHosts
         _selectedSSHHostDraftID = selectedSSHHostDraftID
         _hostProbeResult = hostProbeResult
@@ -883,6 +887,12 @@ public struct HostsSettingsView: View {
         } message: {
             if let error = tailscaleError {
                 Text(error)
+            }
+        }
+        .onAppear {
+            if startsNewHost {
+                startsNewHost = false
+                addSSHHost()
             }
         }
     }

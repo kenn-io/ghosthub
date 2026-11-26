@@ -91,7 +91,8 @@ website/demo/render-launch-profile.sh /tmp/ghosthub-website-assets/docs-launch-p
 
 - Run `make screenshot-settings` after the demo capture so it uses the matching
   host list alongside Keyboard and Privacy views (it opens test windows only;
-  no host discovery or terminal processes run).
+  no host discovery or terminal processes run). It also writes
+  `guide-welcome.png` and `guide-agent-hooks.png` from synthetic hook status.
 - `make screenshot-worktree-flags` exercises real sidebar actions with isolated
   preferences and writes `worktree-flags-light.png` and
   `worktree-flags-dark.png`. Publish the dark capture as

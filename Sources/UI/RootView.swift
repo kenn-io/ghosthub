@@ -22,6 +22,11 @@ public struct RootView: View {
     /// Tracks whether the sidebar was auto-collapsed due to narrow
     /// window width so we can auto-expand it when the window grows.
     @State private var sidebarAutoCollapsed = false
+    /// Identifies this window to the welcome sheet, which one window shows.
+    @State private var onboardingWindow = UUID()
+    @State private var isOnboardingPresented = false
+    @State private var opensHostsAfterOnboarding = false
+    private let onboarding = OnboardingPresenter.shared
     @State private var sidebarVisibilityProgress: CGFloat
     @State private var isSidebarTransitioning = false
     @State private var sidebarTransitionID = UUID()
@@ -167,6 +172,23 @@ public struct RootView: View {
             .sheet(isPresented: $isLogViewerPresented) {
                 logViewerSheet
             }
+            .sheet(
+                isPresented: $isOnboardingPresented,
+                onDismiss: onboardingDismissed
+            ) {
+                OnboardingView(
+                    settingsStore: settingsStore,
+                    addHost: {
+                        opensHostsAfterOnboarding = true
+                        onboarding.finish()
+                    },
+                    finish: { onboarding.finish() }
+                )
+            }
+            .onChange(of: onboarding.isPending, initial: true) { _, pending in
+                isOnboardingPresented = pending && onboarding.claim(onboardingWindow)
+            }
+            .onDisappear { onboarding.release(onboardingWindow) }
             .sheet(
                 isPresented: Binding(
                     get: { sshHostKeyReview.isPresented },
@@ -1858,6 +1880,20 @@ public struct RootView: View {
         }
     }
 
+    /// A sheet closed with Escape counts as finished, so it does not come
+    /// back at the next launch; Show Welcome reopens it.
+    private func onboardingDismissed() {
+        if onboarding.isPending {
+            settingsStore.setOnboardingCompleted(true)
+            onboarding.finish()
+        }
+        if opensHostsAfterOnboarding {
+            opensHostsAfterOnboarding = false
+            settingsStore.startsNewSSHHost = true
+            perform(.openSettings(.hosts))
+        }
+    }
+
     private func requestSavedTmuxSessionDismissal(
         _ saved: WorkspaceSavedTmuxSessionSelection
     ) {
@@ -2464,6 +2500,8 @@ public struct RootView: View {
             selectWorkspace(target)
         case .showLogViewer:
             isLogViewerPresented = true
+        case .showWelcome:
+            onboarding.present(in: onboardingWindow)
         case let .applicationShortcut(action):
             handlers.performApplicationShortcut?(action)
         }

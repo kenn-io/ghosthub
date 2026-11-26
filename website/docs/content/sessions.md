@@ -445,11 +445,21 @@ Hover over a badge to see which agent reported it.
 **Done** clears as soon as you view that session in the front window.
 **Approval** and **Input** stay visible until the agent continues.
 
-To enable agent badges on a host:
+To enable agent badges everywhere, open **Settings → Agents** and turn on
+**Install and update agent hooks automatically**. Ghosthub then installs hooks
+on your Mac and every macOS and Linux SSH host (including exe.dev VMs),
+updates them whenever Ghosthub updates, and sets up each host you add. The **Agent Hooks** list there shows
+each host's hooks; **Install on All Hosts** installs them once without turning
+the setting on.
+
+![Settings → Agents with the Agent Hooks list showing hook status on This Mac, Build Server, and Studio](/docs/assets/guide-agent-hooks.png)
+
+To set up a single host instead:
 
 1. Open **Settings → Hosts** and select your Mac or a remote host.
 2. Under **Agent Hooks**, click **Install Hooks**.
-3. In Codex, run `/hooks` once to trust the new hooks.
+
+In Codex, run `/hooks` once on each host to trust new hooks.
 
 Ghosthub installs hooks for each supported agent already set up on that host,
 including Claude Code, Codex, Antigravity CLI (`agy`), Gemini CLI, and Cursor.

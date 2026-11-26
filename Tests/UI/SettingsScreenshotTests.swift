@@ -53,13 +53,102 @@ struct SettingsScreenshotTests {
             ),
         ]
         let actions = SettingsActions(loadAgentHooks: { _ in .success(agentHooks) })
+        try Self.captureSheet(
+            SettingsView(store: store, actions: actions)
+                .defaultAppStorage(defaults)
+                .frame(width: 1040, height: 744),
+            to: path
+        )
+    }
+
+    @MainActor
+    @Test("exports the welcome sheet and the Agent Hooks list")
+    func onboarding() async throws {
+        guard let directory = ProcessInfo.processInfo
+            .environment["GHOSTHUB_SETTINGS_SCREENSHOT_DIR"] else { return }
+        let configDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: configDirectory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: configDirectory) }
+        let suiteName = "ghosthub.settings.screenshot.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SettingsStore(
+            configPipeline: LibghosttyConfigPipeline(
+                paths: LibghosttyConfigPaths(configDirectory: configDirectory)
+            ),
+            userDefaults: defaults
+        )
+        store.setSSHHosts([
+            SSHHost(
+                configKey: "build-server",
+                name: "Build Server",
+                platform: .linux,
+                sshDestination: "user@build.example.test"
+            ),
+            SSHHost(
+                configKey: "studio",
+                name: "Studio",
+                platform: .macOS,
+                sshDestination: "user@studio.example.test"
+            ),
+        ])
+
+        try Self.captureSheet(
+            OnboardingView(settingsStore: store, addHost: {}, finish: {}),
+            to: URL(fileURLWithPath: directory)
+                .appendingPathComponent("guide-welcome.png").path
+        )
+
+        // Settings → Agents lists every host's hooks from the shared
+        // maintainer, so give it synthetic hosts and read them first.
+        func status(_ agent: String, _ name: String, installed: Bool, current: Bool)
+            -> AgentHookSetupStatus {
+            AgentHookSetupStatus(
+                agent: agent, displayName: name,
+                available: true, installed: installed, current: current
+            )
+        }
+        let hosts: [String: [AgentHookSetupStatus]] = [
+            "": [
+                status("claude", "Claude Code", installed: true, current: true),
+                status("codex", "Codex", installed: true, current: true),
+            ],
+            "build-server": [
+                status("claude", "Claude Code", installed: true, current: false),
+                status("codex", "Codex", installed: true, current: true),
+            ],
+            "studio": [
+                status("claude", "Claude Code", installed: false, current: false),
+            ],
+        ]
+        let maintainer = AgentHookMaintainer.shared
+        maintainer.status = { host in .success(hosts[host?.configKey ?? ""] ?? []) }
+        defer { maintainer.status = nil }
+        await maintainer.check(
+            AgentHookTarget.all(sshHosts: store.sshHosts), installing: false
+        )
+        store.setAutoInstallAgentHooks(false)
+        store.selectedDomain = .agents
+        try Self.captureSheet(
+            SettingsView(store: store)
+                .defaultAppStorage(defaults)
+                .frame(width: 1040, height: 744),
+            to: URL(fileURLWithPath: directory)
+                .appendingPathComponent("guide-agent-hooks.png").path
+        )
+    }
+
+    /// Presents `content` as a dark sheet and writes the sheet's pixels,
+    /// without window chrome, to `path`.
+    @MainActor
+    private static func captureSheet(_ content: some View, to path: String) throws {
         let controller = NSHostingController(
             rootView: Color.clear
                 .sheet(isPresented: .constant(true)) {
-                    SettingsView(store: store, actions: actions)
-                        .defaultAppStorage(defaults)
-                        .frame(width: 1040, height: 744)
-                        .preferredColorScheme(.dark)
+                    content.preferredColorScheme(.dark)
                 }
         )
         let window = NSWindow(contentViewController: controller)

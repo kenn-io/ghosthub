@@ -336,6 +336,20 @@ final class SettingsStoreTests {
         #expect(!reloaded.confirmBeforeQuitting)
     }
 
+    @Test("automatic agent hooks and the finished welcome stay off until chosen, then persist")
+    func agentHookAndWelcomePreferencesPersist() {
+        let store = makeSUT()
+        #expect(!store.autoInstallAgentHooks)
+        #expect(!store.onboardingCompleted)
+
+        store.setAutoInstallAgentHooks(true)
+        store.setOnboardingCompleted(true)
+
+        let reloaded = makeSUT()
+        #expect(reloaded.autoInstallAgentHooks)
+        #expect(reloaded.onboardingCompleted)
+    }
+
     @Test("duplicate exe.dev destinations remain available for correction")
     func duplicateExeDestinationsRemainInSettings() {
         let accounts = [

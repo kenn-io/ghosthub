@@ -62,6 +62,8 @@ WEBSITE_ASSET_NAMES = (
     "guide-agent-attention.png",
     "guide-session-restore.png",
     "guide-session-rename.png",
+    "guide-welcome.png",
+    "guide-agent-hooks.png",
     "guide-hosts.png",
     "guide-keyboard.png",
     "guide-privacy.png",

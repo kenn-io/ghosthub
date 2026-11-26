@@ -7658,39 +7658,10 @@ final class WorkspaceSceneModel: ObservableObject {
         _ action: KwtAgentHookClient.Action,
         on host: SSHHost?
     ) async -> Result<[AgentHookSetupStatus], HostProbeError> {
-        let target: CommandHost
-        if let host {
-            let destination = host.sshDestination.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            guard host.platform != .windows,
-                  let sshHost = CommandHostResolver.parseSSHDestination(destination)
-            else {
-                return .failure(.message("Enter a valid SSH destination."))
-            }
-            target = .ssh(SSHHostInfo(
-                user: sshHost.user,
-                hostname: sshHost.hostname,
-                port: sshHost.port,
-                platform: .posix,
-                compression: host.compression,
-                forwardAgent: host.forwardAgent
-            ))
-        } else {
-            target = .local
-        }
-        do {
-            if var host {
-                host.sshDestination = host.sshDestination.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-                // Settings may hold unsaved connection edits, so the result
-                // says nothing about the saved host's kwt; inventory tracks that.
-                try await ensureRemoteKwtForOperation(on: host)
-            }
-            return try await .success(KwtAgentHookClient().run(action, on: target))
-        } catch {
-            return .failure(.message(error.localizedDescription))
+        // Settings may hold unsaved connection edits, so the result says
+        // nothing about the saved host's kwt; inventory tracks that.
+        await KwtAgentHookClient().run(action, on: host) { [weak self] host in
+            try await self?.ensureRemoteKwtForOperation(on: host)
         }
     }
 

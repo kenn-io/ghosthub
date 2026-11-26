@@ -129,8 +129,10 @@ struct GhosthubApp: App {
                 "shortcut configuration: \(issue.message)"
             )
         }
+        let isFirstLaunch = WorkspaceSceneBootstrap.isFirstLaunch()
         WorkspaceSceneBootstrap.ensureBootstrapped()
         WorkspaceInventoryStore.shared.startApplicationActivityMonitoring()
+        AgentHookAutomation.start(isNewInstall: isFirstLaunch)
     }
 
     var body: some Scene {

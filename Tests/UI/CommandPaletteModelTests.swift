@@ -1267,6 +1267,15 @@ struct CommandPaletteModelTests {
         #expect(!commands.contains { $0.action == .openTmuxSession(api.session) })
         #expect(!commands.contains { $0.action == .killTmuxSession(api.session) })
     }
+
+    @Test("the palette reopens the welcome sheet")
+    func showWelcomeCommand() throws {
+        let command = try #require(
+            CommandPaletteModel.filteredCommands(makeCommandPaletteCommands(), query: "hooks")
+                .first { $0.action == .showWelcome }
+        )
+        #expect(command.title == "Show Welcome")
+    }
 }
 
 private func makeCommandPaletteCommands(

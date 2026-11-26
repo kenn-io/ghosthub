@@ -69,6 +69,61 @@ Install Zellij locally if you want Zellij sessions:
 brew install zellij
 ```
 
+## First launch
+
+The first time Ghosthub opens, a welcome sheet helps you set up hosts and
+agent hooks.
+
+![Ghosthub welcome sheet with the automatic agent hooks setting checked, and Add a Host and Get Started buttons](/docs/assets/guide-welcome.png)
+
+### Hosts
+
+This Mac works right away. To add a Mac or Linux machine you reach over SSH,
+click **Add a Host…**. The welcome closes and **Settings → Hosts** opens with a
+new host ready for its name and SSH address. You can also add hosts later
+there. See [Remote hosts](remote-hosts.md).
+
+### Agent hooks
+
+kwt adds hooks to the user settings of each coding agent installed on a host,
+such as Claude Code, Codex, and Antigravity. The hooks report what the agent
+is doing, which lets Ghosthub:
+
+- show [Approval, Input, Done, and Working badges](sessions.md#agents-waiting-for-you)
+  in the sidebar and notify you;
+- resume each agent's conversation when kwt
+  [restores your sessions after a reboot](sessions.md#restore-sessions-after-a-reboot).
+
+**Install and update agent hooks automatically** is checked on the welcome
+sheet. When you click **Get Started** or **Add a Host…** with it checked,
+Ghosthub:
+
+1. Installs hooks on this Mac and every macOS and Linux SSH host, including
+   VMs from your exe.dev accounts.
+2. Updates them after each Ghosthub update.
+3. Installs them on each SSH host you add later.
+
+Uncheck it to leave agent settings unchanged. Windows hosts are never set up
+automatically. Codex asks you to trust new hooks: run `/hooks` once in Codex
+on each host.
+
+### Change it later
+
+- **Settings → Agents → Agent Hooks** turns automatic hooks on or off, lists
+  each host's hooks, and installs them on every host at once. See
+  [Agents waiting for you](sessions.md#agents-waiting-for-you).
+- **Show Welcome** in the Command Palette reopens the welcome sheet.
+- Closing the sheet with Escape keeps automatic hooks off and does not show
+  the sheet again.
+
+### If you used Ghosthub before
+
+After an update, the welcome sheet appears once, and only if a host has an
+agent whose hooks are missing or out of date. That check reads hook status
+and changes nothing. It waits for Ghosthub to list your exe.dev VMs first. If
+a host cannot be reached or an exe.dev account cannot be listed, Ghosthub
+checks again at the next launch.
+
 ## Open an existing session
 
 1. Open Ghosthub.
