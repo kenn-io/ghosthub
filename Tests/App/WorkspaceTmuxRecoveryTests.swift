@@ -3609,4 +3609,72 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(reason?.contains("could not confirm the tmux session") == true)
         await model.shutdown()
     }
+
+    @MainActor
+    @Test(
+        "slow Windows kwt open keeps waiting past initial discovery delays while session is absent"
+    )
+    func slowWindowsKwtOpenConnectsPastInitialDiscoveryDelays() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].platform = .windows
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let endpointIdentity = TmuxSessionIdentity(
+            serverPID: "456",
+            sessionID: "$9",
+            createdAt: "1721552400"
+        )
+        let allowSession = LockedValue(false)
+        let endpointReads = Counter()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("psmux")
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: ["-F", "/tmp/attachment-config"])
+            },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in
+                _ = endpointReads.increment()
+                guard allowSession.load() else {
+                    throw TmuxSessionKillError.sessionNotRunning(
+                        host: "Office Linux",
+                        session: "kwt-ghosthub-main"
+                    )
+                }
+                return endpointIdentity
+            },
+            createdSessionDiscoveryDelays: [.milliseconds(5)],
+            kwtEndpointConfirmationTimeout: .seconds(5),
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        // Wait past the initial discovery delay while psmux has not created the session yet.
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(endpointReads.count >= 2)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.activeBorrowedTmuxConnectionState == ConnectionState.connecting)
+        #expect(surfaceStore.removedKeys.isEmpty)
+
+        allowSession.store(true)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        await model.shutdown()
+    }
 }

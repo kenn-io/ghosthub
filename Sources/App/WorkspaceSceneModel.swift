@@ -14885,23 +14885,29 @@ final class WorkspaceSceneModel: ObservableObject {
                       borrowedTmuxConnectionStates[handle.id]
                       == expectedConnectionState
                 else { return }
-                let outcome = if requiresEndpointConfirmation {
-                    await kwtEndpointConfirmationOutcome(
+                let confirmed: Bool
+                let nextMismatch: Bool
+                if requiresEndpointConfirmation {
+                    let outcome = await kwtEndpointConfirmationOutcome(
                         for: presentation,
                         context: context
                     )
+                    confirmed = outcome == .confirmed
+                    nextMismatch = outcome == .mismatch
                 } else {
-                    await tmuxProbeOutcome(
+                    let outcome = await tmuxProbeOutcome(
                         for: presentation,
                         context: context
                     )
+                    confirmed = outcome == .present
+                    nextMismatch = false
                 }
                 guard !Task.isCancelled,
                       presentation.reconnectContext == context,
                       borrowedTmuxConnectionStates[handle.id]
                       == expectedConnectionState
                 else { return }
-                if outcome == .present {
+                if confirmed {
                     awaitingKwtClientIdentityHandles.remove(handle.id)
                     presentation.kwtEndpointConfirmationDeadline = nil
                     presentation.kwtEndpointConfirmationRetryIndex = 0
@@ -14925,8 +14931,7 @@ final class WorkspaceSceneModel: ObservableObject {
                     }
                     return
                 }
-                resolvedClientMismatch =
-                    requiresEndpointConfirmation && outcome == .absent
+                resolvedClientMismatch = nextMismatch
             }
             guard let self, let presentation,
                   presentation.reconnectContext == context
@@ -14976,31 +14981,36 @@ final class WorkspaceSceneModel: ObservableObject {
             && context.selection.tmuxAttachMode == .direct
     }
 
+    private enum KwtEndpointConfirmationOutcome: Equatable {
+        case confirmed
+        case pending
+        case mismatch
+    }
+
     private func kwtEndpointConfirmationOutcome(
         for presentation: RetainedTmuxPresentation,
         context: TmuxReconnectContext
-    ) async -> TmuxSessionProbeOutcome {
+    ) async -> KwtEndpointConfirmationOutcome {
         guard let connection = nativeTmuxSessionCoordinator
             .attachmentConnectionSnapshot(presentation.handle),
             connection.routeIdentity == context.routeIdentity
-        else { return .absent }
+        else { return .mismatch }
         if case let .ssh(info) = context.host,
            info.platform == .windows {
             do {
                 // The Windows launch validates `kwt open --start-session`
                 // output before attaching psmux to this exact endpoint. Probe
                 // that endpoint on the same route because psmux cannot report
-                // the launched client's identity.
+                // the launched client's identity. Absence while kwt is still
+                // creating the session stays pending until the deadline.
                 _ = try await tmuxRoutedSessionIdentityReader(
                     context.selection,
                     context.host,
                     connection.arguments
                 )
-                return .present
-            } catch TmuxSessionKillError.sessionNotRunning {
-                return .absent
+                return .confirmed
             } catch {
-                return .failure(.sessionContextUnavailable)
+                return .pending
             }
         }
         let attachedIdentity: TmuxSessionIdentity
@@ -15011,7 +15021,7 @@ final class WorkspaceSceneModel: ObservableObject {
             nativeTmuxSessionCoordinator.requestAttachedSessionIdentity(
                 presentation.handle
             )
-            return .failure(.sessionContextUnavailable)
+            return .pending
         case let .resolved(identity):
             awaitingKwtClientIdentityHandles.remove(presentation.handle.id)
             attachedIdentity = identity
@@ -15022,11 +15032,13 @@ final class WorkspaceSceneModel: ObservableObject {
                 context.host,
                 connection.arguments
             )
-            return capturedIdentity == attachedIdentity ? .present : .absent
+            return capturedIdentity == attachedIdentity
+                ? .confirmed
+                : .mismatch
         } catch TmuxSessionKillError.sessionNotRunning {
-            return .absent
+            return .mismatch
         } catch {
-            return .failure(.sessionContextUnavailable)
+            return .pending
         }
     }
 
