@@ -463,6 +463,7 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
             "ghosthub_kwt_tty=\"$(tty 2>/dev/null)\"",
             "\(kwtCommand) <&3 3<&- & ghosthub_kwt_pid=$!",
             "ghosthub_kwt_client_ready=",
+            "ghosthub_kwt_wait_delay=0.02",
             "while kill -0 \"$ghosthub_kwt_pid\" 2>/dev/null; do "
                 + "for ghosthub_client_tty in "
                 + "$(\(listClientTTYs) 2>/dev/null); do "
@@ -470,7 +471,12 @@ public struct TmuxAttachmentInfo: Equatable, Sendable {
                 + "\"$ghosthub_kwt_tty\" ]; then "
                 + "ghosthub_kwt_client_ready=1; break; fi; done; "
                 + "[ -n \"$ghosthub_kwt_client_ready\" ] && break; "
-                + "sleep 0.01; done",
+                + "sleep \"$ghosthub_kwt_wait_delay\"; "
+                + "case \"$ghosthub_kwt_wait_delay\" in "
+                + "0.02) ghosthub_kwt_wait_delay=0.05 ;; "
+                + "0.05) ghosthub_kwt_wait_delay=0.1 ;; "
+                + "0.1) ghosthub_kwt_wait_delay=0.25 ;; "
+                + "esac; done",
             "if [ -n \"$ghosthub_kwt_client_ready\" ]; then "
                 + "\(sessionSetup); fi",
             "wait \"$ghosthub_kwt_pid\"",

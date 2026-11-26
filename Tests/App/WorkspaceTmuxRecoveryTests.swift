@@ -3402,4 +3402,279 @@ extension WorkspaceTmuxDiscoveryTests {
         await model.shutdown()
     }
 
+    @MainActor
+    @Test("slow kwt open connects after client identity resolves past initial discovery delays")
+    func slowKwtOpenConnectsPastInitialDiscoveryDelays() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let endpointIdentity = TmuxSessionIdentity(
+            serverPID: "456",
+            sessionID: "$9",
+            createdAt: "1721552400"
+        )
+        let clientOutput =
+            "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t"
+                + "\(endpointIdentity.serverPID)\t999\t1721552401\t"
+                + "/dev/ttys009\t\(endpointIdentity.sessionID)\t"
+                + "\(endpointIdentity.createdAt)\t%1\n"
+        let allowAttach = LockedValue(false)
+        let clientLookups = Counter()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux", version: "tmux 3.4")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY")
+                else { return (0, "") }
+                _ = clientLookups.increment()
+                return allowAttach.load()
+                    ? (0, clientOutput)
+                    : (0, "")
+            },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in endpointIdentity },
+            createdSessionDiscoveryDelays: [.milliseconds(5)],
+            kwtEndpointConfirmationTimeout: .seconds(5),
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        // Wait well past the 5ms initial discovery delay while kwt open is still running.
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.activeBorrowedTmuxConnectionState == ConnectionState.connecting)
+        #expect(surfaceStore.removedKeys.isEmpty)
+
+        // Now kwt finishes creating the session and attaches its client.
+        allowAttach.store(true)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(clientLookups.count >= 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("stalled kwt open shows Unable to attach with Retry instead of spinning forever")
+    func stalledKwtOpenShowsUnableToAttachAndRetries() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let endpointIdentity = TmuxSessionIdentity(
+            serverPID: "456",
+            sessionID: "$9",
+            createdAt: "1721552400"
+        )
+        let clientOutput =
+            "GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY\t"
+                + "\(endpointIdentity.serverPID)\t999\t1721552401\t"
+                + "/dev/ttys009\t\(endpointIdentity.sessionID)\t"
+                + "\(endpointIdentity.createdAt)\t%1\n"
+        let allowAttach = LockedValue(false)
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux", version: "tmux 3.4")
+            },
+            nativeTmuxPaneSplitter: TmuxPaneSplitter { _, _, command in
+                guard command.contains("GHOSTHUB_TMUX_SPLIT_CLIENT_IDENTITY")
+                else { return (0, "") }
+                return allowAttach.load()
+                    ? (0, clientOutput)
+                    : (0, "")
+            },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in endpointIdentity },
+            createdSessionDiscoveryDelays: [.milliseconds(5)],
+            kwtEndpointConfirmationTimeout: .milliseconds(30),
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            if case .disconnected = model.activeBorrowedTmuxConnectionState {
+                return true
+            }
+            return false
+        }
+
+        // The unverified surface was detached, while the active selection stays
+        // in an explicit disconnected error state so Retry works.
+        #expect(!surfaceStore.removedKeys.isEmpty)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        guard case let .disconnected(reason) =
+            model.activeBorrowedTmuxConnectionState
+        else {
+            Issue.record("expected disconnected state after confirmation timeout")
+            await model.shutdown()
+            return
+        }
+        #expect(reason?.contains("Timed out waiting for kwt") == true)
+
+        // Retrying starts a fresh kwt open and connects once the client attaches.
+        allowAttach.store(true)
+        model.retryBorrowedTmuxSession(selection)
+        await waitUntilMainActor {
+            surfaceStore.requestCount == 2
+                && model.activeBorrowedTmuxSessionIsConnected
+        }
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test("mismatched direct kwt endpoint fails promptly without waiting for timeout")
+    func mismatchedKwtEndpointFailsPromptly() async throws {
+        let environment = try setupStandardEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let attachedIdentity = TmuxSessionIdentity(
+            serverPID: "456",
+            sessionID: "$1",
+            createdAt: "1721552400"
+        )
+        let expectedIdentity = TmuxSessionIdentity(
+            serverPID: "456",
+            sessionID: "$2",
+            createdAt: "1721552405"
+        )
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            nativeTmuxPathProvider: {
+                successfulTmuxResolution("/usr/bin/tmux", version: "tmux 3.4")
+            },
+            nativeTmuxPaneSplitter: WorkspaceTmuxTestSupport
+                .previewPaneSplitter(identity: attachedIdentity),
+            tmuxRoutedSessionIdentityReader: { _, _, _ in expectedIdentity },
+            createdSessionDiscoveryDelays: [.milliseconds(5)],
+            kwtEndpointConfirmationTimeout: .seconds(60),
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        await waitUntilMainActor {
+            if case .disconnected = model.activeBorrowedTmuxConnectionState {
+                return true
+            }
+            return false
+        }
+
+        #expect(!surfaceStore.removedKeys.isEmpty)
+        guard case let .disconnected(reason) =
+            model.activeBorrowedTmuxConnectionState
+        else {
+            Issue.record("expected disconnected state on endpoint mismatch")
+            await model.shutdown()
+            return
+        }
+        #expect(reason?.contains("could not confirm the tmux session") == true)
+        await model.shutdown()
+    }
+
+    @MainActor
+    @Test(
+        "slow Windows kwt open keeps waiting past initial discovery delays while session is absent"
+    )
+    func slowWindowsKwtOpenConnectsPastInitialDiscoveryDelays() async throws {
+        let environment = try setupRemoteEnvironment()
+        var snapshot = environment.snapshot
+        snapshot.hosts[0].platform = .windows
+        snapshot.worktrees[0].tmuxSessionName = "kwt-ghosthub-main"
+        snapshot.worktrees[0].tmuxSocketName = "kwt"
+        snapshot.worktrees[0].tmuxAttachMode = .direct
+        snapshot.worktrees[0].generation =
+            "0123456789abcdef0123456789abcdef"
+        let worktree = try #require(snapshot.worktrees.first)
+        let selection = try #require(
+            WorkspaceSidebarModel.tmuxSessionSelection(for: worktree)
+        )
+        let endpointIdentity = TmuxSessionIdentity(
+            serverPID: "456",
+            sessionID: "$9",
+            createdAt: "1721552400"
+        )
+        let allowSession = LockedValue(false)
+        let endpointReads = Counter()
+        let surfaceStore = SceneTmuxSurfaceStoreStub()
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: UUID(),
+            snapshot: snapshot,
+            nativeTmuxSurfaceStore: surfaceStore,
+            remoteTmuxPathProvider: { _, _ in
+                successfulTmuxResolution("psmux")
+            },
+            presentationSSHConnectionProvider: { _, _ in
+                testKwtSSHAttachment(arguments: ["-F", "/tmp/attachment-config"])
+            },
+            tmuxRoutedSessionIdentityReader: { _, _, _ in
+                _ = endpointReads.increment()
+                guard allowSession.load() else {
+                    throw TmuxSessionKillError.sessionNotRunning(
+                        host: "Office Linux",
+                        session: "kwt-ghosthub-main"
+                    )
+                }
+                return endpointIdentity
+            },
+            createdSessionDiscoveryDelays: [.milliseconds(5)],
+            kwtEndpointConfirmationTimeout: .seconds(5),
+            tmuxReconnectIntervals: [.milliseconds(1)]
+        )
+
+        model.openBorrowedTmuxSession(selection)
+        await launchActiveTmuxSurface(model, store: surfaceStore)
+        // Wait past the initial discovery delay while psmux has not created the session yet.
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(endpointReads.count >= 2)
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        #expect(model.activeBorrowedTmuxConnectionState == ConnectionState.connecting)
+        #expect(surfaceStore.removedKeys.isEmpty)
+
+        allowSession.store(true)
+        await waitUntilMainActor {
+            model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(model.activeBorrowedTmuxSelection == selection)
+        await model.shutdown()
+    }
 }

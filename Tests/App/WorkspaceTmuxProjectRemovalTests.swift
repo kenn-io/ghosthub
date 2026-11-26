@@ -3300,9 +3300,16 @@ extension WorkspaceTmuxDiscoveryTests {
         // Pending client identity can consume an attempt before endpoint reads.
         // Rejection must follow a read, regardless of how many retries remain.
         #expect(capturedEndpointReads.count >= 1)
-        #expect(model.retainedBorrowedTmuxPresentationCount == 0)
-        #expect(model.activeBorrowedTmuxSelection == nil)
+        #expect(surfaceStore.removedKeys.count == 1)
         #expect(!model.activeBorrowedTmuxSessionIsConnected)
+        if case let .disconnected(reason) =
+            model.activeBorrowedTmuxConnectionState {
+            #expect(reason?.contains("could not confirm the tmux session") == true)
+        } else {
+            Issue.record(
+                "Expected disconnected state after rejecting mismatched endpoint, got \(String(describing: model.activeBorrowedTmuxConnectionState))"
+            )
+        }
         await model.shutdown()
     }
 
