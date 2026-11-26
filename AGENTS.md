@@ -76,8 +76,9 @@ Four workflows have equal status:
 
 ### Authority and non-goals
 
-Ghosthub is alpha software; treat the app and its persistence layer as open to
-direct iteration.
+Ghosthub is production software under active development, with some features
+still in development or marked experimental; check the persistence rules below
+before changing stored state.
 
 - **Discovery authority:** kwt's machine-readable CLI owns project/worktree
   identity and exact tmux session names. Direct `tmux list-sessions` supplies

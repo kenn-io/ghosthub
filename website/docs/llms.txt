@@ -2,7 +2,7 @@
 
 > Native Mac management layer for local and remote tmux, Herdr, and Zellij sessions, with experimental support for Rex and Herdr Core. An alternative to juggling multiplexer sessions in a general-purpose terminal like iTerm2, Ghostty, or Kitty, with no local shell required and optional Git worktrees.
 
-Ghosthub is alpha software. The Overview is a short visual tour, and the Docs below cover setup, daily use, and limits. Every HTML page and `.md` file comes from the same source and tracks `main`. See the Unreleased section of the changelog for changes newer than the latest stable download.
+The Overview is a short visual tour, and the Docs below cover setup, daily use, and limits (including features that are still experimental). Every HTML page and `.md` file comes from the same source and tracks `main`. See the Unreleased section of the changelog for changes newer than the latest stable download.
 
 ## Docs
 
