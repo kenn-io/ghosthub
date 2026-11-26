@@ -163,10 +163,13 @@ extension WorkspaceTmuxDiscoveryTests {
         // A second click while kwt rebuilds it must not start another
         // restore, which would tear down the half-built session; it waits
         // for the first one and shares its outcome. The same holds for a
-        // click in another window.
+        // click in another window, even one asking to continue interrupted
+        // agents, which then hears that they were not continued.
         let second = Task { try await model.restoreSavedTmuxSessions(["a1"], hostID: hostID) }
         let fromOtherWindow = Task {
-            try await otherWindow.restoreSavedTmuxSessions(["a1"], hostID: hostID)
+            try await otherWindow.restoreSavedTmuxSessions(
+                ["a1"], hostID: hostID, continuing: true
+            )
         }
         // An entry kwt no longer lists is not passed to it.
         let stale = try await model.restoreSavedTmuxSessions(["gone"], hostID: hostID)
@@ -175,8 +178,12 @@ extension WorkspaceTmuxDiscoveryTests {
         finishRestore.signal()
         let report = try await first.value
         #expect(report.entries.map(\.outcome) == ["restored"])
-        #expect(try await second.value.entries.map(\.outcome) == ["restored"])
-        #expect(try await fromOtherWindow.value.entries.map(\.outcome) == ["restored"])
+        #expect(try await second.value.problems.isEmpty)
+        let joined = try await fromOtherWindow.value
+        #expect(joined.entries.map(\.outcome) == ["restored"])
+        #expect(joined.problems == [
+            "api: another window restored it without continuing its agents",
+        ])
         #expect(restores().count == 1)
         #expect(restores().first?.hasSuffix("session 'restore' '--json' 'a1'") == true)
         let stillRestoring = model.snapshot.hosts[0].savedTmuxSessions.filter(\.isRestoring)

@@ -520,6 +520,8 @@ Palette, to continue them this once.
   that agent another prompt.
 - Saved worktree and directory sessions restored by opening the workspace row
   never continue.
+- If another window is already restoring that session without continuing,
+  Ghosthub waits for it and tells you its agents were not continued.
 
 - Conversations resume only in panes where kwt's agent hooks recorded them. See
   [Agents waiting for you](#agents-waiting-for-you) to install the hooks.

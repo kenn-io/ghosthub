@@ -16952,7 +16952,7 @@ extension WorkspaceSceneModel {
         }
         let continuing = continuing || continuesInterruptedAgents()
         return try await savedTmuxSessionRestores
-            .restore(ids, hostID: hostID) { [weak self] claimed in
+            .restore(ids, hostID: hostID, continuing: continuing) { [weak self] claimed in
                 guard let self else { throw CancellationError() }
                 setSavedTmuxSessions(savedTmuxSessionsByHost[hostID] ?? listed, hostID: hostID)
                 try await ensureRemoteKwtForOperation(hostID: hostID)

@@ -551,8 +551,10 @@ become restorable:
   every restore, including a window restoring its own session; kwt then resumes
   only those panes with a fixed prompt to check their work and continue. With
   the setting off, **Restore and Continue** on an interrupted row's menu passes
-  `--continue` once. kwt owns turn detection; see its `session restore` CLI
-  reference for the limits.
+  `--continue` once. A continue request that joins another window's restore
+  without `--continue` does not restore again (that would tear down the panes
+  it just started); its alert says the agents were not continued. kwt owns
+  turn detection; see its `session restore` CLI reference for the limits.
 - A confirmed Kill Session keeps every window from restoring that session from
   before the kill until kwt has forgotten its saved copy. Ghosthub runs
   `forget` in the background using the socket name (since killing the last
