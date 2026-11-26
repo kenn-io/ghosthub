@@ -71,16 +71,55 @@ brew install zellij
 
 ## First launch
 
-The first time Ghosthub opens, a welcome sheet offers two things:
+The first time Ghosthub opens, a welcome sheet helps you set up hosts and
+agent hooks.
 
-- **Add SSH Host…** opens **Settings → Hosts** so you can add the Macs and
-  Linux machines you work on.
-- **Install and update agent hooks automatically** lets Ghosthub show which
-  agents need you and resume their conversations after a reboot. It is checked
-  on the sheet and takes effect when you click **Get Started**. It edits each
-  agent's user settings on your Mac and SSH hosts.
+![Ghosthub welcome sheet with Add SSH Host and the automatic agent hooks setting checked](/docs/assets/guide-welcome.png)
 
-Reopen the sheet any time with **Show Welcome** in the Command Palette.
+### Hosts
+
+This Mac works right away. Click **Add SSH Host…** to close the welcome and
+open **Settings → Hosts**, where you add the Macs and Linux machines you reach
+over SSH. See [Remote hosts](remote-hosts.md).
+
+### Agent hooks
+
+kwt adds hooks to the user settings of each coding agent installed on a host,
+such as Claude Code, Codex, and Antigravity. The hooks report what the agent
+is doing, which lets Ghosthub:
+
+- show [Approval, Input, Done, and Working badges](sessions.md#agents-waiting-for-you)
+  in the sidebar and notify you;
+- resume each agent's conversation when kwt
+  [restores your sessions after a reboot](sessions.md#restore-sessions-after-a-reboot).
+
+**Install and update agent hooks automatically** is checked on the welcome
+sheet. When you click **Get Started** or **Add SSH Host…** with it checked,
+Ghosthub:
+
+1. Installs hooks on this Mac and every macOS and Linux SSH host.
+2. Updates them after each Ghosthub update.
+3. Installs them on each SSH host you add later.
+
+Uncheck it to leave agent settings unchanged. Windows hosts are never set up
+automatically. Codex asks you to trust new hooks: run `/hooks` once in Codex
+on each host.
+
+### Change it later
+
+- **Settings → Agents → Agent Hooks** turns automatic hooks on or off, lists
+  each host's hooks, and installs them on every host at once. See
+  [Agents waiting for you](sessions.md#agents-waiting-for-you).
+- **Show Welcome** in the Command Palette reopens the welcome sheet.
+- Closing the sheet with Escape keeps automatic hooks off and does not show
+  the sheet again.
+
+### If you used Ghosthub before
+
+After an update, the welcome sheet appears once, and only if a host has an
+agent whose hooks are missing or out of date. That check reads hook status
+and changes nothing. If a host cannot be reached, Ghosthub checks again at the
+next launch.
 
 ## Open an existing session
 

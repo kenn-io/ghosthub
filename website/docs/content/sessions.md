@@ -452,6 +452,8 @@ updates, and sets up each host you add. The **Agent Hooks** list there shows
 each host's hooks; **Install on All Hosts** installs them once without turning
 the setting on.
 
+![Settings → Agents with the Agent Hooks list showing hook status on This Mac, Build Server, and Studio](/docs/assets/guide-agent-hooks.png)
+
 To set up a single host instead:
 
 1. Open **Settings → Hosts** and select your Mac or a remote host.
