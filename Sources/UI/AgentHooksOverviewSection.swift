@@ -8,12 +8,12 @@ struct AgentHooksOverviewSection: View {
     let maintainer: AgentHookMaintainer
 
     private var targets: [AgentHookTarget] {
-        AgentHookTarget.all(sshHosts: store.sshHosts)
+        maintainer.targets(sshHosts: store.sshHosts)
     }
 
     private var isBusy: Bool {
         targets.contains { target in
-            switch maintainer.phases[target.id] {
+            switch maintainer.phase(target) {
             case .checking, .installing: true
             default: false
             }
@@ -22,7 +22,7 @@ struct AgentHooksOverviewSection: View {
 
     private var anyFailed: Bool {
         targets.contains { target in
-            if case .failed = maintainer.phases[target.id] {
+            if case .failed = maintainer.phase(target) {
                 return true
             }
             return false
@@ -31,7 +31,7 @@ struct AgentHooksOverviewSection: View {
 
     private var codexInstalled: Bool {
         targets.contains { target in
-            guard case let .ready(statuses) = maintainer.phases[target.id] else { return false }
+            guard case let .ready(statuses) = maintainer.phase(target) else { return false }
             return statuses.contains { $0.agent == "codex" && $0.installed }
         }
     }
@@ -57,7 +57,7 @@ struct AgentHooksOverviewSection: View {
                     HStack(alignment: .firstTextBaseline) {
                         Text(target.name)
                         Spacer()
-                        phaseText(maintainer.phases[target.id])
+                        phaseText(maintainer.phase(target))
                             .multilineTextAlignment(.trailing)
                     }
                     .font(.system(size: 12))
@@ -88,7 +88,7 @@ struct AgentHooksOverviewSection: View {
         }
         .task(id: targets) {
             await maintainer.check(
-                targets.filter { maintainer.phases[$0.id] == nil },
+                targets.filter { maintainer.phase($0) == nil },
                 installing: false
             )
         }

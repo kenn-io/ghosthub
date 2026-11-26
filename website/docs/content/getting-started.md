@@ -97,7 +97,8 @@ is doing, which lets Ghosthub:
 sheet. When you click **Get Started** or **Add SSH Host…** with it checked,
 Ghosthub:
 
-1. Installs hooks on this Mac and every macOS and Linux SSH host.
+1. Installs hooks on this Mac and every macOS and Linux SSH host, including
+   VMs from your exe.dev accounts.
 2. Updates them after each Ghosthub update.
 3. Installs them on each SSH host you add later.
 

@@ -474,11 +474,13 @@ Working).
 - **Automatic hooks:** **Settings → Agents → Install and update agent hooks
   automatically** (`SettingsStore.autoInstallAgentHooks`, off until chosen,
   pre-checked on the welcome sheet) makes `AgentHookMaintainer` run the same
-  status and install commands on this Mac and every macOS/Linux SSH host at
-  launch, when the setting turns on, and for each host added later. It installs
-  only where an available agent's hooks are missing or not current, once per
-  host per launch (a failed host is tried again on the next trigger); Windows
-  hosts stay manual. The **Agent Hooks** card in Settings → Agents lists every
+  status and install commands on this Mac and every macOS/Linux host, saved
+  or discovered from exe.dev accounts (a saved host wins a shared destination
+  or key), at launch, when the setting turns on, and for each host added or
+  discovered later. It installs only where an available agent's hooks are
+  missing or not current, once per connection per launch (a failed host is
+  tried again on the next trigger); Windows hosts stay manual. Status is kept
+  per connection, so a host whose SSH destination changes is read again. The **Agent Hooks** card in Settings → Agents lists every
   host's state and offers **Install on All Hosts**.
 - **Welcome sheet:** `OnboardingPresenter` shows it in one workspace window. A
   first launch (no `ghosthub.db` yet) always shows it; otherwise it shows once

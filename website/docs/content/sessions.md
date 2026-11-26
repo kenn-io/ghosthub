@@ -447,8 +447,8 @@ Hover over a badge to see which agent reported it.
 
 To enable agent badges everywhere, open **Settings → Agents** and turn on
 **Install and update agent hooks automatically**. Ghosthub then installs hooks
-on your Mac and every macOS and Linux SSH host, updates them whenever Ghosthub
-updates, and sets up each host you add. The **Agent Hooks** list there shows
+on your Mac and every macOS and Linux SSH host (including exe.dev VMs),
+updates them whenever Ghosthub updates, and sets up each host you add. The **Agent Hooks** list there shows
 each host's hooks; **Install on All Hosts** installs them once without turning
 the setting on.
 

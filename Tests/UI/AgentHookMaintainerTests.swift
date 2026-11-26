@@ -31,8 +31,9 @@ private final class FakeHosts: Sendable {
     /// When set, a status check waits for it, as over a slow SSH link.
     let statusGate = Mutex<Gate?>(nil)
 
+    /// Hosts answer by address, as over SSH.
     static func key(_ host: SSHHost?) -> String {
-        host?.configKey ?? "local"
+        host?.sshDestination ?? "local"
     }
 
     static func claude(installed: Bool, current: Bool) -> AgentHookSetupStatus {
@@ -105,6 +106,44 @@ struct AgentHookMaintainerTests {
             == ["This Mac", "Builder", "Studio"])
     }
 
+    @Test("discovered hosts join saved ones, and a saved host wins a duplicate")
+    func discoveredTargets() {
+        let vm = SSHHost(
+            configKey: "exe-vm", name: "VM", platform: .linux, sshDestination: "vm.exe.example"
+        )
+        let sameAddress = SSHHost(
+            configKey: "exe-builder", name: "Builder VM", platform: .linux,
+            sshDestination: "builder"
+        )
+        let sameKey = SSHHost(
+            configKey: "studio", name: "Studio VM", platform: .linux,
+            sshDestination: "studio-vm.exe.example"
+        )
+        let targets = AgentHookTarget.all(
+            sshHosts: [linux, mac],
+            discovered: [vm, sameAddress, sameKey, windows]
+        )
+        #expect(targets.map(\.name) == ["This Mac", "Builder", "Studio", "VM"])
+    }
+
+    @Test("a host whose address changed is read again, not shown from the old one")
+    func changedAddress() async {
+        let hosts = FakeHosts()
+        hosts.set("builder", [FakeHosts.claude(installed: true, current: true)])
+        hosts.set("builder-2", [FakeHosts.claude(installed: false, current: false)])
+        let maintainer = hosts.maintainer()
+        let before = AgentHookTarget.all(sshHosts: [linux])
+        await maintainer.check(before, installing: false)
+        #expect(!maintainer.hooksMissing(in: before))
+
+        var moved = linux
+        moved.sshDestination = "builder-2"
+        let after = AgentHookTarget.all(sshHosts: [moved])
+        #expect(maintainer.phase(after[1]) == nil, "Settings reads it again")
+        await maintainer.check(after, installing: false)
+        #expect(maintainer.hooksMissing(in: after))
+    }
+
     @Test("upkeep installs only where an agent lacks current hooks, once per launch")
     func maintainInstallsWhereNeeded() async {
         let hosts = FakeHosts()
@@ -134,7 +173,7 @@ struct AgentHookMaintainerTests {
         let targets = AgentHookTarget.all(sshHosts: [linux])
 
         await maintainer.maintain(targets)
-        #expect(maintainer.phases["builder"] == .failed("builder is unreachable"))
+        #expect(maintainer.phase(targets[1]) == .failed("builder is unreachable"))
         #expect(hosts.installs().isEmpty)
 
         hosts.failing.withLock { $0 = [] }
@@ -166,7 +205,7 @@ struct AgentHookMaintainerTests {
         let targets = AgentHookTarget.all(sshHosts: [linux])
 
         let reading = Task { await maintainer.check(targets, installing: false) }
-        while maintainer.phases["builder"] != .checking {
+        while maintainer.phase(targets[1]) != .checking {
             await Task.yield()
         }
         let upkeep = Task { await maintainer.maintain(targets) }
@@ -264,6 +303,25 @@ struct OnboardingPresenterTests {
         )
         #expect(!quiet.isPending)
         #expect(settled.onboardingCompleted, "nothing to set up, so it never asks")
+    }
+
+    @Test("an existing user is welcomed when only a discovered host lacks hooks")
+    func discoveredHostLacksHooks() async throws {
+        let settings = try makeSettings()
+        let hosts = FakeHosts()
+        hosts.set("local", [FakeHosts.claude(installed: true, current: true)])
+        hosts.set("vm.exe.example", [FakeHosts.claude(installed: false, current: false)])
+        let maintainer = hosts.maintainer()
+        maintainer.discoveredHosts = [SSHHost(
+            configKey: "exe-vm", name: "VM", platform: .linux, sshDestination: "vm.exe.example"
+        )]
+        let presenter = OnboardingPresenter()
+
+        await presenter.decideAtLaunch(
+            settings: settings, maintainer: maintainer, isNewInstall: false
+        )
+
+        #expect(presenter.isPending)
     }
 
     @Test("a host Ghosthub cannot reach leaves the decision for the next launch")

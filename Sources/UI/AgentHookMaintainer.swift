@@ -14,11 +14,21 @@ public struct AgentHookTarget: Equatable, Identifiable, Sendable {
         self.host = host
     }
 
-    /// This Mac, then every configured macOS and Linux host. Windows hosts
-    /// install kwt only on request, so their hooks stay manual too.
-    public static func all(sshHosts: [SSHHost]) -> [AgentHookTarget] {
-        [AgentHookTarget(id: "", name: "This Mac", host: nil)]
-            + sshHosts
+    /// This Mac, then every saved and discovered macOS and Linux host. A
+    /// discovered host that shares a saved host's destination or key is
+    /// that saved host. Windows hosts install kwt only on request, so their
+    /// hooks stay manual too.
+    public static func all(
+        sshHosts: [SSHHost],
+        discovered: [SSHHost] = []
+    ) -> [AgentHookTarget] {
+        let destinations = Set(sshHosts.map(\.sshDestination))
+        var keys = Set(sshHosts.map(\.configKey))
+        let others = discovered.filter {
+            !destinations.contains($0.sshDestination) && keys.insert($0.configKey).inserted
+        }
+        return [AgentHookTarget(id: "", name: "This Mac", host: nil)]
+            + (sshHosts + others)
             .filter { $0.platform == .macOS || $0.platform == .linux }
             .map { AgentHookTarget(id: $0.configKey, name: $0.name, host: $0) }
     }
@@ -45,15 +55,19 @@ public final class AgentHookMaintainer {
     public var status: Operation?
     public var install: Operation?
 
-    /// The last result for each target, by target ID.
-    public private(set) var phases: [String: Phase] = [:]
+    /// Hosts found outside Settings, such as exe.dev VMs. The app keeps
+    /// this current.
+    public var discoveredHosts: [SSHHost] = []
+    /// The last result for each connection. A host whose connection details
+    /// change is a different connection, so it is read again.
+    private var phases: [AgentHookConnection: Phase] = [:]
     /// Connections already brought up to date this launch. The app's kwt,
     /// and so the hooks it installs, change only with an app update.
     @ObservationIgnored private var maintained: Set<AgentHookConnection> = []
     /// The check or install running for each target. Another request for
     /// the same target waits for it, so an install asked for during a check
     /// still happens.
-    @ObservationIgnored private var inFlight: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var inFlight: [AgentHookConnection: Task<Void, Never>] = [:]
 
     public init(status: Operation? = nil, install: Operation? = nil) {
         self.status = status
@@ -70,6 +84,17 @@ public final class AgentHookMaintainer {
         }
     }
 
+    /// This Mac and every saved or discovered host whose hooks Ghosthub
+    /// manages.
+    public func targets(sshHosts: [SSHHost]) -> [AgentHookTarget] {
+        AgentHookTarget.all(sshHosts: sshHosts, discovered: discoveredHosts)
+    }
+
+    /// The last result for `target`'s current connection.
+    public func phase(_ target: AgentHookTarget) -> Phase? {
+        phases[AgentHookConnection(target.host)]
+    }
+
     /// Installs or updates hooks where needed on targets not yet brought
     /// up to date this launch. A failed target is tried again next time.
     public func maintain(_ targets: [AgentHookTarget]) async {
@@ -78,7 +103,7 @@ public final class AgentHookMaintainer {
         }
         await check(pending, installing: true)
         for target in pending {
-            if case .failed = phases[target.id] {
+            if case .failed = phase(target) {
                 maintained.remove(AgentHookConnection(target.host))
             }
         }
@@ -87,7 +112,7 @@ public final class AgentHookMaintainer {
     /// Some target has an agent whose hooks are missing or out of date.
     public func hooksMissing(in targets: [AgentHookTarget]) -> Bool {
         targets.contains { target in
-            guard case let .ready(statuses) = phases[target.id] else { return false }
+            guard case let .ready(statuses) = phase(target) else { return false }
             return Self.needsInstall(statuses)
         }
     }
@@ -95,7 +120,7 @@ public final class AgentHookMaintainer {
     /// Every target was read.
     public func checked(_ targets: [AgentHookTarget]) -> Bool {
         targets.allSatisfy { target in
-            if case .ready = phases[target.id] {
+            if case .ready = phase(target) {
                 return true
             }
             return false
@@ -110,36 +135,38 @@ public final class AgentHookMaintainer {
         // Chain after the request already running for this target. A loop
         // that awaits a finished task never yields the main actor, so the
         // task's owner could never clear it.
-        let previous = inFlight[target.id]
+        let connection = AgentHookConnection(target.host)
+        let previous = inFlight[connection]
         let task = Task {
             await previous?.value
             await self.run(target, installing: installing)
         }
-        inFlight[target.id] = task
+        inFlight[connection] = task
         await task.value
-        if inFlight[target.id] == task {
-            inFlight[target.id] = nil
+        if inFlight[connection] == task {
+            inFlight[connection] = nil
         }
     }
 
     private func run(_ target: AgentHookTarget, installing: Bool) async {
+        let connection = AgentHookConnection(target.host)
         guard let status else {
-            phases[target.id] = .failed("Agent hooks are not available.")
+            phases[connection] = .failed("Agent hooks are not available.")
             return
         }
-        phases[target.id] = .checking
+        phases[connection] = .checking
         var result = await status(target.host)
         if installing, let install,
            case let .success(statuses) = result,
            Self.needsInstall(statuses) {
-            phases[target.id] = .installing
+            phases[connection] = .installing
             result = await install(target.host)
         }
         switch result {
         case let .success(statuses):
-            phases[target.id] = .ready(statuses)
+            phases[connection] = .ready(statuses)
         case let .failure(error):
-            phases[target.id] = .failed(error.displayMessage)
+            phases[connection] = .failed(error.displayMessage)
         }
     }
 }

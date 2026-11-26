@@ -61,7 +61,7 @@ public final class OnboardingPresenter {
             present()
             return
         }
-        let targets = AgentHookTarget.all(sshHosts: settings.sshHosts)
+        let targets = maintainer.targets(sshHosts: settings.sshHosts)
         await maintainer.check(targets, installing: false)
         if maintainer.hooksMissing(in: targets) {
             present()
