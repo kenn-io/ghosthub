@@ -12,6 +12,12 @@ docs-only changes are left out.
 
 ### Added
 
+- A welcome sheet on first launch helps you add SSH hosts and set up agent
+  hooks. Reopen it with **Show Welcome** in the Command Palette.
+- Ghosthub can install and update agent hooks on your Mac and every macOS and
+  Linux SSH host for you. Turn on **Install and update agent hooks
+  automatically** in **Settings → Agents**, where an **Agent Hooks** list also
+  shows every host's hooks and offers **Install on All Hosts**.
 - Open windows from a running [Rex](https://www.superlogical.com/rex/docs)
   server on your Mac or an SSH host, complete with their split panes. They
   appear in the host's session list with a **rex** label and in the Command

@@ -182,6 +182,7 @@ public struct SettingsView: View {
     private let actions: SettingsActions
     private let showsToolbar: Bool
     private let simplifiedForTesting: Bool
+    private let agentHookMaintainer = AgentHookMaintainer.shared
     private let defaultFontSizes: [Double] = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24]
     @Environment(\.dismiss) private var dismiss
 
@@ -638,12 +639,9 @@ public struct SettingsView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-
-                Text("Requires agent hooks on each host, installed under Hosts.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
+
+            AgentHooksOverviewSection(store: store, maintainer: agentHookMaintainer)
         }
     }
 

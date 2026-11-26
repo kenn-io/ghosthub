@@ -61,6 +61,9 @@ demo_stop_recorded_process \
 # passes so window layout and disclosure state never depend on an earlier
 # capture while leaving every real Ghosthub preference untouched.
 defaults delete com.ghosthub.demo 2>/dev/null || true
+# Each pass is a first launch; skip the welcome sheet so captures show the
+# workspace.
+defaults write com.ghosthub.demo ghosthub.settings.application.onboardingCompleted -bool true
 demo_socket="$scratch/tmux/tmux-$(id -u)/default"
 # shellcheck source=SCRIPTDIR/tmux.sh
 source "$demo_root/tmux.sh"

@@ -1,4 +1,5 @@
 import Foundation
+import GhosthubSettings
 import GhosthubTransport
 import GhosthubUI
 
@@ -88,6 +89,46 @@ struct KwtAgentHookClient: Sendable {
             result = (output.status, output.stdout)
         }
         return try Self.decode(result, action: action, hostLabel: host.displayName)
+    }
+
+    /// Runs `action` on a configured host, or on this Mac when `host` is
+    /// nil, after `provision` makes sure the host has Ghosthub's kwt.
+    func run(
+        _ action: Action,
+        on host: SSHHost?,
+        provision: @Sendable (SSHHost) async throws -> Void
+    ) async -> Result<[AgentHookSetupStatus], HostProbeError> {
+        let target: CommandHost
+        if var host {
+            host.sshDestination = host.sshDestination.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard host.platform != .windows,
+                  let sshHost = CommandHostResolver.parseSSHDestination(host.sshDestination)
+            else {
+                return .failure(.message("Enter a valid SSH destination."))
+            }
+            target = .ssh(SSHHostInfo(
+                user: sshHost.user,
+                hostname: sshHost.hostname,
+                port: sshHost.port,
+                platform: .posix,
+                compression: host.compression,
+                forwardAgent: host.forwardAgent
+            ))
+            do {
+                try await provision(host)
+            } catch {
+                return .failure(.message(error.localizedDescription))
+            }
+        } else {
+            target = .local
+        }
+        do {
+            return try await .success(run(action, on: target))
+        } catch {
+            return .failure(.message(error.localizedDescription))
+        }
     }
 
     static func command(_ action: Action, binaryPrelude: String) -> String {

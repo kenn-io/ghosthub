@@ -34,6 +34,7 @@ public enum WorkspaceCommandAction: Equatable, Sendable {
     case setInterfaceAppearance(AppearancePreference)
     case select(WorkspaceNavigationTarget)
     case showLogViewer
+    case showWelcome
     case applicationShortcut(ApplicationShortcutAction)
 }
 
@@ -160,6 +161,13 @@ public enum CommandPaletteModel {
                 shortcutAction: .openApplicationLog,
                 shortcut: shortcuts[.openApplicationLog],
                 action: .showLogViewer
+            ),
+            WorkspaceCommandItem(
+                id: "show-welcome",
+                title: "Show Welcome",
+                subtitle: "Add hosts and set up agent hooks.",
+                keywords: ["welcome", "onboarding", "setup", "getting started", "agent", "hooks"],
+                action: .showWelcome
             ),
             WorkspaceCommandItem(
                 id: "find-in-terminal",

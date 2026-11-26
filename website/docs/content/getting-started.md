@@ -69,6 +69,19 @@ Install Zellij locally if you want Zellij sessions:
 brew install zellij
 ```
 
+## First launch
+
+The first time Ghosthub opens, a welcome sheet offers two things:
+
+- **Add SSH Host…** opens **Settings → Hosts** so you can add the Macs and
+  Linux machines you work on.
+- **Install and update agent hooks automatically** lets Ghosthub show which
+  agents need you and resume their conversations after a reboot. It is checked
+  on the sheet and takes effect when you click **Get Started**. It edits each
+  agent's user settings on your Mac and SSH hosts.
+
+Reopen the sheet any time with **Show Welcome** in the Command Palette.
+
 ## Open an existing session
 
 1. Open Ghosthub.

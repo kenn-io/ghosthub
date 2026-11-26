@@ -20,6 +20,14 @@ enum WorkspaceSceneBootstrap {
 
     private static var sharedResources: Resources?
 
+    /// No Ghosthub database yet means this launch is the first. Read it
+    /// before `ensureBootstrapped`, which creates the database.
+    static func isFirstLaunch(fileManager: FileManager = .default) -> Bool {
+        guard let url = try? WorkspaceDatabase.defaultDatabaseURL(fileManager: fileManager)
+        else { return false }
+        return !fileManager.fileExists(atPath: url.path)
+    }
+
     static func ensureBootstrapped() {
         guard sharedResources == nil else { return }
         do {

@@ -4,7 +4,7 @@ import Observation
 
 /// The connection fields that decide which machine an agent hook status
 /// describes. Renaming a host does not change it. A nil host means this Mac.
-struct AgentHookConnection: Equatable {
+struct AgentHookConnection: Hashable {
     var configKey: String?
     var destination: String?
     var platform: HostPlatform?

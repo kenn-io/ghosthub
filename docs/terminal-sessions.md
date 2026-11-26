@@ -471,6 +471,20 @@ Working).
   auto-loading for saved macOS/Linux SSH hosts on selection (waiting for **Test
   Connection** if unsaved connection edits exist, matching **Add Project**).
   Codex requires trusting new hooks once via `/hooks`.
+- **Automatic hooks:** **Settings → Agents → Install and update agent hooks
+  automatically** (`SettingsStore.autoInstallAgentHooks`, off until chosen,
+  pre-checked on the welcome sheet) makes `AgentHookMaintainer` run the same
+  status and install commands on this Mac and every macOS/Linux SSH host at
+  launch, when the setting turns on, and for each host added later. It installs
+  only where an available agent's hooks are missing or not current, once per
+  host per launch (a failed host is tried again on the next trigger); Windows
+  hosts stay manual. The **Agent Hooks** card in Settings → Agents lists every
+  host's state and offers **Install on All Hosts**.
+- **Welcome sheet:** `OnboardingPresenter` shows it in one workspace window. A
+  first launch (no `ghosthub.db` yet) always shows it; otherwise it shows once
+  only when a read-only status check finds a host whose agents lack current
+  hooks, and a failed check defers the decision to the next launch. **Show
+  Welcome** in the Command Palette reopens it.
 - **Pane option and refresh:** hooks write `@kwt_agent` as
   `<state> <unix-seconds> <agent>` (`working`, `approval`, `input`, `done`),
   cleared on session start/end (no-op outside tmux and for subagents). POSIX

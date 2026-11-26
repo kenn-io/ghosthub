@@ -14,6 +14,10 @@ public final class SettingsStore: ObservableObject {
     private enum DefaultsKey {
         static let confirmBeforeQuitting =
             "ghosthub.settings.application.confirmBeforeQuitting"
+        static let autoInstallAgentHooks =
+            "ghosthub.settings.agents.autoInstallHooks"
+        static let onboardingCompleted =
+            "ghosthub.settings.application.onboardingCompleted"
         static let hideRootCheckout = "ghosthub.settings.worktrees.hideRootCheckout"
         static let showHiddenWorktreesByDefault = "ghosthub.settings.worktrees.showHiddenWorktreesByDefault"
         static let hideKwtManagedSessions =
@@ -82,6 +86,11 @@ public final class SettingsStore: ObservableObject {
 
     @Published public var selectedDomain: SettingsDomain = .appearance
     @Published public private(set) var confirmBeforeQuitting: Bool
+    /// Off until chosen: Ghosthub then installs and updates kwt's agent
+    /// hooks on this Mac and every macOS and Linux SSH host.
+    @Published public private(set) var autoInstallAgentHooks: Bool
+    /// The welcome sheet was finished or skipped.
+    @Published public private(set) var onboardingCompleted: Bool
     @Published public private(set) var interfaceAppearance: AppearancePreference
     @Published public private(set) var notificationConfiguration: NotificationsConfiguration
     @Published public private(
@@ -169,6 +178,8 @@ public final class SettingsStore: ObservableObject {
         )
 
         confirmBeforeQuitting = loadedConfirmBeforeQuitting
+        autoInstallAgentHooks = userDefaults.bool(forKey: DefaultsKey.autoInstallAgentHooks)
+        onboardingCompleted = userDefaults.bool(forKey: DefaultsKey.onboardingCompleted)
         interfaceAppearance = loadedAppearance
         notificationConfiguration = loadedNotifications
         terminalAppearancePreferences = loadedTerminalAppearance
@@ -196,6 +207,8 @@ public final class SettingsStore: ObservableObject {
         confirmBeforeQuitting = Self.loadConfirmBeforeQuitting(
             using: userDefaults
         )
+        autoInstallAgentHooks = userDefaults.bool(forKey: DefaultsKey.autoInstallAgentHooks)
+        onboardingCompleted = userDefaults.bool(forKey: DefaultsKey.onboardingCompleted)
         interfaceAppearance = Self.loadInterfaceAppearance(
             using: userDefaults
         )
@@ -255,6 +268,16 @@ public final class SettingsStore: ObservableObject {
             enabled,
             forKey: DefaultsKey.confirmBeforeQuitting
         )
+    }
+
+    public func setAutoInstallAgentHooks(_ enabled: Bool) {
+        autoInstallAgentHooks = enabled
+        userDefaults.set(enabled, forKey: DefaultsKey.autoInstallAgentHooks)
+    }
+
+    public func setOnboardingCompleted(_ completed: Bool) {
+        onboardingCompleted = completed
+        userDefaults.set(completed, forKey: DefaultsKey.onboardingCompleted)
     }
 
     public func setShowMacOSNotifications(_ enabled: Bool) {
