@@ -21,24 +21,32 @@ final class SavedTmuxSessionRestores {
         var socketName: String?
     }
 
-    private var active: [Key: Task<TmuxRestoreReport, Error>] = [:]
+    private struct Restore {
+        var task: Task<TmuxRestoreReport, Error>
+        var continuing: Bool
+    }
+
+    private var active: [Key: Restore] = [:]
     /// Each kill in progress holds its own fence, so a duplicate kill that
     /// fails lifts only its own.
     private var fenced: [Fence: Int] = [:]
 
     /// Restores the entries. An entry another window is restoring is not
     /// restored again: this caller waits for that restore and shares its
-    /// outcome, success or failure.
+    /// outcome, success or failure. When this caller asked to continue
+    /// interrupted agents and that restore does not, the shared entry says
+    /// its agents were not continued.
     func restore(
         _ entryIDs: [String],
         hostID: UUID,
+        continuing: Bool = false,
         using run: @escaping @MainActor ([String]) async throws -> TmuxRestoreReport
     ) async throws -> TmuxRestoreReport {
-        var restores: [Task<TmuxRestoreReport, Error>] = []
+        var restores: [Restore] = []
         var claimed: [String] = []
         for entryID in entryIDs {
             if let running = active[Key(hostID: hostID, entryID: entryID)] {
-                if !restores.contains(running) {
+                if !restores.contains(where: { $0.task == running.task }) {
                     restores.append(running)
                 }
             } else {
@@ -55,14 +63,22 @@ final class SavedTmuxSessionRestores {
                 }
                 return try await run(claimed)
             }
+            let claim = Restore(task: restore, continuing: continuing)
             for key in keys {
-                active[key] = restore
+                active[key] = claim
             }
-            restores.append(restore)
+            restores.append(claim)
         }
         var entries: [TmuxRestoreReport.Entry] = []
         for restore in restores {
-            entries += try await restore.value.entries.filter { entryIDs.contains($0.id) }
+            var shared = try await restore.task.value.entries.filter { entryIDs.contains($0.id) }
+            if continuing, !restore.continuing {
+                for index in shared.indices {
+                    shared[index].notes = (shared[index].notes ?? [])
+                        + ["another window restored it without continuing its agents"]
+                }
+            }
+            entries += shared
         }
         return TmuxRestoreReport(entries: entries)
     }

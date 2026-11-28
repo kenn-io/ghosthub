@@ -217,6 +217,28 @@ extension WorkspaceTmuxDiscoveryTests {
     }
 
     @MainActor
+    @Test("a window restoring after a reboot continues interrupted agents when chosen")
+    func endedWindowContinuesInterruptedAgents() async throws {
+        let host = RebootingHost()
+        let (model, store, handle) = try await windowOn(host)
+        model.continuesInterruptedAgents = { true }
+        host.reboot()
+        store.surface.closeObservers[handle.id]?(false, 1)
+        model.refreshTmuxSessionDiscovery()
+
+        await waitUntilMainActor {
+            model.prepareActiveBorrowedTmuxSurface()
+            return !host.restores.isEmpty && model.activeBorrowedTmuxSessionIsConnected
+        }
+        #expect(host.restores.count == 1)
+        #expect(
+            host.restores.first?.hasSuffix("session 'restore' '--json' '--continue' 'a1'")
+                == true
+        )
+        await model.shutdown()
+    }
+
+    @MainActor
     @Test("a window attaches when discovery sees its restored session before kwt reports")
     func discoveryBeforeRestoreFinishes() async throws {
         let gate = DispatchSemaphore(value: 0)

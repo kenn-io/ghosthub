@@ -350,6 +350,15 @@ final class SettingsStoreTests {
         #expect(reloaded.onboardingCompleted)
     }
 
+    @Test("continuing interrupted agents is off until chosen, then persists")
+    func continueInterruptedAgentsPersists() {
+        #expect(!makeSUT().continueInterruptedAgents)
+
+        makeSUT().setContinueInterruptedAgents(true)
+
+        #expect(makeSUT().continueInterruptedAgents)
+    }
+
     @Test("duplicate exe.dev destinations remain available for correction")
     func duplicateExeDestinationsRemainInSettings() {
         let accounts = [

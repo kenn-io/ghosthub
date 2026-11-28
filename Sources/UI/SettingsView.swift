@@ -646,6 +646,25 @@ public struct SettingsView: View {
             }
 
             AgentHooksOverviewSection(store: store, maintainer: agentHookMaintainer)
+
+            settingsSection("After a Restart") {
+                Toggle(
+                    "Continue interrupted agents after a restart",
+                    isOn: Binding(
+                        get: { store.continueInterruptedAgents },
+                        set: { store.setContinueInterruptedAgents($0) }
+                    )
+                )
+
+                Text(
+                    "When Ghosthub restores a saved tmux session, an agent that"
+                        + " was mid-turn resumes with a prompt to check its work"
+                        + " and continue. Claude Code needs agent hooks."
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

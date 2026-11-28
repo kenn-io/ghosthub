@@ -871,7 +871,11 @@ public struct RootView: View {
                 addProjectHost = host
             },
             onRestoreSavedTmuxSessions: restoreSavedTmuxSessions,
-            onRestoreSavedTmuxSession: restoreSavedTmuxSession,
+            onRestoreSavedTmuxSession: { restoreSavedTmuxSession($0) },
+            onRestoreAndContinueSavedTmuxSession: {
+                restoreSavedTmuxSession($0, continuing: true)
+            },
+            savedRestoresContinue: settingsStore.continueInterruptedAgents,
             onRequestDismissSavedTmuxSession: requestSavedTmuxSessionDismissal,
             onRefreshInventory: {
                 handlers.refreshWorkspaceInventory?()
@@ -1833,7 +1837,10 @@ public struct RootView: View {
     /// Restores one saved session and attaches to it, unless the person
     /// moved elsewhere while kwt rebuilt it. Reports only what did not come
     /// back cleanly.
-    private func restoreSavedTmuxSession(_ saved: WorkspaceSavedTmuxSessionSelection) {
+    private func restoreSavedTmuxSession(
+        _ saved: WorkspaceSavedTmuxSessionSelection,
+        continuing: Bool = false
+    ) {
         guard let restore = handlers.restoreSavedTmuxSessions,
               pendingSavedTmuxRestores.insert(saved.entryID).inserted
         else { return }
@@ -1846,7 +1853,7 @@ public struct RootView: View {
             defer { pendingSavedTmuxRestores.remove(saved.entryID) }
             let report: TmuxRestoreReport
             do {
-                report = try await restore(saved.hostID, [saved.entryID])
+                report = try await restore(saved.hostID, [saved.entryID], continuing)
             } catch {
                 presentNonWorktreeWorkspaceAlert(.savedTmuxSessionRestore(
                     host: host,
@@ -1917,7 +1924,7 @@ public struct RootView: View {
         Task {
             let message: String
             do {
-                let problems = try await restore(host.id, ids).problems
+                let problems = try await restore(host.id, ids, false).problems
                 guard !problems.isEmpty else { return }
                 message = problems.joined(separator: "\n")
             } catch {
@@ -2362,6 +2369,7 @@ public struct RootView: View {
             isSidebarVisible: isSidebarVisible,
             isSidePanelVisible: isSidePanelVisible,
             interfaceAppearance: settingsStore.interfaceAppearance,
+            continuesInterruptedAgents: settingsStore.continueInterruptedAgents,
             worktreeVisibility: worktreeVisibility,
             tmuxSessionVisibility: tmuxSessionVisibility,
             supportsSettings: content.settingsSheetBuilder != nil,
@@ -2430,6 +2438,10 @@ public struct RootView: View {
             restoreSavedTmuxSessions(host)
         case let .restoreSavedTmuxSession(saved):
             restoreSavedTmuxSession(saved)
+        case let .restoreAndContinueSavedTmuxSession(saved):
+            restoreSavedTmuxSession(saved, continuing: true)
+        case let .setContinueInterruptedAgents(enabled):
+            settingsStore.setContinueInterruptedAgents(enabled)
         case let .dismissSavedTmuxSession(saved):
             requestSavedTmuxSessionDismissal(saved)
         case let .openTmuxSession(tmuxSession):

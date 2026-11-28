@@ -163,10 +163,13 @@ extension WorkspaceTmuxDiscoveryTests {
         // A second click while kwt rebuilds it must not start another
         // restore, which would tear down the half-built session; it waits
         // for the first one and shares its outcome. The same holds for a
-        // click in another window.
+        // click in another window, even one asking to continue interrupted
+        // agents, which then hears that they were not continued.
         let second = Task { try await model.restoreSavedTmuxSessions(["a1"], hostID: hostID) }
         let fromOtherWindow = Task {
-            try await otherWindow.restoreSavedTmuxSessions(["a1"], hostID: hostID)
+            try await otherWindow.restoreSavedTmuxSessions(
+                ["a1"], hostID: hostID, continuing: true
+            )
         }
         // An entry kwt no longer lists is not passed to it.
         let stale = try await model.restoreSavedTmuxSessions(["gone"], hostID: hostID)
@@ -175,8 +178,12 @@ extension WorkspaceTmuxDiscoveryTests {
         finishRestore.signal()
         let report = try await first.value
         #expect(report.entries.map(\.outcome) == ["restored"])
-        #expect(try await second.value.entries.map(\.outcome) == ["restored"])
-        #expect(try await fromOtherWindow.value.entries.map(\.outcome) == ["restored"])
+        #expect(try await second.value.problems.isEmpty)
+        let joined = try await fromOtherWindow.value
+        #expect(joined.entries.map(\.outcome) == ["restored"])
+        #expect(joined.problems == [
+            "api: another window restored it without continuing its agents",
+        ])
         #expect(restores().count == 1)
         #expect(restores().first?.hasSuffix("session 'restore' '--json' 'a1'") == true)
         let stillRestoring = model.snapshot.hosts[0].savedTmuxSessions.filter(\.isRestoring)
@@ -186,6 +193,60 @@ extension WorkspaceTmuxDiscoveryTests {
         #expect(commands.withLock { $0 }.contains { $0.hasSuffix("session 'dismiss' 'b2'") })
         await model.shutdown()
         await otherWindow.shutdown()
+    }
+
+    @MainActor
+    @Test("a restore continues interrupted agents once, or always when chosen")
+    func savedTmuxSessionContinuesInterruptedAgents() async throws {
+        let environment = try setupStandardEnvironment()
+        let commands = Mutex<[String]>([])
+        let client = KwtSessionClient(
+            localRunner: { command in
+                commands.withLock { $0.append(command) }
+                let marker = "GHOSTHUB_KWT_SESSION_JSON\n"
+                if command.contains("'snapshot'") {
+                    return (0, marker + """
+                    {"entries": [
+                      {"id": "a1", "socket": {"path": "/tmp/tmux-501/default", "name": "default"},
+                       "session": "api", "interrupted": ["codex"]},
+                      {"id": "b2", "socket": {"path": "/tmp/tmux-501/default", "name": "default"},
+                       "session": "docs"}
+                    ]}
+                    """)
+                }
+                if command.contains("'restore'") {
+                    return (0, marker + #"{"entries": []}"#)
+                }
+                return (0, marker)
+            },
+            localBinaryPath: "/opt/kwt"
+        )
+        let model = try makeModel(
+            database: environment.database,
+            localHostID: environment.host.id,
+            snapshot: environment.snapshot,
+            kwtInventoryLoader: { _ in KwtHostInventory(projects: []) },
+            kwtSessionClient: client
+        )
+        model.continuesInterruptedAgents = { false }
+        model.startKwtInventory()
+        await waitUntilMainActor { model.snapshot.hosts[0].savedTmuxSessions.count == 2 }
+        #expect(model.snapshot.hosts[0].savedTmuxSessions.map(\.interrupted) == [["codex"], []])
+        let hostID = environment.host.id
+        func lastRestore() -> String? {
+            commands.withLock { $0 }.last { $0.contains("'restore'") }
+        }
+
+        _ = try await model.restoreSavedTmuxSessions(["a1"], hostID: hostID)
+        #expect(lastRestore()?.hasSuffix("session 'restore' '--json' 'a1'") == true)
+
+        _ = try await model.restoreSavedTmuxSessions(["a1"], hostID: hostID, continuing: true)
+        #expect(lastRestore()?.hasSuffix("session 'restore' '--json' '--continue' 'a1'") == true)
+
+        model.continuesInterruptedAgents = { true }
+        _ = try await model.restoreSavedTmuxSessions(["b2"], hostID: hostID)
+        #expect(lastRestore()?.hasSuffix("session 'restore' '--json' '--continue' 'b2'") == true)
+        await model.shutdown()
     }
 
     @MainActor

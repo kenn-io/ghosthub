@@ -1276,6 +1276,63 @@ struct CommandPaletteModelTests {
         )
         #expect(command.title == "Show Welcome")
     }
+
+    @Test("the palette continues interrupted agents once or turns that on for every restore")
+    func continueInterruptedAgentsCommands() throws {
+        var host = HostSummary.fixture(platform: .macOS)
+        let socket = SavedTmuxSession.Socket(path: "/tmp/tmux-501/default", name: "default")
+        host.savedTmuxSessions = [
+            .init(id: "a1", socket: socket, session: "api", interrupted: ["codex"]),
+            .init(id: "b2", socket: socket, session: "web"),
+        ]
+        func commands(continuing: Bool) -> [WorkspaceCommandItem] {
+            makeCommandPaletteCommands(
+                snapshot: .fixture(hosts: [host]),
+                selection: .init(selectedHostID: host.id),
+                continuesInterruptedAgents: continuing
+            )
+        }
+        func session(
+            _ id: String,
+            _ name: String,
+            canContinue: Bool
+        ) -> WorkspaceSavedTmuxSessionSelection {
+            WorkspaceSavedTmuxSessionSelection(
+                entryID: id,
+                session: WorkspaceTmuxSessionSelection(hostID: host.id, name: name),
+                canContinue: canContinue
+            )
+        }
+
+        let off = commands(continuing: false)
+        let continueOnce = off.filter {
+            if case .restoreAndContinueSavedTmuxSession = $0.action {
+                return true
+            }
+            return false
+        }
+        #expect(continueOnce.map(\.action) == [
+            .restoreAndContinueSavedTmuxSession(session("a1", "api", canContinue: true)),
+        ])
+        let enable = try #require(off.first { $0.id == "continue-interrupted-agents" })
+        #expect(enable.title == "Continue Interrupted Agents After a Restart")
+        #expect(enable.action == .setContinueInterruptedAgents(true))
+
+        // Every restore already continues, so the one-off would repeat
+        // Restore.
+        let on = commands(continuing: true)
+        #expect(!on.contains {
+            if case .restoreAndContinueSavedTmuxSession = $0.action {
+                return true
+            }
+            return false
+        })
+        let disable = try #require(on.first { $0.id == "continue-interrupted-agents" })
+        #expect(disable.action == .setContinueInterruptedAgents(false))
+        #expect(CommandPaletteModel.filteredCommands(on, query: "interrupted").contains {
+            $0.id == "continue-interrupted-agents"
+        })
+    }
 }
 
 private func makeCommandPaletteCommands(
@@ -1288,6 +1345,7 @@ private func makeCommandPaletteCommands(
     isSidebarVisible: Bool = true,
     isSidePanelVisible: Bool = false,
     interfaceAppearance: AppearancePreference = .system,
+    continuesInterruptedAgents: Bool = false,
     tmuxSessionVisibility: TmuxSessionVisibility = TmuxSessionVisibility(),
     supportsSettings: Bool = true,
     worktreeOrderRawValue: String = "",
@@ -1313,6 +1371,7 @@ private func makeCommandPaletteCommands(
         isSidebarVisible: isSidebarVisible,
         isSidePanelVisible: isSidePanelVisible,
         interfaceAppearance: interfaceAppearance,
+        continuesInterruptedAgents: continuesInterruptedAgents,
         tmuxSessionVisibility: tmuxSessionVisibility,
         supportsSettings: supportsSettings,
         worktreeOrderRawValue: worktreeOrderRawValue,

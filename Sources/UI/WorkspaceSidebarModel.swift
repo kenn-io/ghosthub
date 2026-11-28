@@ -213,10 +213,19 @@ enum WorkspaceSidebarDropPlacement: Equatable {
 public struct WorkspaceSavedTmuxSessionSelection: Equatable, Hashable, Sendable {
     public var entryID: String
     public var session: WorkspaceTmuxSessionSelection
+    /// An agent in the session was mid-turn when it was saved, and no
+    /// restore of it is running. A request made during a restore joins that
+    /// restore, so it could not continue the agents.
+    public var canContinue: Bool
 
-    public init(entryID: String, session: WorkspaceTmuxSessionSelection) {
+    public init(
+        entryID: String,
+        session: WorkspaceTmuxSessionSelection,
+        canContinue: Bool = false
+    ) {
         self.entryID = entryID
         self.session = session
+        self.canContinue = canContinue
     }
 
     public var hostID: UUID { session.hostID }
@@ -405,6 +414,8 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
     /// row's target is the session the restore creates.
     public var savedTmuxSessionID: String?
     public var savedTmuxSessionIsRestoring: Bool
+    /// Agents a restart cut short mid-turn in the saved session.
+    public var savedTmuxSessionInterrupted: [String]
 
     public var id: WorkspaceNavigationTarget { target }
 
@@ -418,7 +429,10 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
     /// The quiet word after an inactive session's name.
     public var inactiveLabel: String? {
         if savedTmuxSessionID != nil {
-            return savedTmuxSessionIsRestoring ? "restoring…" : "saved"
+            if savedTmuxSessionIsRestoring {
+                return "restoring…"
+            }
+            return savedTmuxSessionInterrupted.isEmpty ? "saved" : "interrupted"
         }
         return herdrSessionState == .stopped ? "stopped" : nil
     }
@@ -431,7 +445,8 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
             entryID: savedTmuxSessionID,
             session: WorkspaceTmuxSessionSelection(
                 hostID: hostID, name: name, socketName: socketName
-            )
+            ),
+            canContinue: !savedTmuxSessionInterrupted.isEmpty && !savedTmuxSessionIsRestoring
         )
     }
 
@@ -496,7 +511,8 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         herdrSessionState: HerdrSessionState? = nil,
         herdrSessionIsDefault: Bool? = nil,
         savedTmuxSessionID: String? = nil,
-        savedTmuxSessionIsRestoring: Bool = false
+        savedTmuxSessionIsRestoring: Bool = false,
+        savedTmuxSessionInterrupted: [String] = []
     ) {
         self.target = target
         self.icon = icon
@@ -510,6 +526,7 @@ public struct WorkspaceSidebarRow: Equatable, Identifiable, Sendable {
         self.herdrSessionIsDefault = herdrSessionIsDefault
         self.savedTmuxSessionID = savedTmuxSessionID
         self.savedTmuxSessionIsRestoring = savedTmuxSessionIsRestoring
+        self.savedTmuxSessionInterrupted = savedTmuxSessionInterrupted
     }
 }
 
@@ -953,6 +970,11 @@ public enum WorkspaceSidebarModel {
     ) -> WorkspaceSidebarRow {
         let windows = saved.windows == 1 ? "1 window" : "\(saved.windows) windows"
         let panes = saved.panes == 1 ? "1 pane" : "\(saved.panes) panes"
+        let interrupted = switch saved.interrupted.count {
+        case 0: ""
+        case 1: ", 1 agent interrupted"
+        case let count: ", \(count) agents interrupted"
+        }
         return WorkspaceSidebarRow(
             target: .tmuxSession(
                 hostID: hostID,
@@ -961,9 +983,10 @@ public enum WorkspaceSidebarModel {
             ),
             icon: .tmuxSession,
             title: saved.session,
-            subtitle: "Saved before its tmux server stopped, \(windows), \(panes)",
+            subtitle: "Saved before its tmux server stopped, \(windows), \(panes)\(interrupted)",
             savedTmuxSessionID: saved.id,
-            savedTmuxSessionIsRestoring: saved.isRestoring
+            savedTmuxSessionIsRestoring: saved.isRestoring,
+            savedTmuxSessionInterrupted: saved.interrupted
         )
     }
 
